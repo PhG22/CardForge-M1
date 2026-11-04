@@ -1,0 +1,22 @@
+=======================================
+RELATÓRIO DE IDENTIFICAÇÃO — CardForge-M1
+Arquivo: 20260925_153224.jpg
+=======================================
+
+Status: IDENTIFIED  |  Confiança: 100%  |  Método: SET_NUMBER
+Layout: STANDARD  |  Tempo: 999 ms  |  Chamadas OCR: 2
+
+--- LIDO PELA CÂMARA (OCR) ---
+Nome: ScavengerGrounds
+Tipo: Desert
+Linha de info: R.0419 FFXIV FICEN SALVATORREZEEYAZZIE
+Edição: FIC  |  Número: 0419
+
+--- CARTA OFICIAL (cards.db / Scryfall) ---
+Nome: Scavenger Grounds
+Custo de mana: -
+Tipo: Land — Desert
+Identidade de cor: Incolor
+Raridade: Rare
+Edição / número: FIC 419
+Scryfall id: a4e3f65d-8d73-4fd1-9de4-813ba6e40940

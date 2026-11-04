@@ -1,0 +1,22 @@
+=======================================
+RELATÓRIO DE IDENTIFICAÇÃO — CardForge-M1
+Arquivo: 20260925_153807.jpg
+=======================================
+
+Status: IDENTIFIED  |  Confiança: 100%  |  Método: SET_NUMBER
+Layout: STANDARD  |  Tempo: 525 ms  |  Chamadas OCR: 1
+
+--- LIDO PELA CÂMARA (OCR) ---
+Nome: Secret Rendezvous
+Tipo: Sorcery
+Linha de info: U0253 FFVII FIC·EN 藤木/YUFkI
+Edição: FIC  |  Número: 0253
+
+--- CARTA OFICIAL (cards.db / Scryfall) ---
+Nome: Secret Rendezvous
+Custo de mana: {1}{W}{W}
+Tipo: Sorcery
+Identidade de cor: W
+Raridade: Uncommon
+Edição / número: FIC 253
+Scryfall id: d09a77e7-649c-4f2c-bcd3-0598271e9373

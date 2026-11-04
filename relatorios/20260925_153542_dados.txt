@@ -1,0 +1,22 @@
+=======================================
+RELATÓRIO DE IDENTIFICAÇÃO — CardForge-M1
+Arquivo: 20260925_153542.jpg
+=======================================
+
+Status: IDENTIFIED  |  Confiança: 100%  |  Método: SET_NUMBER
+Layout: STANDARD  |  Tempo: 482 ms  |  Chamadas OCR: 1
+
+--- LIDO PELA CÂMARA (OCR) ---
+Nome: ExoticOrchard
+Tipo: Land
+Linha de info: R0390 FFX FICIEN DAYID FRASHESKI
+Edição: FIC  |  Número: 0390
+
+--- CARTA OFICIAL (cards.db / Scryfall) ---
+Nome: Exotic Orchard
+Custo de mana: -
+Tipo: Land
+Identidade de cor: Incolor
+Raridade: Rare
+Edição / número: FIC 390
+Scryfall id: 47c2b572-b54a-444c-8d74-b005e94d751f

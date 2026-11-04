@@ -1,0 +1,22 @@
+=======================================
+RELATÓRIO DE IDENTIFICAÇÃO — CardForge-M1
+Arquivo: 20260925_153353.jpg
+=======================================
+
+Status: IDENTIFIED  |  Confiança: 100%  |  Método: SET_NUMBER
+Layout: STANDARD  |  Tempo: 579 ms  |  Chamadas OCR: 1
+
+--- LIDO PELA CÂMARA (OCR) ---
+Nome: ZackFain
+Tipo: Legendary Creature-Human Sole
+Linha de info: U0045 FFVU FINEN 杉浦善夫/OSHIOSUGIURA
+Edição: FIN  |  Número: 0045
+
+--- CARTA OFICIAL (cards.db / Scryfall) ---
+Nome: Zack Fair
+Custo de mana: {W}
+Tipo: Legendary Creature — Human Soldier
+Identidade de cor: W
+Raridade: Uncommon
+Edição / número: FIN 45
+Scryfall id: f21f9161-5945-40da-8da0-446f6a4a1c23

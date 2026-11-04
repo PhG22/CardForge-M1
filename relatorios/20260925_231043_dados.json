@@ -1,0 +1,35 @@
+{
+  "status": "IDENTIFIED",
+  "card": {
+    "print_id": "c459f2ec-2aa3-44f6-999f-b1467dd4e27c",
+    "name": "Soldier",
+    "mana_cost": "",
+    "type_line": "Token Creature — Soldier",
+    "color_identity": "W",
+    "rarity": "common",
+    "set_code": "TFIC",
+    "collector_number": "2",
+    "layout": "token"
+  },
+  "method": "SET_NUMBER",
+  "confidence": 100,
+  "needs_review": false,
+  "layout": "TOKEN_FULL",
+  "ocr": {
+    "name": "SOLDIER",
+    "type": "Token Creature-Soldier",
+    "info_raw": "T0002 FFVII FIC·EN THANHTUAN",
+    "set_code": "FIC",
+    "collector_number": "0002"
+  },
+  "elapsed_ms": 1174,
+  "debug": {
+    "strategy": "CANNY_FILL",
+    "sharpness": 995.1,
+    "rotated180": false,
+    "title_score": 100,
+    "name_score": 100,
+    "ocr_calls": 3
+  },
+  "source": "input_cartas\\20260925_231043.jpg"
+}

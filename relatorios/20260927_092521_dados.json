@@ -1,0 +1,36 @@
+{
+  "status": "IDENTIFIED",
+  "card": {
+    "print_id": "e9211079-9499-4443-8cb9-4c2bb2849994",
+    "name": "Lita, Mechanical Engineer",
+    "mana_cost": "{2}{W}",
+    "type_line": "Legendary Artifact Creature — Artificer",
+    "color_identity": "W",
+    "rarity": "mythic",
+    "set_code": "TLE",
+    "collector_number": "4",
+    "layout": "normal"
+  },
+  "method": "SET_NUMBER",
+  "confidence": 100,
+  "needs_review": false,
+  "layout": "STANDARD",
+  "ocr": {
+    "name": "",
+    "type": "scnuaryArtifactCreature-A Vigilance",
+    "info_raw": "M0004 TLEENBI:WATERCHIZ",
+    "set_code": "TLE",
+    "collector_number": "0004"
+  },
+  "elapsed_ms": 281,
+  "debug": {
+    "strategy": "OTSU_DARK",
+    "sharpness": 236.9,
+    "rotated180": false,
+    "title_score": 0,
+    "name_score": 0,
+    "layout_ocr_skipped": true,
+    "ocr_calls": 1
+  },
+  "source": "input_cartas\\20260927_092521.jpg"
+}

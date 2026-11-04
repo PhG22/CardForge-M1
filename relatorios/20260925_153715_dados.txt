@@ -1,0 +1,22 @@
+=======================================
+RELATÓRIO DE IDENTIFICAÇÃO — CardForge-M1
+Arquivo: 20260925_153715.jpg
+=======================================
+
+Status: IDENTIFIED  |  Confiança: 100%  |  Método: SET_NUMBER
+Layout: STANDARD  |  Tempo: 379 ms  |  Chamadas OCR: 1
+
+--- LIDO PELA CÂMARA (OCR) ---
+Nome: Rootbound Crag
+Tipo: Land
+Linha de info: R0416 FIC AEN
+Edição: FIC  |  Número: 0416
+
+--- CARTA OFICIAL (cards.db / Scryfall) ---
+Nome: Rootbound Crag
+Custo de mana: -
+Tipo: Land
+Identidade de cor: RG
+Raridade: Rare
+Edição / número: FIC 416
+Scryfall id: 73a2e070-f375-4558-a982-01f6f4e902e9

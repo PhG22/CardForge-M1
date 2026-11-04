@@ -1,0 +1,28 @@
+{
+  "status": "LOW_CONFIDENCE",
+  "card": null,
+  "method": "NONE",
+  "confidence": 0,
+  "needs_review": false,
+  "layout": "STANDARD",
+  "ocr": {
+    "name": "narc Toda Alcar",
+    "type": "frer",
+    "info_raw": "",
+    "set_code": "N/A",
+    "collector_number": "UNKNOWN"
+  },
+  "elapsed_ms": 839,
+  "debug": {
+    "strategy": "CANNY",
+    "sharpness": 223.6,
+    "score_normal": 59,
+    "score_rotated": 0,
+    "info_rotated": false,
+    "rotated180": false,
+    "title_score": 59,
+    "name_score": 0,
+    "ocr_calls": 3
+  },
+  "source": "input_cartas\\20260927_092451.jpg"
+}

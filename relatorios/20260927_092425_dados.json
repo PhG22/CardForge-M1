@@ -1,0 +1,36 @@
+{
+  "status": "IDENTIFIED",
+  "card": {
+    "print_id": "c7f5c8ef-8e9e-4264-a7d2-126a30a5d341",
+    "name": "Lasyd Prowler",
+    "mana_cost": "{2}{G}{G}",
+    "type_line": "Creature — Snake Ranger",
+    "color_identity": "G",
+    "rarity": "rare",
+    "set_code": "TDM",
+    "collector_number": "149",
+    "layout": "normal"
+  },
+  "method": "SET_NUMBER",
+  "confidence": 100,
+  "needs_review": false,
+  "layout": "STANDARD",
+  "ocr": {
+    "name": "Lasyd Prowler",
+    "type": "Creature-Snake Ranger",
+    "info_raw": "R0149 TDM·EN ANNAPAVLEEVA",
+    "set_code": "TDM",
+    "collector_number": "0149"
+  },
+  "elapsed_ms": 465,
+  "debug": {
+    "strategy": "CANNY",
+    "sharpness": 698.3,
+    "rotated180": false,
+    "title_score": 100,
+    "name_score": 100,
+    "layout_ocr_skipped": true,
+    "ocr_calls": 1
+  },
+  "source": "input_cartas\\20260927_092425.jpg"
+}

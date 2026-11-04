@@ -1,0 +1,22 @@
+=======================================
+RELATÓRIO DE IDENTIFICAÇÃO — CardForge-M1
+Arquivo: 20260925_230815.jpg
+=======================================
+
+Status: IDENTIFIED  |  Confiança: 100%  |  Método: SET_NUMBER
+Layout: STANDARD  |  Tempo: 482 ms  |  Chamadas OCR: 1
+
+--- LIDO PELA CÂMARA (OCR) ---
+Nome: Forest
+Tipo: 
+Linha de info: L0306 FFIX FINEN ALAYNADANNER
+Edição: FIN  |  Número: 0306
+
+--- CARTA OFICIAL (cards.db / Scryfall) ---
+Nome: Forest
+Custo de mana: -
+Tipo: Basic Land — Forest
+Identidade de cor: G
+Raridade: Common
+Edição / número: FIN 306
+Scryfall id: be72862d-d71e-4b18-98a6-59019399f631

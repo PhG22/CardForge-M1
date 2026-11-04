@@ -1,0 +1,22 @@
+=======================================
+RELATÓRIO DE IDENTIFICAÇÃO — CardForge-M1
+Arquivo: 20260925_153246.jpg
+=======================================
+
+Status: IDENTIFIED  |  Confiança: 100%  |  Método: SET_NUMBER
+Layout: STANDARD  |  Tempo: 1033 ms  |  Chamadas OCR: 2
+
+--- LIDO PELA CÂMARA (OCR) ---
+Nome: BarretWallace
+Tipo: LegendaryCreature-Human Rel
+Linha de info: U:0129 FFVII FINENOPATRIK HELL
+Edição: FIN  |  Número: 0129
+
+--- CARTA OFICIAL (cards.db / Scryfall) ---
+Nome: Barret Wallace
+Custo de mana: {3}{R}
+Tipo: Legendary Creature — Human Rebel
+Identidade de cor: R
+Raridade: Uncommon
+Edição / número: FIN 129
+Scryfall id: 1a504dff-5857-4a61-ab99-616d5df7cf5a

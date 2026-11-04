@@ -1,0 +1,36 @@
+{
+  "status": "IDENTIFIED",
+  "card": {
+    "print_id": "bad8512f-31b9-48ba-bb10-1497303dcfba",
+    "name": "Prickly Marmoset",
+    "mana_cost": "{2}{R}",
+    "type_line": "Creature — Monkey",
+    "color_identity": "R",
+    "rarity": "common",
+    "set_code": "IKO",
+    "collector_number": "129",
+    "layout": "normal"
+  },
+  "method": "SET_NUMBER_LOCALIZED",
+  "confidence": 90,
+  "needs_review": false,
+  "layout": "STANDARD",
+  "ocr": {
+    "name": "Sagui Espinhoso",
+    "type": "Criatura-Macaco",
+    "info_raw": "129/274 IKOPT SIMONDOMINIC",
+    "set_code": "IKO",
+    "collector_number": "129"
+  },
+  "elapsed_ms": 507,
+  "debug": {
+    "strategy": "CANNY",
+    "sharpness": 507.6,
+    "rotated180": false,
+    "title_score": 67,
+    "name_score": 0,
+    "layout_ocr_skipped": true,
+    "ocr_calls": 1
+  },
+  "source": "input_cartas\\20260927_092415.jpg"
+}

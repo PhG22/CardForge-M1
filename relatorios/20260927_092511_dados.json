@@ -1,0 +1,36 @@
+{
+  "status": "IDENTIFIED",
+  "card": {
+    "print_id": "00bf269d-aca3-494c-8777-de90ae903af2",
+    "name": "Plains",
+    "mana_cost": "",
+    "type_line": "Basic Land — Plains",
+    "color_identity": "W",
+    "rarity": "common",
+    "set_code": "MOM",
+    "collector_number": "277",
+    "layout": "normal"
+  },
+  "method": "SET_NUMBER_LOCALIZED",
+  "confidence": 90,
+  "needs_review": false,
+  "layout": "STANDARD",
+  "ocr": {
+    "name": "Planicie",
+    "type": "Terreno Basico -Planicie",
+    "info_raw": "L0277 MOM★PTOSAMBURLEY",
+    "set_code": "MOM",
+    "collector_number": "0277"
+  },
+  "elapsed_ms": 446,
+  "debug": {
+    "strategy": "OTSU_DARK",
+    "sharpness": 626.1,
+    "rotated180": false,
+    "title_score": 77,
+    "name_score": 0,
+    "layout_ocr_skipped": true,
+    "ocr_calls": 1
+  },
+  "source": "input_cartas\\20260927_092511.jpg"
+}

@@ -1,0 +1,16 @@
+=======================================
+RELATÓRIO DE IDENTIFICAÇÃO — CardForge-M1
+Arquivo: 20260925_153644.jpg
+=======================================
+
+Status: CROP_FAILED  |  Confiança: 0%  |  Método: N/A
+Layout: N/A  |  Tempo: 110 ms  |  Chamadas OCR: 0
+
+--- LIDO PELA CÂMARA (OCR) ---
+Nome: N/A
+Tipo: N/A
+Linha de info: N/A
+Edição: N/A  |  Número: N/A
+
+--- CARTA OFICIAL (cards.db / Scryfall) ---
+Nenhuma carta correspondente.

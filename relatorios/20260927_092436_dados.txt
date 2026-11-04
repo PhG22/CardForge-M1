@@ -1,0 +1,22 @@
+=======================================
+RELATÓRIO DE IDENTIFICAÇÃO — CardForge-M1
+Arquivo: 20260927_092436.jpg
+=======================================
+
+Status: IDENTIFIED  |  Confiança: 90%  |  Método: SET_NUMBER_LOCALIZED
+Layout: STANDARD  |  Tempo: 767 ms  |  Chamadas OCR: 2
+
+--- LIDO PELA CÂMARA (OCR) ---
+Nome: Aranha-violino do Lumino
+Tipo: CriaturaAranha
+Linha de info: 156/274U JKOPT KYIONG-HAO HAN
+Edição: IKO  |  Número: 156
+
+--- CARTA OFICIAL (cards.db / Scryfall) ---
+Nome: Glowstone Recluse
+Custo de mana: {2}{G}
+Tipo: Creature — Spider
+Identidade de cor: G
+Raridade: Uncommon
+Edição / número: IKO 156
+Scryfall id: 06a9698d-400c-4c31-82cd-28d0897fe28c

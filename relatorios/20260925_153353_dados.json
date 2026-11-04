@@ -1,0 +1,36 @@
+{
+  "status": "IDENTIFIED",
+  "card": {
+    "print_id": "f21f9161-5945-40da-8da0-446f6a4a1c23",
+    "name": "Zack Fair",
+    "mana_cost": "{W}",
+    "type_line": "Legendary Creature — Human Soldier",
+    "color_identity": "W",
+    "rarity": "uncommon",
+    "set_code": "FIN",
+    "collector_number": "45",
+    "layout": "normal"
+  },
+  "method": "SET_NUMBER",
+  "confidence": 100,
+  "needs_review": false,
+  "layout": "STANDARD",
+  "ocr": {
+    "name": "ZackFain",
+    "type": "Legendary Creature-Human Sole",
+    "info_raw": "U0045 FFVU FINEN 杉浦善夫/OSHIOSUGIURA",
+    "set_code": "FIN",
+    "collector_number": "0045"
+  },
+  "elapsed_ms": 579,
+  "debug": {
+    "strategy": "CANNY",
+    "sharpness": 671.7,
+    "rotated180": false,
+    "title_score": 88,
+    "name_score": 88,
+    "layout_ocr_skipped": true,
+    "ocr_calls": 1
+  },
+  "source": "input_cartas\\20260925_153353.jpg"
+}

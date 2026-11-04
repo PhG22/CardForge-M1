@@ -1,0 +1,36 @@
+{
+  "status": "IDENTIFIED",
+  "card": {
+    "print_id": "1fed38d0-c32c-440c-9d99-ca3b48a34791",
+    "name": "Secret Rendezvous",
+    "mana_cost": "{1}{W}{W}",
+    "type_line": "Sorcery",
+    "color_identity": "W",
+    "rarity": "uncommon",
+    "set_code": "FIC",
+    "collector_number": "219",
+    "layout": "normal"
+  },
+  "method": "NAME_EXACT",
+  "confidence": 100,
+  "needs_review": false,
+  "layout": "STANDARD",
+  "ocr": {
+    "name": "Secret Rendezvous",
+    "type": "Sorcery",
+    "info_raw": "FIC·EN藤木幼/YUUFUKA",
+    "set_code": "FIC",
+    "collector_number": "UNKNOWN"
+  },
+  "elapsed_ms": 376,
+  "debug": {
+    "strategy": "OTSU_DARK",
+    "sharpness": 663.5,
+    "rotated180": false,
+    "title_score": 100,
+    "name_score": 100,
+    "layout_ocr_skipped": true,
+    "ocr_calls": 1
+  },
+  "source": "input_cartas\\20260925_153422.jpg"
+}

@@ -1,0 +1,22 @@
+=======================================
+RELATÓRIO DE IDENTIFICAÇÃO — CardForge-M1
+Arquivo: 20260925_230944.jpg
+=======================================
+
+Status: IDENTIFIED  |  Confiança: 100%  |  Método: SET_NUMBER
+Layout: TOKEN_FULL  |  Tempo: 1126 ms  |  Chamadas OCR: 3
+
+--- LIDO PELA CÂMARA (OCR) ---
+Nome: REBEL
+Tipo: Token Creature-Rebel
+Linha de info: T0007 FFVII FIC·EN ANTHONY DEVINE
+Edição: FIC  |  Número: 0007
+
+--- CARTA OFICIAL (cards.db / Scryfall) ---
+Nome: Rebel
+Custo de mana: -
+Tipo: Token Creature — Rebel
+Identidade de cor: R
+Raridade: Common
+Edição / número: TFIC 7
+Scryfall id: 6afbbdad-aeed-428a-b840-c33f59a18d0b

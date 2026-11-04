@@ -1,0 +1,22 @@
+=======================================
+RELATÓRIO DE IDENTIFICAÇÃO — CardForge-M1
+Arquivo: 20260925_152937.jpg
+=======================================
+
+Status: IDENTIFIED  |  Confiança: 100%  |  Método: SET_NUMBER
+Layout: TOKEN_CLASSIC  |  Tempo: 1760 ms  |  Chamadas OCR: 3
+
+--- LIDO PELA CÂMARA (OCR) ---
+Nome: TREASURE
+Tipo: TokenArtifact-Treasure
+Linha de info: T0023 FFI FINEN LEONARDO SANTANNA
+Edição: FIN  |  Número: 0023
+
+--- CARTA OFICIAL (cards.db / Scryfall) ---
+Nome: Treasure
+Custo de mana: -
+Tipo: Token Artifact — Treasure
+Identidade de cor: Incolor
+Raridade: Common
+Edição / número: TFIN 23
+Scryfall id: ab0cda01-10b5-4a1b-b2bb-ad8bb296590f

@@ -1,0 +1,22 @@
+=======================================
+RELATÓRIO DE IDENTIFICAÇÃO — CardForge-M1
+Arquivo: 20260927_092415.jpg
+=======================================
+
+Status: IDENTIFIED  |  Confiança: 90%  |  Método: SET_NUMBER_LOCALIZED
+Layout: STANDARD  |  Tempo: 507 ms  |  Chamadas OCR: 1
+
+--- LIDO PELA CÂMARA (OCR) ---
+Nome: Sagui Espinhoso
+Tipo: Criatura-Macaco
+Linha de info: 129/274 IKOPT SIMONDOMINIC
+Edição: IKO  |  Número: 129
+
+--- CARTA OFICIAL (cards.db / Scryfall) ---
+Nome: Prickly Marmoset
+Custo de mana: {2}{R}
+Tipo: Creature — Monkey
+Identidade de cor: R
+Raridade: Common
+Edição / número: IKO 129
+Scryfall id: bad8512f-31b9-48ba-bb10-1497303dcfba

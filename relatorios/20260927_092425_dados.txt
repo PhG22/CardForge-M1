@@ -1,0 +1,22 @@
+=======================================
+RELATÓRIO DE IDENTIFICAÇÃO — CardForge-M1
+Arquivo: 20260927_092425.jpg
+=======================================
+
+Status: IDENTIFIED  |  Confiança: 100%  |  Método: SET_NUMBER
+Layout: STANDARD  |  Tempo: 465 ms  |  Chamadas OCR: 1
+
+--- LIDO PELA CÂMARA (OCR) ---
+Nome: Lasyd Prowler
+Tipo: Creature-Snake Ranger
+Linha de info: R0149 TDM·EN ANNAPAVLEEVA
+Edição: TDM  |  Número: 0149
+
+--- CARTA OFICIAL (cards.db / Scryfall) ---
+Nome: Lasyd Prowler
+Custo de mana: {2}{G}{G}
+Tipo: Creature — Snake Ranger
+Identidade de cor: G
+Raridade: Rare
+Edição / número: TDM 149
+Scryfall id: c7f5c8ef-8e9e-4264-a7d2-126a30a5d341

@@ -1,0 +1,22 @@
+=======================================
+RELATÓRIO DE IDENTIFICAÇÃO — CardForge-M1
+Arquivo: 20260927_092447.jpg
+=======================================
+
+Status: IDENTIFIED  |  Confiança: 100%  |  Método: NAME_EXACT
+Layout: STANDARD  |  Tempo: 710 ms  |  Chamadas OCR: 2
+
+--- LIDO PELA CÂMARA (OCR) ---
+Nome: Sakura-TribeElder
+Tipo: 
+Linha de info: P0001 Promo PRM★EN VICTORADAMEMINGUEZ
+Edição: PRM  |  Número: 0001
+
+--- CARTA OFICIAL (cards.db / Scryfall) ---
+Nome: Sakura-Tribe Elder
+Custo de mana: {1}{G}
+Tipo: Creature — Snake Shaman
+Identidade de cor: G
+Raridade: Common
+Edição / número: SOC 285
+Scryfall id: 7a8b1c49-8594-426d-b585-41140235bb0e

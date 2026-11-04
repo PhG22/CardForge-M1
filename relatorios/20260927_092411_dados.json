@@ -1,0 +1,35 @@
+{
+  "status": "LOW_CONFIDENCE",
+  "card": {
+    "print_id": "3db7d906-1794-40eb-9d73-1f2a4db3a13f",
+    "name": "Cloudpiercer",
+    "mana_cost": "{4}{R}",
+    "type_line": "Creature — Dinosaur",
+    "color_identity": "R",
+    "rarity": "common",
+    "set_code": "IKO",
+    "collector_number": "291",
+    "layout": "mutate"
+  },
+  "method": "SET_NUMBER_NAME_MISMATCH",
+  "confidence": 89,
+  "needs_review": true,
+  "layout": "STANDARD",
+  "ocr": {
+    "name": "Furanuvem",
+    "type": "",
+    "info_raw": "291 IKO·PT STEVEELLIS",
+    "set_code": "IKO",
+    "collector_number": "291"
+  },
+  "elapsed_ms": 930,
+  "debug": {
+    "strategy": "CANNY",
+    "sharpness": 551.3,
+    "rotated180": false,
+    "title_score": 62,
+    "name_score": 0,
+    "ocr_calls": 2
+  },
+  "source": "input_cartas\\20260927_092411.jpg"
+}

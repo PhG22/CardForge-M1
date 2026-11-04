@@ -1,0 +1,36 @@
+{
+  "status": "IDENTIFIED",
+  "card": {
+    "print_id": "47c2b572-b54a-444c-8d74-b005e94d751f",
+    "name": "Exotic Orchard",
+    "mana_cost": "",
+    "type_line": "Land",
+    "color_identity": "",
+    "rarity": "rare",
+    "set_code": "FIC",
+    "collector_number": "390",
+    "layout": "normal"
+  },
+  "method": "SET_NUMBER",
+  "confidence": 100,
+  "needs_review": false,
+  "layout": "STANDARD",
+  "ocr": {
+    "name": "ExoticOrchard",
+    "type": "Land",
+    "info_raw": "R0390 FFX FICIEN DAYID FRASHESKI",
+    "set_code": "FIC",
+    "collector_number": "0390"
+  },
+  "elapsed_ms": 482,
+  "debug": {
+    "strategy": "OTSU_DARK",
+    "sharpness": 320.2,
+    "rotated180": false,
+    "title_score": 100,
+    "name_score": 100,
+    "layout_ocr_skipped": true,
+    "ocr_calls": 1
+  },
+  "source": "input_cartas\\20260925_153542.jpg"
+}

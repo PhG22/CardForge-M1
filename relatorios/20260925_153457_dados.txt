@@ -1,0 +1,22 @@
+=======================================
+RELATÓRIO DE IDENTIFICAÇÃO — CardForge-M1
+Arquivo: 20260925_153457.jpg
+=======================================
+
+Status: IDENTIFIED  |  Confiança: 90%  |  Método: SET_NUMBER_LOCALIZED
+Layout: STANDARD  |  Tempo: 544 ms  |  Chamadas OCR: 1
+
+--- LIDO PELA CÂMARA (OCR) ---
+Nome: Lamina Negra Reforjada
+Tipo: Artefato Lendario-Equipamento
+Linha de info: 178 DMC·PT WCHRISRAHN
+Edição: DMC  |  Número: 178
+
+--- CARTA OFICIAL (cards.db / Scryfall) ---
+Nome: Blackblade Reforged
+Custo de mana: {2}
+Tipo: Legendary Artifact — Equipment
+Identidade de cor: Incolor
+Raridade: Rare
+Edição / número: DMC 178
+Scryfall id: 240448cd-c308-49ae-9e4b-0c35adc59fba

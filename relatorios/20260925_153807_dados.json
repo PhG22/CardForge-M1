@@ -1,0 +1,36 @@
+{
+  "status": "IDENTIFIED",
+  "card": {
+    "print_id": "d09a77e7-649c-4f2c-bcd3-0598271e9373",
+    "name": "Secret Rendezvous",
+    "mana_cost": "{1}{W}{W}",
+    "type_line": "Sorcery",
+    "color_identity": "W",
+    "rarity": "uncommon",
+    "set_code": "FIC",
+    "collector_number": "253",
+    "layout": "normal"
+  },
+  "method": "SET_NUMBER",
+  "confidence": 100,
+  "needs_review": false,
+  "layout": "STANDARD",
+  "ocr": {
+    "name": "Secret Rendezvous",
+    "type": "Sorcery",
+    "info_raw": "U0253 FFVII FIC·EN 藤木/YUFkI",
+    "set_code": "FIC",
+    "collector_number": "0253"
+  },
+  "elapsed_ms": 525,
+  "debug": {
+    "strategy": "CANNY",
+    "sharpness": 557.5,
+    "rotated180": false,
+    "title_score": 100,
+    "name_score": 100,
+    "layout_ocr_skipped": true,
+    "ocr_calls": 1
+  },
+  "source": "input_cartas\\20260925_153807.jpg"
+}

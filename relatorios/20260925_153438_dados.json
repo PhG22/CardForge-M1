@@ -1,0 +1,21 @@
+{
+  "status": "CROP_FAILED",
+  "card": null,
+  "method": null,
+  "confidence": 0,
+  "needs_review": false,
+  "layout": null,
+  "ocr": {
+    "name": "",
+    "type": "",
+    "info_raw": "",
+    "set_code": null,
+    "collector_number": null
+  },
+  "elapsed_ms": 87,
+  "debug": {
+    "sharpness": 808.3,
+    "ocr_calls": 0
+  },
+  "source": "input_cartas\\20260925_153438.jpg"
+}

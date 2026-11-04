@@ -1,0 +1,39 @@
+{
+  "status": "IDENTIFIED",
+  "card": {
+    "print_id": "06a9698d-400c-4c31-82cd-28d0897fe28c",
+    "name": "Glowstone Recluse",
+    "mana_cost": "{2}{G}",
+    "type_line": "Creature — Spider",
+    "color_identity": "G",
+    "rarity": "uncommon",
+    "set_code": "IKO",
+    "collector_number": "156",
+    "layout": "mutate"
+  },
+  "method": "SET_NUMBER_LOCALIZED",
+  "confidence": 90,
+  "needs_review": false,
+  "layout": "STANDARD",
+  "ocr": {
+    "name": "Aranha-violino do Lumino",
+    "type": "CriaturaAranha",
+    "info_raw": "156/274U JKOPT KYIONG-HAO HAN",
+    "set_code": "IKO",
+    "collector_number": "156"
+  },
+  "elapsed_ms": 767,
+  "debug": {
+    "strategy": "CANNY",
+    "sharpness": 591.0,
+    "score_normal": 58,
+    "score_rotated": 0,
+    "info_rotated": false,
+    "rotated180": false,
+    "title_score": 58,
+    "name_score": 0,
+    "layout_ocr_skipped": true,
+    "ocr_calls": 2
+  },
+  "source": "input_cartas\\20260927_092436.jpg"
+}

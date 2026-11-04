@@ -1,0 +1,36 @@
+{
+  "status": "IDENTIFIED",
+  "card": {
+    "print_id": "0ed04a28-2984-4fa6-a11e-f508b7b5446e",
+    "name": "Bastion Protector",
+    "mana_cost": "{2}{W}",
+    "type_line": "Creature — Human Soldier",
+    "color_identity": "W",
+    "rarity": "rare",
+    "set_code": "FIC",
+    "collector_number": "233",
+    "layout": "normal"
+  },
+  "method": "SET_NUMBER",
+  "confidence": 100,
+  "needs_review": false,
+  "layout": "STANDARD",
+  "ocr": {
+    "name": "Bastion Protector",
+    "type": "Creature-Human Soldier",
+    "info_raw": "R0233 FFVII FICEN WIGNATIUSBUDI",
+    "set_code": "FIC",
+    "collector_number": "0233"
+  },
+  "elapsed_ms": 502,
+  "debug": {
+    "strategy": "OTSU_DARK",
+    "sharpness": 1976.1,
+    "rotated180": false,
+    "title_score": 100,
+    "name_score": 100,
+    "layout_ocr_skipped": true,
+    "ocr_calls": 1
+  },
+  "source": "input_cartas\\20260925_153044.jpg"
+}

@@ -1,0 +1,36 @@
+{
+  "status": "IDENTIFIED",
+  "card": {
+    "print_id": "c1c2a41c-e974-4c14-8d01-d278ecdb31bc",
+    "name": "Forest",
+    "mana_cost": "",
+    "type_line": "Basic Land — Forest",
+    "color_identity": "G",
+    "rarity": "common",
+    "set_code": "BRO",
+    "collector_number": "287",
+    "layout": "normal"
+  },
+  "method": "SET_NUMBER",
+  "confidence": 100,
+  "needs_review": false,
+  "layout": "STANDARD",
+  "ocr": {
+    "name": "Floresta",
+    "type": "",
+    "info_raw": "287/287L BRO'PT PIOTR DURA",
+    "set_code": "BRO",
+    "collector_number": "287"
+  },
+  "elapsed_ms": 377,
+  "debug": {
+    "strategy": "OTSU_DARK",
+    "sharpness": 969.9,
+    "rotated180": false,
+    "title_score": 86,
+    "name_score": 86,
+    "layout_ocr_skipped": true,
+    "ocr_calls": 1
+  },
+  "source": "input_cartas\\20260927_092449.jpg"
+}

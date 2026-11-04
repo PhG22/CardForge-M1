@@ -1,0 +1,36 @@
+{
+  "status": "IDENTIFIED",
+  "card": {
+    "print_id": "809276a9-4804-422f-abb0-ba302f329e6e",
+    "name": "Ultimate Magic: Meteor",
+    "mana_cost": "{5}{R}",
+    "type_line": "Sorcery",
+    "color_identity": "R",
+    "rarity": "rare",
+    "set_code": "FIC",
+    "collector_number": "121",
+    "layout": "normal"
+  },
+  "method": "SET_NUMBER",
+  "confidence": 100,
+  "needs_review": false,
+  "layout": "STANDARD",
+  "ocr": {
+    "name": "Ultimate Magic:Meteor",
+    "type": "Sorcery",
+    "info_raw": "RO121 FFVII FICENASHLEYMACKENZIE",
+    "set_code": "FIC",
+    "collector_number": "121"
+  },
+  "elapsed_ms": 570,
+  "debug": {
+    "strategy": "OTSU_DARK_OPEN",
+    "sharpness": 1303.9,
+    "rotated180": false,
+    "title_score": 100,
+    "name_score": 100,
+    "layout_ocr_skipped": true,
+    "ocr_calls": 1
+  },
+  "source": "input_cartas\\20260925_230748.jpg"
+}

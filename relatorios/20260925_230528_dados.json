@@ -1,0 +1,36 @@
+{
+  "status": "IDENTIFIED",
+  "card": {
+    "print_id": "31513afc-329c-4913-8fcd-945c39ec82b2",
+    "name": "Tifa, Martial Artist",
+    "mana_cost": "{1}{R}{G}{W}",
+    "type_line": "Legendary Creature — Human Monk",
+    "color_identity": "WRG",
+    "rarity": "mythic",
+    "set_code": "FIC",
+    "collector_number": "6",
+    "layout": "normal"
+  },
+  "method": "SET_NUMBER",
+  "confidence": 100,
+  "needs_review": false,
+  "layout": "STANDARD",
+  "ocr": {
+    "name": "Tifa,MartialArtist",
+    "type": "Legendary Creature -Human Mon",
+    "info_raw": "M0006 FFVII FIC★EN DYUMIYAOSHIDA",
+    "set_code": "FIC",
+    "collector_number": "0006"
+  },
+  "elapsed_ms": 633,
+  "debug": {
+    "strategy": "OTSU_DARK",
+    "sharpness": 1686.4,
+    "rotated180": false,
+    "title_score": 100,
+    "name_score": 100,
+    "layout_ocr_skipped": true,
+    "ocr_calls": 1
+  },
+  "source": "input_cartas\\20260925_230528.jpg"
+}

@@ -1,0 +1,16 @@
+=======================================
+RELATÓRIO DE IDENTIFICAÇÃO — CardForge-M1
+Arquivo: 20260927_092451.jpg
+=======================================
+
+Status: LOW_CONFIDENCE  |  Confiança: 0%  |  Método: NONE
+Layout: STANDARD  |  Tempo: 839 ms  |  Chamadas OCR: 3
+
+--- LIDO PELA CÂMARA (OCR) ---
+Nome: narc Toda Alcar
+Tipo: frer
+Linha de info: 
+Edição: N/A  |  Número: UNKNOWN
+
+--- CARTA OFICIAL (cards.db / Scryfall) ---
+Nenhuma carta correspondente.

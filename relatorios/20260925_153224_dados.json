@@ -1,0 +1,39 @@
+{
+  "status": "IDENTIFIED",
+  "card": {
+    "print_id": "a4e3f65d-8d73-4fd1-9de4-813ba6e40940",
+    "name": "Scavenger Grounds",
+    "mana_cost": "",
+    "type_line": "Land — Desert",
+    "color_identity": "",
+    "rarity": "rare",
+    "set_code": "FIC",
+    "collector_number": "419",
+    "layout": "normal"
+  },
+  "method": "SET_NUMBER",
+  "confidence": 100,
+  "needs_review": false,
+  "layout": "STANDARD",
+  "ocr": {
+    "name": "ScavengerGrounds",
+    "type": "Desert",
+    "info_raw": "R.0419 FFXIV FICEN SALVATORREZEEYAZZIE",
+    "set_code": "FIC",
+    "collector_number": "0419"
+  },
+  "elapsed_ms": 999,
+  "debug": {
+    "strategy": "CANNY",
+    "sharpness": 431.1,
+    "score_normal": 0,
+    "score_rotated": 100,
+    "info_rotated": true,
+    "rotated180": true,
+    "title_score": 100,
+    "name_score": 100,
+    "layout_ocr_skipped": true,
+    "ocr_calls": 2
+  },
+  "source": "input_cartas\\20260925_153224.jpg"
+}

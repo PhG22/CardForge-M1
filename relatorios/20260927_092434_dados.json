@@ -1,0 +1,36 @@
+{
+  "status": "IDENTIFIED",
+  "card": {
+    "print_id": "7a8b1c49-8594-426d-b585-41140235bb0e",
+    "name": "Sakura-Tribe Elder",
+    "mana_cost": "{1}{G}",
+    "type_line": "Creature — Snake Shaman",
+    "color_identity": "G",
+    "rarity": "common",
+    "set_code": "SOC",
+    "collector_number": "285",
+    "layout": "normal"
+  },
+  "method": "NAME_EXACT",
+  "confidence": 100,
+  "needs_review": false,
+  "layout": "STANDARD",
+  "ocr": {
+    "name": "Sakura-Tribe Elder",
+    "type": "",
+    "info_raw": "P oooi Promo PRMEN VICTORADAMEMINGUEZ",
+    "set_code": "PRM",
+    "collector_number": "UNKNOWN"
+  },
+  "elapsed_ms": 473,
+  "debug": {
+    "strategy": "CANNY",
+    "sharpness": 412.5,
+    "rotated180": false,
+    "title_score": 100,
+    "name_score": 100,
+    "layout_ocr_skipped": true,
+    "ocr_calls": 1
+  },
+  "source": "input_cartas\\20260927_092434.jpg"
+}

@@ -1,0 +1,35 @@
+{
+  "status": "IDENTIFIED",
+  "card": {
+    "print_id": "6afbbdad-aeed-428a-b840-c33f59a18d0b",
+    "name": "Rebel",
+    "mana_cost": "",
+    "type_line": "Token Creature — Rebel",
+    "color_identity": "R",
+    "rarity": "common",
+    "set_code": "TFIC",
+    "collector_number": "7",
+    "layout": "token"
+  },
+  "method": "SET_NUMBER",
+  "confidence": 100,
+  "needs_review": false,
+  "layout": "TOKEN_FULL",
+  "ocr": {
+    "name": "REBEL",
+    "type": "Token Creature-Rebel",
+    "info_raw": "T 0007 FFVII FIC·EN ANTHONY DEVINE",
+    "set_code": "FIC",
+    "collector_number": "0007"
+  },
+  "elapsed_ms": 1101,
+  "debug": {
+    "strategy": "CANNY_FILL",
+    "sharpness": 525.2,
+    "rotated180": false,
+    "title_score": 100,
+    "name_score": 100,
+    "ocr_calls": 3
+  },
+  "source": "input_cartas\\20260925_230956.jpg"
+}

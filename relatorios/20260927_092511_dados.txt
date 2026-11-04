@@ -1,0 +1,22 @@
+=======================================
+RELATÓRIO DE IDENTIFICAÇÃO — CardForge-M1
+Arquivo: 20260927_092511.jpg
+=======================================
+
+Status: IDENTIFIED  |  Confiança: 90%  |  Método: SET_NUMBER_LOCALIZED
+Layout: STANDARD  |  Tempo: 446 ms  |  Chamadas OCR: 1
+
+--- LIDO PELA CÂMARA (OCR) ---
+Nome: Planicie
+Tipo: Terreno Basico -Planicie
+Linha de info: L0277 MOM★PTOSAMBURLEY
+Edição: MOM  |  Número: 0277
+
+--- CARTA OFICIAL (cards.db / Scryfall) ---
+Nome: Plains
+Custo de mana: -
+Tipo: Basic Land — Plains
+Identidade de cor: W
+Raridade: Common
+Edição / número: MOM 277
+Scryfall id: 00bf269d-aca3-494c-8777-de90ae903af2

@@ -1,0 +1,36 @@
+{
+  "status": "IDENTIFIED",
+  "card": {
+    "print_id": "df919eb8-9eff-4777-9c46-94c795cda918",
+    "name": "Sephiroth, Fallen Hero",
+    "mana_cost": "{3}{R}{W}",
+    "type_line": "Legendary Creature — Human Avatar Soldier",
+    "color_identity": "WR",
+    "rarity": "rare",
+    "set_code": "FIC",
+    "collector_number": "92",
+    "layout": "normal"
+  },
+  "method": "SET_NUMBER",
+  "confidence": 100,
+  "needs_review": false,
+  "layout": "STANDARD",
+  "ocr": {
+    "name": "Sephiroth,FallenHero",
+    "type": "Legendary Creature -Human Avatar So",
+    "info_raw": "R0092 FFVII FIC·EN W一德/ITTOKU",
+    "set_code": "FIC",
+    "collector_number": "0092"
+  },
+  "elapsed_ms": 648,
+  "debug": {
+    "strategy": "OTSU_DARK",
+    "sharpness": 2040.6,
+    "rotated180": false,
+    "title_score": 100,
+    "name_score": 100,
+    "layout_ocr_skipped": true,
+    "ocr_calls": 1
+  },
+  "source": "input_cartas\\20260925_152524.jpg"
+}

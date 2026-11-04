@@ -1,0 +1,22 @@
+=======================================
+RELATÓRIO DE IDENTIFICAÇÃO — CardForge-M1
+Arquivo: 20260925_153311.jpg
+=======================================
+
+Status: IDENTIFIED  |  Confiança: 100%  |  Método: NAME_EXACT
+Layout: STANDARD  |  Tempo: 949 ms  |  Chamadas OCR: 2
+
+--- LIDO PELA CÂMARA (OCR) ---
+Nome: Chaos Warp
+Tipo: Instant
+Linha de info: 001/002 PPromo PRM*ENK NOLKANBAGA
+Edição: PRM  |  Número: 001
+
+--- CARTA OFICIAL (cards.db / Scryfall) ---
+Nome: Chaos Warp
+Custo de mana: {2}{R}
+Tipo: Instant
+Identidade de cor: R
+Raridade: Rare
+Edição / número: MBC 72
+Scryfall id: fb8d8106-b9bd-405c-886e-72fc301c65e1

@@ -1,0 +1,36 @@
+{
+  "status": "IDENTIFIED",
+  "card": {
+    "print_id": "244c06b3-532d-426e-8bee-ee9461d092a6",
+    "name": "Echoing Deeps",
+    "mana_cost": "",
+    "type_line": "Land — Cave",
+    "color_identity": "",
+    "rarity": "rare",
+    "set_code": "LCI",
+    "collector_number": "271",
+    "layout": "normal"
+  },
+  "method": "SET_NUMBER_LOCALIZED",
+  "confidence": 90,
+  "needs_review": false,
+  "layout": "STANDARD",
+  "ocr": {
+    "name": "ProfundezasEcoantes",
+    "type": "Terreno-Caverna",
+    "info_raw": "R0271 LCI★PT MAURICIOCALLE",
+    "set_code": "LCI",
+    "collector_number": "0271"
+  },
+  "elapsed_ms": 467,
+  "debug": {
+    "strategy": "CANNY_FILL",
+    "sharpness": 430.0,
+    "rotated180": false,
+    "title_score": 62,
+    "name_score": 0,
+    "layout_ocr_skipped": true,
+    "ocr_calls": 1
+  },
+  "source": "input_cartas\\20260927_092518.jpg"
+}

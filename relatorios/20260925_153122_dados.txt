@@ -1,0 +1,22 @@
+=======================================
+RELATÓRIO DE IDENTIFICAÇÃO — CardForge-M1
+Arquivo: 20260925_153122.jpg
+=======================================
+
+Status: IDENTIFIED  |  Confiança: 100%  |  Método: SET_NUMBER
+Layout: STANDARD  |  Tempo: 542 ms  |  Chamadas OCR: 1
+
+--- LIDO PELA CÂMARA (OCR) ---
+Nome: Harmonize
+Tipo: Sorcery
+Linha de info: U0308 FFVII FICEN MAGALI VILLENEUVE
+Edição: FIC  |  Número: 0308
+
+--- CARTA OFICIAL (cards.db / Scryfall) ---
+Nome: Harmonize
+Custo de mana: {2}{G}{G}
+Tipo: Sorcery
+Identidade de cor: G
+Raridade: Uncommon
+Edição / número: FIC 308
+Scryfall id: 978410dd-aace-4a70-8028-6dd11c14156e

@@ -1,0 +1,22 @@
+=======================================
+RELATÓRIO DE IDENTIFICAÇÃO — CardForge-M1
+Arquivo: 20260927_092458.jpg
+=======================================
+
+Status: LOW_CONFIDENCE  |  Confiança: 89%  |  Método: SET_NUMBER_NAME_MISMATCH  |  REVISAR
+Layout: STANDARD  |  Tempo: 982 ms  |  Chamadas OCR: 2
+
+--- LIDO PELA CÂMARA (OCR) ---
+Nome: Furanuvem
+Tipo: 
+Linha de info: 291 IKO·PT OSTEVEELLIS
+Edição: IKO  |  Número: 291
+
+--- CARTA OFICIAL (cards.db / Scryfall) ---
+Nome: Cloudpiercer
+Custo de mana: {4}{R}
+Tipo: Creature — Dinosaur
+Identidade de cor: R
+Raridade: Common
+Edição / número: IKO 291
+Scryfall id: 3db7d906-1794-40eb-9d73-1f2a4db3a13f

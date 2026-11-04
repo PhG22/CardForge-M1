@@ -1,0 +1,36 @@
+{
+  "status": "IDENTIFIED",
+  "card": {
+    "print_id": "978410dd-aace-4a70-8028-6dd11c14156e",
+    "name": "Harmonize",
+    "mana_cost": "{2}{G}{G}",
+    "type_line": "Sorcery",
+    "color_identity": "G",
+    "rarity": "uncommon",
+    "set_code": "FIC",
+    "collector_number": "308",
+    "layout": "normal"
+  },
+  "method": "SET_NUMBER",
+  "confidence": 100,
+  "needs_review": false,
+  "layout": "STANDARD",
+  "ocr": {
+    "name": "Harmonize",
+    "type": "Sorcery",
+    "info_raw": "U0308 FFVII FICEN MAGALI VILLENEUVE",
+    "set_code": "FIC",
+    "collector_number": "0308"
+  },
+  "elapsed_ms": 542,
+  "debug": {
+    "strategy": "OTSU_DARK",
+    "sharpness": 2186.5,
+    "rotated180": false,
+    "title_score": 100,
+    "name_score": 100,
+    "layout_ocr_skipped": true,
+    "ocr_calls": 1
+  },
+  "source": "input_cartas\\20260925_153122.jpg"
+}

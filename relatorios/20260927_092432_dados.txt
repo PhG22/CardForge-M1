@@ -1,0 +1,22 @@
+=======================================
+RELATÓRIO DE IDENTIFICAÇÃO — CardForge-M1
+Arquivo: 20260927_092432.jpg
+=======================================
+
+Status: IDENTIFIED  |  Confiança: 100%  |  Método: SET_NUMBER
+Layout: STANDARD  |  Tempo: 369 ms  |  Chamadas OCR: 1
+
+--- LIDO PELA CÂMARA (OCR) ---
+Nome: Floresta
+Tipo: 
+Linha de info: 287/287L BRO.PTPIOTRDUBA
+Edição: BRO  |  Número: 287
+
+--- CARTA OFICIAL (cards.db / Scryfall) ---
+Nome: Forest
+Custo de mana: -
+Tipo: Basic Land — Forest
+Identidade de cor: G
+Raridade: Common
+Edição / número: BRO 287
+Scryfall id: c1c2a41c-e974-4c14-8d01-d278ecdb31bc

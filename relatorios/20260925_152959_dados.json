@@ -1,0 +1,36 @@
+{
+  "status": "IDENTIFIED",
+  "card": {
+    "print_id": "1c1fda5d-f519-4b27-9fc6-1a617d0fc79b",
+    "name": "Commander's Sphere",
+    "mana_cost": "{3}",
+    "type_line": "Artifact",
+    "color_identity": "",
+    "rarity": "common",
+    "set_code": "C21",
+    "collector_number": "239",
+    "layout": "normal"
+  },
+  "method": "SET_NUMBER_LOCALIZED",
+  "confidence": 90,
+  "needs_review": false,
+  "layout": "STANDARD",
+  "ocr": {
+    "name": "Esfera do Comandante",
+    "type": "Artefato",
+    "info_raw": "239 C21·PT RYANALEXANDERLEE",
+    "set_code": "C21",
+    "collector_number": "239"
+  },
+  "elapsed_ms": 498,
+  "debug": {
+    "strategy": "CANNY",
+    "sharpness": 1629.6,
+    "rotated180": false,
+    "title_score": 65,
+    "name_score": 0,
+    "layout_ocr_skipped": true,
+    "ocr_calls": 1
+  },
+  "source": "input_cartas\\20260925_152959.jpg"
+}

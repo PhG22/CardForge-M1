@@ -1,0 +1,22 @@
+=======================================
+RELATÓRIO DE IDENTIFICAÇÃO — CardForge-M1
+Arquivo: 20260927_092417.jpg
+=======================================
+
+Status: IDENTIFIED  |  Confiança: 90%  |  Método: SET_NUMBER_LOCALIZED
+Layout: STANDARD  |  Tempo: 466 ms  |  Chamadas OCR: 1
+
+--- LIDO PELA CÂMARA (OCR) ---
+Nome: Profundezas Ecoantes
+Tipo: Terreno-Caverna
+Linha de info: R0271 LCI*PT OMAURICIOCALLE
+Edição: LCI  |  Número: 0271
+
+--- CARTA OFICIAL (cards.db / Scryfall) ---
+Nome: Echoing Deeps
+Custo de mana: -
+Tipo: Land — Cave
+Identidade de cor: Incolor
+Raridade: Rare
+Edição / número: LCI 271
+Scryfall id: 244c06b3-532d-426e-8bee-ee9461d092a6

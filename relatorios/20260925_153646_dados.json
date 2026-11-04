@@ -1,0 +1,36 @@
+{
+  "status": "IDENTIFIED",
+  "card": {
+    "print_id": "ba934866-efd0-4126-b1ff-9c7e82b73bd6",
+    "name": "Summon: Kujata",
+    "mana_cost": "{5}{R}",
+    "type_line": "Enchantment Creature — Saga Ox",
+    "color_identity": "R",
+    "rarity": "rare",
+    "set_code": "FIC",
+    "collector_number": "61",
+    "layout": "saga"
+  },
+  "method": "SET_NUMBER_LOCALIZED",
+  "confidence": 90,
+  "needs_review": false,
+  "layout": "STANDARD",
+  "ocr": {
+    "name": "fter Sum and aj Sacrifice af thisSaga enters unter",
+    "type": "cards. discard a card this waythiscreature",
+    "info_raw": "R0061 FFVI HONORE FICEN ALEXANDRE",
+    "set_code": "FIC",
+    "collector_number": "0061"
+  },
+  "elapsed_ms": 656,
+  "debug": {
+    "strategy": "OTSU_DARK_OPEN",
+    "sharpness": 679.3,
+    "rotated180": false,
+    "title_score": 51,
+    "name_score": 0,
+    "layout_ocr_skipped": true,
+    "ocr_calls": 1
+  },
+  "source": "input_cartas\\20260925_153646.jpg"
+}

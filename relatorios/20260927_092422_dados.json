@@ -1,0 +1,36 @@
+{
+  "status": "IDENTIFIED",
+  "card": {
+    "print_id": "e9211079-9499-4443-8cb9-4c2bb2849994",
+    "name": "Lita, Mechanical Engineer",
+    "mana_cost": "{2}{W}",
+    "type_line": "Legendary Artifact Creature — Artificer",
+    "color_identity": "W",
+    "rarity": "mythic",
+    "set_code": "TLE",
+    "collector_number": "4",
+    "layout": "normal"
+  },
+  "method": "SET_NUMBER",
+  "confidence": 94,
+  "needs_review": false,
+  "layout": "STANDARD",
+  "ocr": {
+    "name": "TheMechanist,TacticalTinke",
+    "type": "LegendaryArtifact Creature-Arti",
+    "info_raw": "M0004 TLEENBI:WATER,CH:17",
+    "set_code": "TLE",
+    "collector_number": "0004"
+  },
+  "elapsed_ms": 468,
+  "debug": {
+    "strategy": "CANNY",
+    "sharpness": 666.9,
+    "rotated180": false,
+    "title_score": 94,
+    "name_score": 94,
+    "layout_ocr_skipped": true,
+    "ocr_calls": 1
+  },
+  "source": "input_cartas\\20260927_092422.jpg"
+}

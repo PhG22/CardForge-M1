@@ -1,0 +1,22 @@
+=======================================
+RELATÓRIO DE IDENTIFICAÇÃO — CardForge-M1
+Arquivo: 20260925_153422.jpg
+=======================================
+
+Status: IDENTIFIED  |  Confiança: 100%  |  Método: NAME_EXACT
+Layout: STANDARD  |  Tempo: 376 ms  |  Chamadas OCR: 1
+
+--- LIDO PELA CÂMARA (OCR) ---
+Nome: Secret Rendezvous
+Tipo: Sorcery
+Linha de info: FIC·EN藤木幼/YUUFUKA
+Edição: FIC  |  Número: UNKNOWN
+
+--- CARTA OFICIAL (cards.db / Scryfall) ---
+Nome: Secret Rendezvous
+Custo de mana: {1}{W}{W}
+Tipo: Sorcery
+Identidade de cor: W
+Raridade: Uncommon
+Edição / número: FIC 219
+Scryfall id: 1fed38d0-c32c-440c-9d99-ca3b48a34791

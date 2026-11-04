@@ -1,0 +1,22 @@
+=======================================
+RELATÓRIO DE IDENTIFICAÇÃO — CardForge-M1
+Arquivo: 20260925_153646.jpg
+=======================================
+
+Status: IDENTIFIED  |  Confiança: 90%  |  Método: SET_NUMBER_LOCALIZED
+Layout: STANDARD  |  Tempo: 656 ms  |  Chamadas OCR: 1
+
+--- LIDO PELA CÂMARA (OCR) ---
+Nome: fter Sum and aj Sacrifice af thisSaga enters unter
+Tipo: cards. discard a card this waythiscreature
+Linha de info: R0061 FFVI HONORE FICEN ALEXANDRE
+Edição: FIC  |  Número: 0061
+
+--- CARTA OFICIAL (cards.db / Scryfall) ---
+Nome: Summon: Kujata
+Custo de mana: {5}{R}
+Tipo: Enchantment Creature — Saga Ox
+Identidade de cor: R
+Raridade: Rare
+Edição / número: FIC 61
+Scryfall id: ba934866-efd0-4126-b1ff-9c7e82b73bd6

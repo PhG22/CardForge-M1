@@ -1,0 +1,22 @@
+=======================================
+RELATÓRIO DE IDENTIFICAÇÃO — CardForge-M1
+Arquivo: 20260925_231043.jpg
+=======================================
+
+Status: IDENTIFIED  |  Confiança: 100%  |  Método: SET_NUMBER
+Layout: TOKEN_FULL  |  Tempo: 1174 ms  |  Chamadas OCR: 3
+
+--- LIDO PELA CÂMARA (OCR) ---
+Nome: SOLDIER
+Tipo: Token Creature-Soldier
+Linha de info: T0002 FFVII FIC·EN THANHTUAN
+Edição: FIC  |  Número: 0002
+
+--- CARTA OFICIAL (cards.db / Scryfall) ---
+Nome: Soldier
+Custo de mana: -
+Tipo: Token Creature — Soldier
+Identidade de cor: W
+Raridade: Common
+Edição / número: TFIC 2
+Scryfall id: c459f2ec-2aa3-44f6-999f-b1467dd4e27c

@@ -1,0 +1,35 @@
+{
+  "status": "IDENTIFIED",
+  "card": {
+    "print_id": "fb8d8106-b9bd-405c-886e-72fc301c65e1",
+    "name": "Chaos Warp",
+    "mana_cost": "{2}{R}",
+    "type_line": "Instant",
+    "color_identity": "R",
+    "rarity": "rare",
+    "set_code": "MBC",
+    "collector_number": "72",
+    "layout": "normal"
+  },
+  "method": "NAME_EXACT",
+  "confidence": 100,
+  "needs_review": false,
+  "layout": "STANDARD",
+  "ocr": {
+    "name": "Chaos Warp",
+    "type": "Instant",
+    "info_raw": "001/002 PPromo PRM*ENK NOLKANBAGA",
+    "set_code": "PRM",
+    "collector_number": "001"
+  },
+  "elapsed_ms": 949,
+  "debug": {
+    "strategy": "OTSU_DARK",
+    "sharpness": 199.0,
+    "rotated180": false,
+    "title_score": 100,
+    "name_score": 100,
+    "ocr_calls": 2
+  },
+  "source": "input_cartas\\20260925_153311.jpg"
+}

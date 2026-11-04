@@ -1,0 +1,22 @@
+=======================================
+RELATÓRIO DE IDENTIFICAÇÃO — CardForge-M1
+Arquivo: 20260925_230006.jpg
+=======================================
+
+Status: IDENTIFIED  |  Confiança: 100%  |  Método: SET_NUMBER
+Layout: STANDARD  |  Tempo: 649 ms  |  Chamadas OCR: 1
+
+--- LIDO PELA CÂMARA (OCR) ---
+Nome: Cloud,Ex-SOLDIER
+Tipo: Legendary Creature-Human Soldier Merce
+Linha de info: M0002 FFVII FIC★ENIUSTYNADURA
+Edição: FIC  |  Número: 0002
+
+--- CARTA OFICIAL (cards.db / Scryfall) ---
+Nome: Cloud, Ex-SOLDIER
+Custo de mana: {2}{R}{G}{W}
+Tipo: Legendary Creature — Human Soldier Mercenary
+Identidade de cor: WRG
+Raridade: Mythic
+Edição / número: FIC 2
+Scryfall id: 07b4e4f8-6a31-4533-be51-668ce3ddc84f

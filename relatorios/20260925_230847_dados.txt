@@ -1,0 +1,22 @@
+=======================================
+RELATÓRIO DE IDENTIFICAÇÃO — CardForge-M1
+Arquivo: 20260925_230847.jpg
+=======================================
+
+Status: IDENTIFIED  |  Confiança: 100%  |  Método: SET_NUMBER
+Layout: STANDARD  |  Tempo: 636 ms  |  Chamadas OCR: 1
+
+--- LIDO PELA CÂMARA (OCR) ---
+Nome: Summon:Kujata
+Tipo: cards.When you discard a card this way,this creature
+Linha de info: R0061 FFVII FICEN WALEXANDRE HONORE
+Edição: FIC  |  Número: 0061
+
+--- CARTA OFICIAL (cards.db / Scryfall) ---
+Nome: Summon: Kujata
+Custo de mana: {5}{R}
+Tipo: Enchantment Creature — Saga Ox
+Identidade de cor: R
+Raridade: Rare
+Edição / número: FIC 61
+Scryfall id: ba934866-efd0-4126-b1ff-9c7e82b73bd6

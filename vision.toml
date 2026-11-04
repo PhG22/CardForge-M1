@@ -1,0 +1,38 @@
+# Configuração do subsistema de visão do CardForge-M1 (VisionConfig, CV-CL-01).
+# Todas as chaves são opcionais; os valores abaixo são os padrões. Chaves desconhecidas geram erro.
+
+db_path = "data/cards.db"            # relativo a este arquivo
+
+# Detecção da borda da carta
+work_height = 800                    # altura de trabalho (px) para achar o contorno
+min_area_ratio = 0.08                # área mínima da carta no frame
+max_area_ratio = 0.85                # área máxima (design: 0.60 — ajuste ao enquadramento final da câmara)
+aspect_range = [1.20, 1.70]
+min_quad_rectangularity = 0.85
+border_margin = 0.005
+card_size = [630, 880]               # carta retificada (largura, altura)
+
+# OCR e identificação
+ocr_upscale = 1.5                    # 1.0 é mais rápido, mas perdeu 4/63 cartas
+ocr_det_limit_type = "min"
+ocr_det_limit_side_len = 736         # ("max", 960) ≈ −20 % de tempo, mas lê pior a linha de info
+ocr_angle_cls = false                # a orientação 0°/180° já é resolvida pelo OrientationResolver
+skip_layout_when_identified = true   # pula o OCR de layout se a leitura padrão já identificou a carta
+confidence_threshold = 90            # RF18
+orientation_threshold = 75
+orientation_margin = 10
+name_cutoff = 85
+set_cutoff = 85
+cross_check_cutoff = 70
+accept_localized_cards = true        # false = estrito ao design CV-AD-04 (cartas não inglesas vão para revisão)
+
+[camera]                             # Picamera2 / OV5647 — calibrar na câmara escura com os LEDs no nível base
+resolution = [2028, 1520]
+exposure_us = 20000
+analogue_gain = 2.0
+awb_gains = [1.6, 1.5]               # [0, 0] = balanço de branco automático
+warmup_s = 0.5
+
+[face_down]                          # RF39
+min_brown_ratio = 0.75
+max_text_chars = 2

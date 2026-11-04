@@ -1,0 +1,22 @@
+=======================================
+RELATÓRIO DE IDENTIFICAÇÃO — CardForge-M1
+Arquivo: 20260927_092508.jpg
+=======================================
+
+Status: IDENTIFIED  |  Confiança: 100%  |  Método: NAME_EXACT
+Layout: STANDARD  |  Tempo: 541 ms  |  Chamadas OCR: 1
+
+--- LIDO PELA CÂMARA (OCR) ---
+Nome: Island
+Tipo: BasicLand-Island
+Linha de info: JonasDeRo m&2013WizardsoftheCoast236/249
+Edição: N/A  |  Número: 236
+
+--- CARTA OFICIAL (cards.db / Scryfall) ---
+Nome: Island
+Custo de mana: -
+Tipo: Basic Land — Island
+Identidade de cor: U
+Raridade: Common
+Edição / número: MDD 294
+Scryfall id: 1335d293-3dd2-4f13-bd2c-22181f4528ee

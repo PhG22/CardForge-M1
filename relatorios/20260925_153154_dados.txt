@@ -1,0 +1,22 @@
+=======================================
+RELATÓRIO DE IDENTIFICAÇÃO — CardForge-M1
+Arquivo: 20260925_153154.jpg
+=======================================
+
+Status: IDENTIFIED  |  Confiança: 100%  |  Método: SET_NUMBER
+Layout: STANDARD  |  Tempo: 497 ms  |  Chamadas OCR: 1
+
+--- LIDO PELA CÂMARA (OCR) ---
+Nome: Rugged Prairie
+Tipo: Land
+Linha de info: R0417 FFVII FIC.EN PABLO MENDOZA
+Edição: FIC  |  Número: 0417
+
+--- CARTA OFICIAL (cards.db / Scryfall) ---
+Nome: Rugged Prairie
+Custo de mana: -
+Tipo: Land
+Identidade de cor: WR
+Raridade: Rare
+Edição / número: FIC 417
+Scryfall id: 3d575770-cb81-4353-b49e-cdaca7a5162f

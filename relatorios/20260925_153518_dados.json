@@ -1,0 +1,36 @@
+{
+  "status": "IDENTIFIED",
+  "card": {
+    "print_id": "e623b058-76d2-476b-9ee6-82807f7992c3",
+    "name": "Plains",
+    "mana_cost": "",
+    "type_line": "Basic Land — Plains",
+    "color_identity": "W",
+    "rarity": "common",
+    "set_code": "FIN",
+    "collector_number": "295",
+    "layout": "normal"
+  },
+  "method": "SET_NUMBER",
+  "confidence": 100,
+  "needs_review": false,
+  "layout": "STANDARD",
+  "ocr": {
+    "name": "Plains",
+    "type": "",
+    "info_raw": "L0295 FFVI FINEN JONASDERO",
+    "set_code": "FIN",
+    "collector_number": "0295"
+  },
+  "elapsed_ms": 359,
+  "debug": {
+    "strategy": "CANNY",
+    "sharpness": 915.5,
+    "rotated180": false,
+    "title_score": 100,
+    "name_score": 100,
+    "layout_ocr_skipped": true,
+    "ocr_calls": 1
+  },
+  "source": "input_cartas\\20260925_153518.jpg"
+}

@@ -1,0 +1,22 @@
+=======================================
+RELATÓRIO DE IDENTIFICAÇÃO — CardForge-M1
+Arquivo: 20260925_153333.jpg
+=======================================
+
+Status: IDENTIFIED  |  Confiança: 100%  |  Método: SET_NUMBER
+Layout: STANDARD  |  Tempo: 409 ms  |  Chamadas OCR: 1
+
+--- LIDO PELA CÂMARA (OCR) ---
+Nome: Command Tower
+Tipo: Land
+Linha de info: C0485 FICENER
+Edição: FIC  |  Número: 0485
+
+--- CARTA OFICIAL (cards.db / Scryfall) ---
+Nome: Command Tower
+Custo de mana: -
+Tipo: Land
+Identidade de cor: Incolor
+Raridade: Common
+Edição / número: FIC 485
+Scryfall id: aae0b3ae-ed57-4d17-8876-736aa22186cf

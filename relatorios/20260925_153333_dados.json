@@ -1,0 +1,36 @@
+{
+  "status": "IDENTIFIED",
+  "card": {
+    "print_id": "aae0b3ae-ed57-4d17-8876-736aa22186cf",
+    "name": "Command Tower",
+    "mana_cost": "",
+    "type_line": "Land",
+    "color_identity": "",
+    "rarity": "common",
+    "set_code": "FIC",
+    "collector_number": "485",
+    "layout": "normal"
+  },
+  "method": "SET_NUMBER",
+  "confidence": 100,
+  "needs_review": false,
+  "layout": "STANDARD",
+  "ocr": {
+    "name": "Command Tower",
+    "type": "Land",
+    "info_raw": "C0485 FICENER",
+    "set_code": "FIC",
+    "collector_number": "0485"
+  },
+  "elapsed_ms": 409,
+  "debug": {
+    "strategy": "CANNY",
+    "sharpness": 877.0,
+    "rotated180": false,
+    "title_score": 100,
+    "name_score": 100,
+    "layout_ocr_skipped": true,
+    "ocr_calls": 1
+  },
+  "source": "input_cartas\\20260925_153333.jpg"
+}

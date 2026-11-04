@@ -1,0 +1,22 @@
+=======================================
+RELATÓRIO DE IDENTIFICAÇÃO — CardForge-M1
+Arquivo: 20260925_153518.jpg
+=======================================
+
+Status: IDENTIFIED  |  Confiança: 100%  |  Método: SET_NUMBER
+Layout: STANDARD  |  Tempo: 359 ms  |  Chamadas OCR: 1
+
+--- LIDO PELA CÂMARA (OCR) ---
+Nome: Plains
+Tipo: 
+Linha de info: L0295 FFVI FINEN JONASDERO
+Edição: FIN  |  Número: 0295
+
+--- CARTA OFICIAL (cards.db / Scryfall) ---
+Nome: Plains
+Custo de mana: -
+Tipo: Basic Land — Plains
+Identidade de cor: W
+Raridade: Common
+Edição / número: FIN 295
+Scryfall id: e623b058-76d2-476b-9ee6-82807f7992c3

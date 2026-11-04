@@ -1,0 +1,22 @@
+=======================================
+RELATÓRIO DE IDENTIFICAÇÃO — CardForge-M1
+Arquivo: 20260925_230528.jpg
+=======================================
+
+Status: IDENTIFIED  |  Confiança: 100%  |  Método: SET_NUMBER
+Layout: STANDARD  |  Tempo: 633 ms  |  Chamadas OCR: 1
+
+--- LIDO PELA CÂMARA (OCR) ---
+Nome: Tifa,MartialArtist
+Tipo: Legendary Creature -Human Mon
+Linha de info: M0006 FFVII FIC★EN DYUMIYAOSHIDA
+Edição: FIC  |  Número: 0006
+
+--- CARTA OFICIAL (cards.db / Scryfall) ---
+Nome: Tifa, Martial Artist
+Custo de mana: {1}{R}{G}{W}
+Tipo: Legendary Creature — Human Monk
+Identidade de cor: WRG
+Raridade: Mythic
+Edição / número: FIC 6
+Scryfall id: 31513afc-329c-4913-8fcd-945c39ec82b2

@@ -1,0 +1,22 @@
+=======================================
+RELATÓRIO DE IDENTIFICAÇÃO — CardForge-M1
+Arquivo: 20260927_092444.jpg
+=======================================
+
+Status: IDENTIFIED  |  Confiança: 100%  |  Método: SET_NUMBER
+Layout: STANDARD  |  Tempo: 521 ms  |  Chamadas OCR: 1
+
+--- LIDO PELA CÂMARA (OCR) ---
+Nome: Moonshae Pixie
+Tipo: Creature-Faerie
+Linha de info: 084/361U CLBEN EDGAR SANCHEZ HIDALGO
+Edição: CLB  |  Número: 084
+
+--- CARTA OFICIAL (cards.db / Scryfall) ---
+Nome: Moonshae Pixie // Pixie Dust
+Custo de mana: {3}{U} // {1}{U}
+Tipo: Creature — Faerie // Instant — Adventure
+Identidade de cor: U
+Raridade: Uncommon
+Edição / número: CLB 84
+Scryfall id: 63780e4a-3f63-473c-97d0-5d9462e264f2

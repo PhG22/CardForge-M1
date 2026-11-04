@@ -1,0 +1,36 @@
+{
+  "status": "IDENTIFIED",
+  "card": {
+    "print_id": "73a2e070-f375-4558-a982-01f6f4e902e9",
+    "name": "Rootbound Crag",
+    "mana_cost": "",
+    "type_line": "Land",
+    "color_identity": "RG",
+    "rarity": "rare",
+    "set_code": "FIC",
+    "collector_number": "416",
+    "layout": "normal"
+  },
+  "method": "SET_NUMBER",
+  "confidence": 100,
+  "needs_review": false,
+  "layout": "STANDARD",
+  "ocr": {
+    "name": "Rootbound Crag",
+    "type": "Land",
+    "info_raw": "R0416 FIC AEN",
+    "set_code": "FIC",
+    "collector_number": "0416"
+  },
+  "elapsed_ms": 379,
+  "debug": {
+    "strategy": "CANNY",
+    "sharpness": 221.3,
+    "rotated180": false,
+    "title_score": 100,
+    "name_score": 100,
+    "layout_ocr_skipped": true,
+    "ocr_calls": 1
+  },
+  "source": "input_cartas\\20260925_153715.jpg"
+}

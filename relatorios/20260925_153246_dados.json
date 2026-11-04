@@ -1,0 +1,39 @@
+{
+  "status": "IDENTIFIED",
+  "card": {
+    "print_id": "1a504dff-5857-4a61-ab99-616d5df7cf5a",
+    "name": "Barret Wallace",
+    "mana_cost": "{3}{R}",
+    "type_line": "Legendary Creature — Human Rebel",
+    "color_identity": "R",
+    "rarity": "uncommon",
+    "set_code": "FIN",
+    "collector_number": "129",
+    "layout": "normal"
+  },
+  "method": "SET_NUMBER",
+  "confidence": 100,
+  "needs_review": false,
+  "layout": "STANDARD",
+  "ocr": {
+    "name": "BarretWallace",
+    "type": "LegendaryCreature-Human Rel",
+    "info_raw": "U:0129 FFVII FINENOPATRIK HELL",
+    "set_code": "FIN",
+    "collector_number": "0129"
+  },
+  "elapsed_ms": 1033,
+  "debug": {
+    "strategy": "CANNY",
+    "sharpness": 515.9,
+    "score_normal": 0,
+    "score_rotated": 100,
+    "info_rotated": true,
+    "rotated180": true,
+    "title_score": 100,
+    "name_score": 100,
+    "layout_ocr_skipped": true,
+    "ocr_calls": 2
+  },
+  "source": "input_cartas\\20260925_153246.jpg"
+}

@@ -1,0 +1,36 @@
+{
+  "status": "IDENTIFIED",
+  "card": {
+    "print_id": "63780e4a-3f63-473c-97d0-5d9462e264f2",
+    "name": "Moonshae Pixie // Pixie Dust",
+    "mana_cost": "{3}{U} // {1}{U}",
+    "type_line": "Creature — Faerie // Instant — Adventure",
+    "color_identity": "U",
+    "rarity": "uncommon",
+    "set_code": "CLB",
+    "collector_number": "84",
+    "layout": "adventure"
+  },
+  "method": "SET_NUMBER",
+  "confidence": 100,
+  "needs_review": false,
+  "layout": "STANDARD",
+  "ocr": {
+    "name": "MoonshaePixie",
+    "type": "Creature-Faerie",
+    "info_raw": "084/361U CLB·EN EDGAR SANCHEZ HIDALGO",
+    "set_code": "CLB",
+    "collector_number": "084"
+  },
+  "elapsed_ms": 498,
+  "debug": {
+    "strategy": "CANNY_FILL",
+    "sharpness": 122.7,
+    "rotated180": false,
+    "title_score": 100,
+    "name_score": 100,
+    "layout_ocr_skipped": true,
+    "ocr_calls": 1
+  },
+  "source": "input_cartas\\20260927_092438.jpg"
+}

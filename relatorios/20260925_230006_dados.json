@@ -1,0 +1,36 @@
+{
+  "status": "IDENTIFIED",
+  "card": {
+    "print_id": "07b4e4f8-6a31-4533-be51-668ce3ddc84f",
+    "name": "Cloud, Ex-SOLDIER",
+    "mana_cost": "{2}{R}{G}{W}",
+    "type_line": "Legendary Creature — Human Soldier Mercenary",
+    "color_identity": "WRG",
+    "rarity": "mythic",
+    "set_code": "FIC",
+    "collector_number": "2",
+    "layout": "normal"
+  },
+  "method": "SET_NUMBER",
+  "confidence": 100,
+  "needs_review": false,
+  "layout": "STANDARD",
+  "ocr": {
+    "name": "Cloud,Ex-SOLDIER",
+    "type": "Legendary Creature-Human Soldier Merce",
+    "info_raw": "M0002 FFVII FIC★ENIUSTYNADURA",
+    "set_code": "FIC",
+    "collector_number": "0002"
+  },
+  "elapsed_ms": 649,
+  "debug": {
+    "strategy": "CANNY",
+    "sharpness": 828.6,
+    "rotated180": false,
+    "title_score": 100,
+    "name_score": 100,
+    "layout_ocr_skipped": true,
+    "ocr_calls": 1
+  },
+  "source": "input_cartas\\20260925_230006.jpg"
+}

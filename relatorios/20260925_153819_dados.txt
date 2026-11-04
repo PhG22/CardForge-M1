@@ -1,0 +1,22 @@
+=======================================
+RELATÓRIO DE IDENTIFICAÇÃO — CardForge-M1
+Arquivo: 20260925_153819.jpg
+=======================================
+
+Status: IDENTIFIED  |  Confiança: 90%  |  Método: SET_NUMBER_LOCALIZED
+Layout: STANDARD  |  Tempo: 509 ms  |  Chamadas OCR: 1
+
+--- LIDO PELA CÂMARA (OCR) ---
+Nome: Esfera do Comandante
+Tipo: Artefato
+Linha de info: 239 C21·PT RYANALEXANDERLEE
+Edição: C21  |  Número: 239
+
+--- CARTA OFICIAL (cards.db / Scryfall) ---
+Nome: Commander's Sphere
+Custo de mana: {3}
+Tipo: Artifact
+Identidade de cor: Incolor
+Raridade: Common
+Edição / número: C21 239
+Scryfall id: 1c1fda5d-f519-4b27-9fc6-1a617d0fc79b

@@ -1,0 +1,22 @@
+=======================================
+RELATÓRIO DE IDENTIFICAÇÃO — CardForge-M1
+Arquivo: 20260925_152524.jpg
+=======================================
+
+Status: IDENTIFIED  |  Confiança: 100%  |  Método: SET_NUMBER
+Layout: STANDARD  |  Tempo: 648 ms  |  Chamadas OCR: 1
+
+--- LIDO PELA CÂMARA (OCR) ---
+Nome: Sephiroth,FallenHero
+Tipo: Legendary Creature -Human Avatar So
+Linha de info: R0092 FFVII FIC·EN W一德/ITTOKU
+Edição: FIC  |  Número: 0092
+
+--- CARTA OFICIAL (cards.db / Scryfall) ---
+Nome: Sephiroth, Fallen Hero
+Custo de mana: {3}{R}{W}
+Tipo: Legendary Creature — Human Avatar Soldier
+Identidade de cor: WR
+Raridade: Rare
+Edição / número: FIC 92
+Scryfall id: df919eb8-9eff-4777-9c46-94c795cda918

@@ -1,0 +1,36 @@
+{
+  "status": "IDENTIFIED",
+  "card": {
+    "print_id": "ba934866-efd0-4126-b1ff-9c7e82b73bd6",
+    "name": "Summon: Kujata",
+    "mana_cost": "{5}{R}",
+    "type_line": "Enchantment Creature — Saga Ox",
+    "color_identity": "R",
+    "rarity": "rare",
+    "set_code": "FIC",
+    "collector_number": "61",
+    "layout": "saga"
+  },
+  "method": "SET_NUMBER",
+  "confidence": 100,
+  "needs_review": false,
+  "layout": "STANDARD",
+  "ocr": {
+    "name": "Summon:Kujata",
+    "type": "cards.When you discard a card this way,this creature",
+    "info_raw": "R0061 FFVII FICEN WALEXANDRE HONORE",
+    "set_code": "FIC",
+    "collector_number": "0061"
+  },
+  "elapsed_ms": 636,
+  "debug": {
+    "strategy": "CANNY_FILL",
+    "sharpness": 1463.8,
+    "rotated180": false,
+    "title_score": 100,
+    "name_score": 100,
+    "layout_ocr_skipped": true,
+    "ocr_calls": 1
+  },
+  "source": "input_cartas\\20260925_230847.jpg"
+}

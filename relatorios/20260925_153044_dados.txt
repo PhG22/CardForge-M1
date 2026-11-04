@@ -1,0 +1,22 @@
+=======================================
+RELATÓRIO DE IDENTIFICAÇÃO — CardForge-M1
+Arquivo: 20260925_153044.jpg
+=======================================
+
+Status: IDENTIFIED  |  Confiança: 100%  |  Método: SET_NUMBER
+Layout: STANDARD  |  Tempo: 502 ms  |  Chamadas OCR: 1
+
+--- LIDO PELA CÂMARA (OCR) ---
+Nome: Bastion Protector
+Tipo: Creature-Human Soldier
+Linha de info: R0233 FFVII FICEN WIGNATIUSBUDI
+Edição: FIC  |  Número: 0233
+
+--- CARTA OFICIAL (cards.db / Scryfall) ---
+Nome: Bastion Protector
+Custo de mana: {2}{W}
+Tipo: Creature — Human Soldier
+Identidade de cor: W
+Raridade: Rare
+Edição / número: FIC 233
+Scryfall id: 0ed04a28-2984-4fa6-a11e-f508b7b5446e
