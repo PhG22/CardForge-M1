@@ -26,12 +26,15 @@ set_cutoff = 85
 cross_check_cutoff = 70
 accept_localized_cards = true        # false = estrito ao design CV-AD-04 (cartas não inglesas vão para revisão)
 
-[camera]                             # Picamera2 / OV5647 — calibrar na câmara escura com os LEDs no nível base
-resolution = [2028, 1520]
-exposure_us = 20000
-analogue_gain = 2.0
-awb_gains = [1.6, 1.5]               # [0, 0] = balanço de branco automático
+[camera]                             # Pi Camera Module v2 (IMX219) — calibre em http://<ip-do-pi>:8000/calibration
+backend = "picamera2"                # "picamera2" (padrão) ou "rpicam" (chama rpicam-still a cada foto)
+sensor = "imx219"                    # o serviço avisa no log se a câmera detectada for outra
+resolution = [1640, 1232]            # IMX219 2x2 binned, campo inteiro; [3280, 2464] = 8 MP. Exige reiniciar
+exposure_us = 20000                  # gravado pelo botão "Salvar no vision.toml"
+analogue_gain = 2.0                  # gravado pela calibração
+awb_gains = [1.6, 1.5]               # [0, 0] = balanço de branco automático; gravado pela calibração
 warmup_s = 0.5
+light_level = 60                     # fitas LED, % (precisa do comando LIGHT no A1); gravado pela calibração
 
 [face_down]                          # RF39
 min_brown_ratio = 0.75

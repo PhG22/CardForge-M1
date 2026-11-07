@@ -1,0 +1,34 @@
+# systemd unit: start the CardForge-M1 main loop + API on boot.
+#   1. Adjust User, WorkingDirectory and the MTG_* values below.
+#   2. sudo cp deploy/sorter-api.service /etc/systemd/system/
+#   3. sudo systemctl daemon-reload && sudo systemctl enable --now sorter-api
+#   4. Logs: journalctl -u sorter-api -f
+#
+# Before the first start: build the card database once (needs internet):
+#   .venv/bin/python -m cardforge.cv sync
+
+[Unit]
+Description=CardForge-M1 sorter (main loop + API)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=pi
+Group=dialout
+# gpio: MAX485 DE/RE pin; video: the CSI camera
+SupplementaryGroups=gpio video
+WorkingDirectory=/home/pi/CardForge-M1
+# USB-RS485 converter (Deliverable 5): it switches direction by itself, so no DE pin.
+# MAX485 on the Pi UART instead: MTG_SERIAL_PORT=/dev/serial0 and MTG_DE_PIN=<BCM pin of DE+RE>.
+Environment=MTG_SERIAL_PORT=/dev/ttyUSB0
+Environment=MTG_BAUDRATE=9600
+Environment=MTG_VISION=camera
+Environment=MTG_RUN_DB=/home/pi/CardForge-M1/data/run.db
+# Password the app signs in with (user "admin"). Empty = any credentials are accepted.
+Environment=MTG_APP_PASSWORD=change-me
+ExecStart=/home/pi/CardForge-M1/.venv/bin/python -m sorter_api
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

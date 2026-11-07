@@ -12,11 +12,16 @@ except ModuleNotFoundError:  # pragma: no cover
 
 @dataclass
 class CameraConfig:
-    resolution: tuple[int, int] = (2028, 1520)   # OV5647: modo 2x2 binned, boa nitidez e rápido
+    backend: str = "picamera2"                   # "picamera2" (padrão) ou "rpicam" (chama rpicam-still)
+    sensor: str = "imx219"                       # Camera Module v2; avisa no log se a câmera detectada for outra
+    # IMX219: 1640x1232 = 2x2 binned, campo de visão inteiro, rápido. 3280x2464 = resolução máxima (8 MP),
+    # só se a carta ocupar pouco do quadro (o pipeline retifica a carta para 630x880 de qualquer forma).
+    resolution: tuple[int, int] = (1640, 1232)
     exposure_us: int = 20000                     # exposição fixa — a câmara fica numa câmara escura (RNF08)
     analogue_gain: float = 2.0
     awb_gains: tuple[float, float] = (1.6, 1.5)  # ganhos (vermelho, azul) fixos; 0 => AWB automático
     warmup_s: float = 0.5
+    light_level: int = 60                        # fitas LED da câmara, % (nível base; RNF09 soma degraus)
 
 
 @dataclass
@@ -64,6 +69,7 @@ class VisionConfig:
         if path is None:
             path = os.environ.get("CARDFORGE_VISION_CONFIG", "vision.toml")
         p = Path(path)
+        cfg.source_path = str(p)                 # a calibração grava de volta neste arquivo
         if not p.exists():
             return cfg
         if tomllib is None:

@@ -1,0 +1,222 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Calibração da câmera — CardForge-M1</title>
+<style>
+  :root { --bg:#14161a; --panel:#1e2127; --line:#2e333b; --text:#e8e6e1; --muted:#9aa0a8;
+          --ok:#4cc38a; --warn:#e0b44c; --bad:#e5645a; --accent:#c9a45c; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:15px/1.45 system-ui, sans-serif; }
+  header { padding:12px 16px; border-bottom:1px solid var(--line); display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
+  header h1 { font-size:17px; margin:0; flex:1; min-width:200px; }
+  .pill { font-size:12px; padding:3px 9px; border-radius:99px; border:1px solid var(--line); color:var(--muted); }
+  main { display:grid; grid-template-columns: minmax(0,1.4fr) minmax(300px,1fr); gap:16px; padding:16px; max-width:1300px; margin:auto; }
+  @media (max-width: 860px) { main { grid-template-columns: 1fr; padding:12px; } }
+  section { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:14px; margin-bottom:16px; }
+  h2 { font-size:14px; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); margin:0 0 10px; }
+  #preview { width:100%; border-radius:6px; background:#000; min-height:180px; display:block; }
+  .row { display:flex; gap:8px; flex-wrap:wrap; margin-top:10px; }
+  button { background:#2a2f37; color:var(--text); border:1px solid var(--line); border-radius:7px; padding:9px 12px;
+           font:inherit; cursor:pointer; }
+  button.primary { background:var(--accent); color:#1a1408; border-color:var(--accent); font-weight:600; }
+  button:disabled { opacity:.5; cursor:wait; }
+  label { display:grid; grid-template-columns: 9.5em 1fr 5.5em; gap:8px; align-items:center; margin:8px 0; }
+  label input[type=number] { width:100%; background:#111317; color:var(--text); border:1px solid var(--line); border-radius:6px; padding:5px; }
+  input[type=range] { width:100%; accent-color: var(--accent); }
+  table { width:100%; border-collapse:collapse; font-variant-numeric: tabular-nums; }
+  td { padding:4px 0; border-bottom:1px solid var(--line); }
+  td:last-child { text-align:right; }
+  .ok { color:var(--ok); } .warn { color:var(--warn); } .bad { color:var(--bad); }
+  .grid { display:grid; grid-template-columns:repeat(3,1fr); gap:3px; margin-top:8px; }
+  .grid div { text-align:center; padding:6px 0; border-radius:4px; font-size:13px; color:#111; }
+  ul { margin:6px 0 0; padding-left:18px; } li { margin:3px 0; }
+  #msg { min-height:1.4em; color:var(--muted); margin-top:8px; }
+  .muted { color:var(--muted); font-size:13px; }
+  #idimg { max-width:220px; width:40%; border-radius:6px; float:right; margin-left:10px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>CardForge-M1 · Calibração da câmera</h1>
+  <span class="pill" id="backend">câmera: —</span>
+  <span class="pill" id="state">máquina: —</span>
+</header>
+<main>
+  <div>
+    <section>
+      <h2>Imagem</h2>
+      <img id="preview" alt="Pré-visualização da câmera">
+      <div class="row">
+        <button class="primary" id="b-snap">Capturar</button>
+        <button id="b-live">Ao vivo: desligado</button>
+        <button id="b-feed">Alimentar 1 carta</button>
+        <button id="b-drop">Descartar carta (bin 6)</button>
+      </div>
+      <div id="msg"></div>
+    </section>
+    <section>
+      <h2>Teste de identificação</h2>
+      <div id="idres" class="muted">Coloque uma carta na plataforma (Alimentar 1 carta) e teste a leitura completa.</div>
+      <div class="row"><button id="b-identify">Identificar a carta</button></div>
+    </section>
+  </div>
+  <div>
+    <section>
+      <h2>Ajustes</h2>
+      <label>Exposição (µs)<input type="range" id="r-exp" min="0" max="1000" step="1"><input type="number" id="n-exp" min="100" max="1000000"></label>
+      <label>Ganho analógico<input type="range" id="r-gain" min="1" max="10.6" step="0.05"><input type="number" id="n-gain" min="1" max="10.6" step="0.05"></label>
+      <label>Branco: vermelho<input type="range" id="r-red" min="0.2" max="4" step="0.01"><input type="number" id="n-red" min="0" max="8" step="0.01"></label>
+      <label>Branco: azul<input type="range" id="r-blue" min="0.2" max="4" step="0.01"><input type="number" id="n-blue" min="0" max="8" step="0.01"></label>
+      <label>Luz da câmara (%)<input type="range" id="r-light" min="0" max="100" step="1"><input type="number" id="n-light" min="0" max="100"></label>
+      <div class="row">
+        <button id="b-apply">Aplicar</button>
+        <button id="b-auto">Autocalibrar (exposição + branco)</button>
+        <button class="primary" id="b-save">Salvar no vision.toml</button>
+      </div>
+      <p class="muted">Para a autocalibração, a uniformidade da luz e o balanço de branco, use um cartão branco liso do tamanho de uma carta: coloque-o no topo da pilha e use “Alimentar 1 carta”. “Aplicar” vale até o serviço reiniciar; “Salvar” grava a seção [camera] do vision.toml. A luz só muda se o firmware do A1 tiver o comando LIGHT.</p>
+    </section>
+    <section>
+      <h2>Medidas</h2>
+      <table id="metrics"></table>
+      <div class="grid" id="grid"></div>
+      <ul id="advice"></ul>
+    </section>
+    <section>
+      <h2>Luz ambiente × escuro (RNF08)</h2>
+      <p class="muted">Com a carta parada: marque a referência, mude a luz da sala (acenda/apague) e capture de novo. A variação do brilho da carta deve ficar em até 10 %.</p>
+      <div class="row"><button id="b-ref">Marcar referência</button></div>
+    </section>
+  </div>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+const expToRange = us => Math.round(Math.log(us / 100) / Math.log(10000) * 1000);   // 100 µs .. 1 s, escala log
+const rangeToExp = v => Math.round(100 * Math.pow(10000, v / 1000));
+let live = null, busy = false;
+
+function msg(text, cls) { $('msg').textContent = text || ''; $('msg').className = cls || ''; }
+
+async function call(method, path, body) {
+  const r = await fetch(path, { method, headers: body ? { 'content-type': 'application/json' } : {},
+                                body: body ? JSON.stringify(body) : undefined });
+  let data = {};
+  try { data = await r.json(); } catch (e) {}
+  if (!r.ok) throw new Error(data.message || data.detail || `HTTP ${r.status}`);
+  return data;
+}
+
+async function guarded(button, fn) {
+  if (busy) return;
+  busy = true; if (button) button.disabled = true;
+  try { await fn(); } catch (e) { msg(e.message, 'bad'); }
+  finally { busy = false; if (button) button.disabled = false; }
+}
+
+function showSettings(s) {
+  $('backend').textContent = 'câmera: ' + (s.sensor || '?') + ' · ' + s.backend + ' · ' + s.resolution.join('×');
+  if (s.limits) {                       // limites informados pelo sensor (IMX219: ganho 1–10,7)
+    const [gmin, gmax] = s.limits.analogue_gain;
+    for (const id of ['r-gain', 'n-gain']) { $(id).min = gmin; $(id).max = gmax; }
+  }
+  $('n-exp').value = s.exposure_us; $('r-exp').value = expToRange(s.exposure_us);
+  $('n-gain').value = s.analogue_gain; $('r-gain').value = s.analogue_gain;
+  $('n-red').value = s.awb_gains[0]; $('r-red').value = s.awb_gains[0];
+  $('n-blue').value = s.awb_gains[1]; $('r-blue').value = s.awb_gains[1];
+  $('n-light').value = s.light_level; $('r-light').value = s.light_level;
+}
+
+function cell(v) {
+  const g = Math.max(0, Math.min(255, Math.round(v)));
+  return `<div style="background:rgb(${g},${g},${g});color:${g > 128 ? '#111' : '#eee'}">${v.toFixed(0)}</div>`;
+}
+
+function showMetrics(m) {
+  const rows = [];
+  const tag = (ok, text) => `<span class="${ok ? 'ok' : 'warn'}">${text}</span>`;
+  rows.push(['Brilho do quadro', m.frame.brightness.toFixed(0) + ' / 255']);
+  rows.push(['Pixels estourados', tag(m.frame.clipped_high_pct <= 2, m.frame.clipped_high_pct.toFixed(1) + ' %')]);
+  rows.push(['Carta encontrada', m.card_found ? tag(true, 'sim — ' + m.strategy) : '<span class="bad">não</span>']);
+  if (m.card_found) {
+    const c = m.card;
+    rows.push(['Área da carta no quadro', (m.area_ratio * 100).toFixed(0) + ' %']);
+    rows.push(['Brilho da carta', tag(c.brightness >= 60 && c.brightness <= 180, c.brightness.toFixed(0))]);
+    rows.push(['Luz desigual (grade)', c.neutral_target ? tag(c.unevenness_pct <= 20, c.unevenness_pct.toFixed(0) + ' %')
+                                                          : `<span class="muted">${c.unevenness_pct.toFixed(0)} % — só vale com cartão branco</span>`]);
+    rows.push(['Nitidez da carta', c.sharpness.toFixed(0)]);
+    rows.push(['Nitidez do texto pequeno', tag(c.info_sharpness >= 70, c.info_sharpness.toFixed(0))]);
+    rows.push(['Média B / G / R', c.color_means_bgr.map(x => x.toFixed(0)).join(' / ')]);
+    if (m.reference) rows.push(['Variação × referência', tag(m.reference.delta_pct <= 10, m.reference.delta_pct.toFixed(1) + ' %')]);
+    $('grid').innerHTML = c.grid.map(cell).join('');
+  } else {
+    $('grid').innerHTML = '';
+  }
+  $('metrics').innerHTML = rows.map(r => `<tr><td>${r[0]}</td><td>${r[1]}</td></tr>`).join('');
+  $('advice').innerHTML = (m.advice || []).map(a => `<li>${a}</li>`).join('');
+}
+
+async function snapshot() {
+  const t0 = performance.now();
+  const d = await call('POST', '/calibration/snapshot');
+  $('preview').src = d.image;
+  showSettings(d.settings);
+  showMetrics(d.metrics);
+  msg(`Captura em ${((performance.now() - t0) / 1000).toFixed(1)} s.`);
+}
+
+async function refreshState() {
+  try {
+    const s = await call('GET', '/run/status');
+    $('state').textContent = 'máquina: ' + s.state;
+  } catch (e) { $('state').textContent = 'máquina: sem resposta'; }
+}
+
+function link(rangeId, numId, toNum, toRange) {
+  $(rangeId).addEventListener('input', () => { $(numId).value = toNum($(rangeId).value); });
+  $(numId).addEventListener('change', () => { $(rangeId).value = toRange($(numId).value); });
+}
+link('r-exp', 'n-exp', rangeToExp, v => expToRange(Number(v)));
+for (const k of ['gain', 'red', 'blue', 'light']) link('r-' + k, 'n-' + k, v => v, v => v);
+
+$('b-snap').onclick = e => guarded(e.target, snapshot);
+$('b-live').onclick = () => {
+  if (live) { clearInterval(live); live = null; $('b-live').textContent = 'Ao vivo: desligado'; return; }
+  $('b-live').textContent = 'Ao vivo: ligado';
+  live = setInterval(() => guarded(null, snapshot), 1500);
+};
+$('b-apply').onclick = e => guarded(e.target, async () => {
+  const d = await call('PUT', '/calibration/settings', {
+    exposure_us: Number($('n-exp').value), analogue_gain: Number($('n-gain').value),
+    awb_gains: [Number($('n-red').value), Number($('n-blue').value)], light_level: Number($('n-light').value) });
+  showSettings(d.settings); await snapshot();
+});
+$('b-auto').onclick = e => guarded(e.target, async () => {
+  msg('Autocalibrando: a câmera ajusta exposição e branco (≈ 3 s)…');
+  const d = await call('POST', '/calibration/auto');
+  showSettings({ ...d.settings, light_level: Number($('n-light').value) });
+  await snapshot(); msg(d.message, 'ok');
+});
+$('b-save').onclick = e => guarded(e.target, async () => { const d = await call('POST', '/calibration/save'); msg(d.message, 'ok'); });
+$('b-ref').onclick = e => guarded(e.target, async () => { const d = await call('POST', '/calibration/reference'); msg(d.message, 'ok'); });
+$('b-feed').onclick = e => guarded(e.target, async () => {
+  msg('Alimentando uma carta…'); const d = await call('POST', '/calibration/feed'); msg(d.message, 'ok'); await snapshot();
+});
+$('b-drop').onclick = e => guarded(e.target, async () => {
+  msg('Descartando a carta…'); const d = await call('POST', '/calibration/drop'); msg(d.message, 'ok');
+});
+$('b-identify').onclick = e => guarded(e.target, async () => {
+  $('idres').textContent = 'Identificando…';
+  const d = await call('POST', '/calibration/identify');
+  const r = d.result, c = r.card;
+  $('idres').innerHTML = `<img id="idimg" src="${d.image}" alt="">` +
+    `<b class="${r.status === 'IDENTIFIED' ? 'ok' : 'warn'}">${r.status}</b> · ${r.confidence}% · ${r.method || '-'} · ${r.elapsed_ms} ms<br>` +
+    (c ? `${c.name} — ${c.set_code} ${c.collector_number} · cor ${c.color_identity || 'incolor'}<br>` : '') +
+    `<span class="muted">OCR: “${r.ocr.name}” · “${r.ocr.info_raw}”</span>`;
+});
+
+refreshState(); setInterval(refreshState, 5000);
+call('GET', '/calibration/settings').then(d => showSettings(d.settings)).catch(e => msg(e.message, 'bad'));
+</script>
+</body>
+</html>

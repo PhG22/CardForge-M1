@@ -8,7 +8,7 @@ import numpy as np
 
 from ..data.repository import DatabaseUnavailable, SqliteCardRepository
 from ..data.sync import ScryfallSyncService, SyncReport
-from .capture.camera import CameraService, Frame
+from .capture.camera import Frame, make_camera
 from .config import VisionConfig
 from .matching import NameIndex, SetCodeCatalog
 from .ocr import OcrEngine
@@ -32,7 +32,7 @@ class VisionModule:
 
     def __init__(self, cfg: Optional[VisionConfig] = None, camera=None):
         self.cfg = cfg or VisionConfig.load()
-        self.camera = camera if camera is not None else CameraService(self.cfg.camera)
+        self.camera = camera if camera is not None else make_camera(self.cfg.camera)
         self.ocr: Optional[OcrEngine] = None
         self.repo: Optional[SqliteCardRepository] = None
         self.names = NameIndex()
@@ -103,6 +103,46 @@ class VisionModule:
             if report.updated or self.repo is None:
                 self._open_database()
             return report
+
+    # ------------------------------------------------ calibração com a máquina montada
+
+    def camera_settings(self) -> dict:
+        with self._lock:
+            return {**self.camera.settings(), "light_level": self.cfg.camera.light_level}
+
+    def tune_camera(self, exposure_us=None, analogue_gain=None, awb_gains=None) -> dict:
+        """Ajuste ao vivo (vale para as próximas capturas; save_camera_settings() grava)."""
+        with self._lock:
+            self.camera.apply(exposure_us, analogue_gain, awb_gains)
+            return self.camera_settings()
+
+    def auto_tune_camera(self) -> dict:
+        """Exposição e branco automáticos com a carta na câmara, depois travados."""
+        with self._lock:
+            self.camera.auto_calibrate()
+            return self.camera_settings()
+
+    def calibration_snapshot(self):
+        """Uma captura + métricas (brilho, carta, uniformidade, foco) + imagem anotada."""
+        from .calibration import frame_metrics
+
+        with self._lock:
+            frame = self.camera.capture()
+        metrics, overlay = frame_metrics(frame.image, self.cfg)
+        return frame, metrics, overlay
+
+    def save_camera_settings(self, path=None) -> str:
+        """Grava exposição, ganho, branco e luz na seção [camera] do vision.toml."""
+        from .calibration import save_section
+
+        path = path or getattr(self.cfg, "source_path", None) or "vision.toml"
+        with self._lock:
+            c = self.cfg.camera
+            save_section(path, "camera", {"exposure_us": int(c.exposure_us),
+                                          "analogue_gain": round(float(c.analogue_gain), 3),
+                                          "awb_gains": [round(float(g), 3) for g in c.awb_gains],
+                                          "light_level": int(c.light_level)})
+        return str(path)
 
     def close(self) -> None:
         with self._lock:

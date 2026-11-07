@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+venv/
+.venv/
+data/run.db
+data/run.db-*
+data/cards.db.tmp
+relatorios/
+capturas/

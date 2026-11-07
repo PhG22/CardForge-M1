@@ -1,192 +1,226 @@
-# CardForge-M1 — Subsistema de Visão Computacional
+# CardForge-M1 — Software do Raspberry Pi
 
-Versão final do reconhecimento de cartas de *Magic: The Gathering* do CardForge-M1, implementada a partir
-da prova de conceito (`mtg_scanner.py`) e do design de software do Deliverable 3 (diagramas **CV01–CV16**).
+Um único processo no Raspberry Pi integra os quatro componentes do separador de cartas:
 
-O módulo roda inteiro no Raspberry Pi, sem rede durante a identificação (RNF15). O Scryfall é usado só para
-montar/atualizar o espelho local `data/cards.db` (RNF16), fora de uma run.
+```
+App mobile (Flutter) ──HTTP──► Raspberry Pi: python -m sorter_api ──RS-485──► A1 (módulo de cima: alimentador, flap)
+                     ◄──WS───   main loop + API + visão computacional └──────► A2 (base giratória: 6 bins)
+                                   │                    │
+                  câmera CSI (Camera v2, IMX219)  data/cards.db (espelho local do Scryfall)
+                                                  data/run.db   (runs e cartas separadas)
+```
+
+> **Passo a passo completo** — testar no PC sem hardware, preparar o Pi, subir a máquina por etapas, calibrar a
+> câmera, medir acurácia e rodar no dia a dia: [docs/PASSO_A_PASSO.md](docs/PASSO_A_PASSO.md).
+
+| Componente | Onde | Documentação |
+|---|---|---|
+| Main loop + API de controle | [`sorter_api/`](sorter_api/) | [docs/API.md](docs/API.md) |
+| Visão computacional | [`cardforge/`](cardforge/) | [docs/VISION.md](docs/VISION.md) |
+| Firmware A1 / A2 | [`firmware/`](firmware/) | [docs/PROTOCOL.md](docs/PROTOCOL.md) |
+| App mobile | repositório *CardForge App* (sem alterações de código) | [Conectar o app](#conectar-o-app) |
+
+## O main loop
+
+**Start** (`POST /run/start` ou o botão Start do app):
+1. Verificações rápidas (< 1 s): banco de cartas carregado, cartas na pilha, plataforma livre, 6 bins vazios.
+   Se algo falha, recusa na hora, listando todos os problemas.
+2. A2 faz o homing da base enquanto A1 para o rolo, fecha o flap e acende a luz da câmara.
+3. Verificações repetidas; cria a run em `run.db`; LED de status em "Running".
+
+**Para cada carta** (até a pilha esvaziar, um Stop ou 250 cartas — RNF27):
+
+| Passo | Quem | Requisitos |
+|---|---|---|
+| 1. Alimenta uma carta até o IR da plataforma | A1 (`FEED`) | RF01, RF05, RF09 |
+| 2. Foto + identificação, até 3 capturas; luz +20 % antes de cada nova tentativa | Pi: câmera + `cardforge.cv` | RF15, RF17, RF18, RF29, RNF09, RNF15 |
+| 3. Bin pela identidade de cor: W→1, U→2, B→3, R→4, G→5; incolor, multicolor, não identificada e virada → 6 | Pi: [`sorting.py`](sorter_api/sorting.py) | RF20, RF25, RF39 |
+| 4. Gira a base até o bin | A2 (`GOTO`) | RF03 |
+| 5. Abre o flap, espera a carta cair, fecha | A1 (`FLAP`) | RNF04 |
+| 6. Um registro em `run.db`, em uma transação, depois da queda física | Pi: [`store.py`](sorter_api/store.py) | RF19, RNF19, RNF20 |
+| 7. Evento de progresso (sem identidade nem bin) e, se for o caso, alerta de atenção | WebSocket | RF23, RF36 |
+
+**Falhas** (RNF23, FW-SD-04): atolamento, carta que não cai ou base fora de posição **pausam** a run: motores parados,
+LED vermelho, evento `fault` para o app (RF27). O usuário resolve e aperta **Resume**: a base faz homing de novo
+e a **mesma** run continua. Módulo que para de responder (perda do link) encerra a run como `failed` (exige
+desligar e religar). O botão de emergência corta a energia no hardware (RF14).
+
+**Stop**: termina a carta em andamento — se já foi identificada vai para o seu bin, senão para o bin 6 — registra,
+fecha o flap e para os motores. Nenhuma carta fica na máquina.
+
+**Resultados** (RF22): só depois do fim da run, em `GET /runs/{id}` (contagem por bin + todas as cartas);
+inventário em `GET /cards` (app) e `GET /inventory/export.csv` (RF24, RFC 4180).
+
+## Instalação no Raspberry Pi
+
+1. **Sistema**: Raspberry Pi OS **64-bit** (o onnxruntime só existe para aarch64). Em `raspi-config`: habilite a
+   câmera e a UART, e desligue o console serial.
+2. **Código e dependências**:
+   ```bash
+   git clone <este repositório> /home/pi/CardForge-M1 && cd /home/pi/CardForge-M1
+   sudo apt install -y python3-picamera2 python3-gpiozero
+   python3 -m venv --system-site-packages .venv
+   .venv/bin/pip install -r requirements.txt
+   ```
+3. **Banco de cartas** (uma vez, precisa de internet; depois tudo funciona offline):
+   ```bash
+   .venv/bin/python -m cardforge.cv sync
+   ```
+4. **Firmware**: grave `firmware/a1_top/a1_top.ino` no Arduino de cima e `firmware/a2_base/a2_base.ino` no da base
+   (detalhes de pinos em [docs/PROTOCOL.md](docs/PROTOCOL.md)).
+5. **Teste manual**:
+   ```bash
+   MTG_VISION=camera MTG_SERIAL_PORT=/dev/ttyUSB0 .venv/bin/python -m sorter_api
+   ```
+   Abra `http://<ip-do-pi>:8000/docs`. (Conversor USB-RS485, como no Deliverable 5. Com um MAX485 na UART do GPIO:
+   `MTG_SERIAL_PORT=/dev/serial0 MTG_DE_PIN=<pino BCM do DE+RE>`.)
+6. **Serviço no boot**: ajuste e instale [`deploy/sorter-api.service`](deploy/sorter-api.service) (instruções no arquivo).
+
+### Calibração da câmera com a máquina montada
+
+Não é preciso abrir a câmara de leitura nem tirar o Raspberry Pi: o serviço tem uma página de calibração.
+Com o serviço rodando (`MTG_VISION=camera`) e nenhuma run ativa, abra no celular ou notebook, na mesma rede:
+
+```
+http://<ip-do-pi>:8000/calibration
+```
+
+Sem acesso direto à rede do Pi, faça um túnel SSH e abra `http://localhost:8000/calibration`:
+
+```bash
+ssh -L 8000:localhost:8000 pi@<ip-do-pi>
+```
+
+Procedimento sugerido:
+
+1. **Cartão branco**: coloque um cartão branco liso do tamanho de uma carta no topo da pilha e toque em
+   **Alimentar 1 carta** (o alimentador o leva até a plataforma, o flap o segura).
+2. **Autocalibrar (exposição + branco)**: a câmera ajusta exposição e balanço de branco sozinha com o cartão
+   branco e os valores ficam travados, como numa run. Confira em **Medidas** a *luz desigual* (≤ 20 %) e os
+   *pixels estourados* (≤ 2 %); se a luz estiver desigual, a posição/difusão das fitas LED precisa de ajuste.
+3. **Descartar carta (bin 6)** e alimente cartas reais. Use **Capturar** (ou **Ao vivo**) e ajuste exposição,
+   ganho e luz até o *brilho da carta* ficar entre 60 e 180 e a *nitidez do texto pequeno* acima de 70.
+   Nitidez baixa com a carta parada = foco: a lente da Camera Module v2 é girada à mão (com a ferramenta que
+   acompanha a câmera); a página só mede.
+4. **Identificar a carta** mostra a leitura completa (OCR, edição, número, carta encontrada) com a imagem anotada.
+5. **Luz ambiente × escuro (RNF08)**: **Marcar referência**, acenda/apague a luz da sala, **Capturar**: a
+   variação deve ficar em até 10 %.
+6. **Salvar no vision.toml** grava exposição, ganho, branco e luz na seção `[camera]` (valem após reiniciar).
+
+As medidas e orientações da página também indicam se a carta ocupa uma área do quadro compatível com
+`max_area_ratio` / `min_area_ratio` do `vision.toml`. As referências (brilho 60–180, nitidez ≥ 70) vieram das
+fotos da prova de conceito; refine-as com o benchmark das fotos feitas na câmara (`python -m cardforge.cv batch`).
+
+**Câmera: Pi Camera Module v2 (IMX219).** No Raspberry Pi OS Bookworm ela é detectada sozinha
+(`camera_auto_detect=1` em `/boot/firmware/config.txt`). Se esse arquivo ainda tiver `dtoverlay=ov5647`, da câmera
+anterior, troque por `dtoverlay=imx219` (ou apague a linha e deixe a detecção automática). `rpicam-hello --list-cameras`
+(com o serviço parado) deve listar `imx219`. O serviço avisa no log se a câmera encontrada não for a do `vision.toml`,
+e a página de calibração mostra o sensor detectado e usa os limites dele (ganho analógico da IMX219: 1 a ~10,7).
+A resolução padrão é **1640×1232** (modo 2×2 do sensor, campo de visão inteiro); `[3280, 2464]` (8 MP) só vale a
+pena se a carta ocupar pouco do quadro.
+
+**Biblioteca da câmera.** O código usa o **Picamera2** (pacote `python3-picamera2`), a biblioteca Python oficial da
+Raspberry Pi, que roda sobre a pilha libcamera — a mesma das ferramentas `rpicam-*`. Ele não chama os antigos
+`libcamera-still` / `libcamera-hello` (renomeados para `rpicam-still` / `rpicam-hello` no Raspberry Pi OS
+Bookworm) nem o `raspistill`. Como alternativa, `[camera] backend = "rpicam"` no `vision.toml` faz cada foto com
+`rpicam-still` (mais lento, ~1 s por foto). Enquanto o serviço está rodando, ele mantém a câmera aberta, então
+`rpicam-hello` / `rpicam-still` só funcionam com o serviço parado (`sudo systemctl stop sorter-api`); por isso
+a calibração é feita pela página.
+
+### Configuração (variáveis `MTG_*`)
+
+As da comunicação RS-485 e da mecânica estão em [`sorter_api/config.py`](sorter_api/config.py) e em
+[docs/API.md](docs/API.md). As novas:
+
+| Variável | Padrão | O que faz |
+|---|---|---|
+| `MTG_VISION` | `off` | `camera` = máquina real · `files` = visão real sobre fotos de `MTG_VISION_IMAGES` (bancada / simulador) · `off` = sem visão, bins 1→6 em ciclo (teste da mecânica) |
+| `MTG_VISION_CONFIG` | `vision.toml` | Limiares da visão, câmera e caminho do `cards.db` |
+| `MTG_VISION_IMAGES` | `input_cartas` | Fotos usadas com `MTG_VISION=files`, em ordem alfabética |
+| `MTG_IDENTIFY_ATTEMPTS` | `3` | Capturas por carta (1 + 2 retentativas, RF29) |
+| `MTG_LIGHT_BASE_LEVEL` / `MTG_LIGHT_STEP` | `[camera] light_level` / `20` | Luz da câmara em %, e o aumento a cada retentativa (RNF09). Sem a variável, vale o nível salvo pela calibração |
+| `MTG_MAX_CARDS_PER_RUN` | `250` | Fim automático da run (RNF27) |
+| `MTG_RUN_DB` | `data/run.db` | Banco local das runs |
+| `MTG_APP_USERNAME` / `MTG_APP_PASSWORD` | `admin` / *(vazia)* | Login do app. Senha vazia = qualquer credencial é aceita (só para testes) |
+
+## Sem hardware (PC)
+
+```bash
+pip install -r requirements.txt
+MTG_VISION=files python -m sorter_api --simulate     # Arduinos simulados + visão real sobre input_cartas/
+python -m pytest -q                                  # 88 testes
+```
+
+A página de calibração também funciona assim (`http://localhost:8000/calibration`): a "câmera" mostra as fotos e
+simula os ajustes de exposição, ganho e branco. O simulador segue o mesmo protocolo dos Arduinos. `PUT /sim/state` coloca cartas na pilha, enche bins, trava o
+alimentador ou desliga um módulo, para testar as telas de erro do app.
+
+## Conectar o app
+
+O app já fala com `API_BASE_URL` usando as rotas do seu `api_contract.dart`. Como o servidor CardForge ainda não
+existe, o Pi responde essas rotas ([`app_compat.py`](sorter_api/app_compat.py)): login, `/cards`,
+`/machines/{id}/status|start|stop`. No *CardForge App*, crie o `.env`:
+
+```
+USE_MOCK=false
+USE_MOCK_BLUETOOTH=true
+API_BASE_URL=http://<ip-do-pi>:8000
+```
+
+e rode `flutter run --dart-define-from-file=.env`. Entre com o usuário `admin` e a senha de `MTG_APP_PASSWORD`.
+No app, **Start/Resume** inicia uma run ou retoma uma run pausada (o app mostra a pausa como "stopped"), e
+**Stop** encerra a run. **Cards in folders** lista as cartas separadas, por bin.
+
+O código do app não foi alterado (não há Flutter neste ambiente para compilar e testar). Faltam no app, e a API já oferece:
+
+| No app | Requisito | Já disponível no Pi |
+|---|---|---|
+| Alertas de falha e de atenção | RF27, RF36 | WebSocket `/ws/events`: eventos `fault` e `attention` |
+| Tela de resultados da run | RF22 | `GET /runs/{id}` |
+| Exportar CSV | RF24 | `GET /inventory/export.csv` |
+| Mostrar o motivo de um Start recusado (hoje toda resposta 409 aparece como "máquina offline") | RF26 | corpo da resposta 409: `problems` |
+| Login com Google | — | precisa do servidor CardForge (o Pi responde 501) |
+
+## Diferenças em relação ao design do Notion
+
+O código pronto (firmware e API) é a referência; o design do Deliverable 3 foi seguido onde não conflita.
+
+| Design (Deliverable 3) | Implementado | Por quê |
+|---|---|---|
+| Modbus RTU sobre UART, A1 = base, A2 = alimentador | RS-485 com protocolo ASCII próprio; **A1 = módulo de cima, A2 = base** | É o que o firmware e a API usam e já foi testado na máquina (Deliverable 5) |
+| App ↔ servidor (auth, inventário) e app ↔ Pi (controle) | O Pi responde as rotas do servidor que o app usa | O servidor não existe ainda; `run.db` guarda `sync_state` para o futuro SyncWorker (DB-SD-01) |
+| Falha encerra a run (API original) | Falha mecânica **pausa**; Resume continua a mesma run | RNF23 e FW-SD-04 |
+| Eventos com bin e id da carta (API original) | Só progresso durante a run | RF23 |
+| Parada joga a carta no bin que estiver embaixo (API original) | Vai para o bin dela ou para o 6, e é registrada | RF25, RNF20 |
+
+## Situação dos requisitos de software
+
+| Requisito | Situação |
+|---|---|
+| RF05, RF08, RF09, RF19, RF20, RF22–RF23, RF25–RF27, RF29, RF39, RNF15, RNF16, RNF19, RNF20, RNF23, RNF27 | Implementados e cobertos por testes com o simulador |
+| RF17, RF18, RNF18, RNF22 | Implementados; **medir na máquina** (a visão leva ~4,5 s por captura no Pi, segundo o Deliverable 5) |
+| RF16, RF41 (LED de status), RNF09 (luz) | Lado do Pi pronto; **faltam os comandos `LED` e `LIGHT` no `a1_top.ino`** ([PROTOCOL.md 5.1](docs/PROTOCOL.md)). Até lá o Pi desliga esses recursos sozinho |
+| RF07 (bins vazios no Start) | Implementado; os IR dos bins ainda respondem sempre "vazio" no hardware (Deliverable 5) |
+| RF24, RF36 | API pronta; falta a tela no app |
+| RF40, RF41 (Wi-Fi por Bluetooth) | Não implementado: o app ainda não tem o transporte Bluetooth |
+| RF21, RF35, RF06/RF37, RF30 | Opcionais não implementados (RF30 não se aplica: a identificação é offline) |
 
 ## Estrutura
 
 ```
-cardforge/
-  cv/                        # pacote cardforge.cv (CV-CL-00)
-    vision.py                #   VisionModule: start() · identify() · reload_database() · update_database()
-    recognizer.py            #   CardRecognizer.recognize(frame) -> IdentificationResult
-    result.py                #   IdentificationResult, IdentificationStatus
-    config.py                #   VisionConfig (lido de vision.toml)
-    capture/                 #   CameraService (Picamera2/OV5647), FileCameraService, Frame
-    detection/               #   ContourCandidateGenerator, QuadrilateralFinder, CardDetector, PerspectiveRectifier
-    ocr/                     #   OcrEngine, OrientationResolver, FaceDownDetector, LayoutClassifier, RoiCatalog, FieldExtractor
-    matching/                #   InfoLineParser, SetCodeCatalog, NameIndex, CardMatcher
-    report.py, __main__.py   #   relatórios e CLI
-  data/                      # pacote cardforge.data (CV-CL-03 / CV-ER)
-    repository.py            #   SqliteCardRepository (somente leitura)
-    sync.py                  #   ScryfallSyncService (bulk "default_cards" + /sets, troca atômica)
-    schema.py                #   schema do cards.db (CV16)
-tests/test_vision.py         # 23 testes unitários (sem câmara, rede ou modelos)
-vision.toml                  # limiares e parâmetros da câmara
-data/cards.db                # espelho local do Scryfall (gerado pelo comando sync, ~40 MB)
+sorter_api/                 main loop + API (FastAPI, uvicorn)
+  controller.py             estados, start/resume/stop, o loop por carta, pausa em falha
+  identifier.py             VisionIdentifier (câmera + visão, retentativas) / PlaceholderIdentifier
+  sorting.py                bin pela identidade de cor (RF20)
+  store.py                  run.db: local_run, local_cards, tokens do app
+  app_compat.py             rotas que o app mobile usa
+  calibration_api.py        calibração da câmera pela rede (+ static/calibration.html)
+  api.py, events.py         REST + WebSocket
+  modules.py, bus.py, protocol.py, sim.py   A1/A2, RS-485, simulador
+cardforge/                  visão computacional (cv, cv/calibration.py) e espelho do Scryfall (data)
+firmware/                   a1_top, a2_base e testes de bancada da base
+deploy/sorter-api.service   serviço systemd
+docs/                       PASSO_A_PASSO.md, API.md, PROTOCOL.md, VISION.md
+tests/                      test_api, test_protocol, test_integration, test_vision
+vision.toml, data/cards.db  configuração e banco de cartas da visão
 ```
-
-Os arquivos da PoC (`mtg_scanner.py`, `atualizar_base_local.py`, `atualizar_sets.py`, `mini_scryfall.json`,
-`sets_oficiais.json`) foram mantidos intactos para referência e podem ser removidos: o `cards.db` substitui
-os dois JSON.
-
-## Instalação
-
-**PC (desenvolvimento):**
-
-```bash
-python -m venv venv
-venv/Scripts/pip install -r requirements.txt
-```
-
-**Raspberry Pi 3B/4B** — Raspberry Pi OS **64-bit** (o onnxruntime só existe para aarch64), Python 3.11:
-
-```bash
-sudo apt install -y python3-picamera2
-python3 -m venv --system-site-packages venv
-venv/bin/pip install -r requirements.txt
-```
-
-## Uso
-
-```bash
-python -m cardforge.cv sync                    # cria/atualiza data/cards.db (precisa de internet, ~20 s + download)
-python -m cardforge.cv identify foto.jpg        # identifica imagens e imprime JSON
-python -m cardforge.cv batch input_cartas --out relatorios
-python -m cardforge.cv batch input_cartas --truth gabarito.csv   # mede a acurácia (RNF18)
-python -m cardforge.cv camera -n 5              # no Pi: captura com a câmara e identifica
-python -m unittest discover -s tests -v
-```
-
-`batch` gera, por imagem, `<foto>_processada.jpg` (carta retificada com as ROIs), `<foto>_dados.txt` e
-`<foto>_dados.json`, além de `resultados.csv` e um resumo com a distribuição de status e o tempo por captura.
-O gabarito é um CSV com as colunas `file,set,number` (ou `file,name`).
-
-## Integração com o programa de controle (FW-CL-01 / FW-AD-01)
-
-O laço de retentativas e a iluminação pertencem ao `MainLoop`; a visão faz **uma captura por chamada**:
-
-```python
-from cardforge.cv import VisionModule, VisionConfig, IdentificationStatus, DatabaseUnavailable
-
-vision = VisionModule(VisionConfig.load("vision.toml"))
-try:
-    vision.start()                       # modelos ONNX + cards.db + câmara
-except DatabaseUnavailable:
-    ...                                  # pre-run block: "card database missing" (Start recusado)
-
-def identify_card(a2):                   # chamado com a carta parada pelo gate (A2 CARD_READY)
-    level = BASE_LIGHT
-    for attempt in range(3):             # 1 + 2 retentativas (RF29)
-        result = vision.identify()
-        if result.status.is_final:       # IDENTIFIED ou FACE_DOWN
-            break
-        level = min(level + LIGHT_STEP, 100)
-        a2.setLight(level)               # RNF09
-    if result.status is IdentificationStatus.IDENTIFIED:
-        return sorting_rules.bin_for(result.card), result     # card.color_identity -> RF20
-    return 6, result                     # bin 6: não identificada (RF25) ou virada (RF39)
-```
-
-`IdentificationResult` traz `status`, `card` (`CardRecord`: `print_id` = id do Scryfall usado como
-`card_identifier`, nome, custo, tipo, `color_identity`, raridade, edição, número), `method`, `confidence`,
-`needs_review`, `layout`, os campos lidos e `elapsed_ms`. `vision.update_database()` só deve ser chamado sem
-run ativa; se falhar, o banco anterior continua em uso.
-
-## Pipeline (uma chamada `identify()`)
-
-1. **Borda e retificação** (CV-AD-02): 5 máscaras (Canny, Canny preenchido, Otsu escuro, Otsu escuro aberto,
-   Otsu claro) em 3 passes; quadriláteros com proporção de carta, quase retangulares e sem encostar na borda do
-   frame; escolhe o maior (borda externa, não a caixa de arte); perspectiva corrigida para 630×880.
-   Falha → `CROP_FAILED`.
-2. **Orientação** (CV-AD-03): título lido com as ROIs padrão e pontuado contra os nomes oficiais; se < 75, lê
-   a carta girada 180° e só a adota se ganhar por > 10 pontos. Uma linha de info válida (edição oficial + número)
-   também confirma a orientação.
-3. **Verso da carta** (RF39, novo): nenhum título nas duas orientações **e** ≥ 75 % do interior marrom
-   (verso ≈ 85 %, frentes ≤ 67 %) → `FACE_DOWN`.
-4. **Atalho**: Nome e Info ficam no mesmo lugar em todos os layouts. Se a leitura da etapa 2 (ROIs padrão) já
-   identifica a carta, a captura termina aqui — exceto quando a linha de info marca token (`T0002`) ou quando só
-   o nome bateu apesar de set+número lidos. Na maioria das fotos a captura usa **uma única chamada de OCR**.
-5. **Layout** (uma chamada de OCR, só se o atalho não resolveu): Standard, Saga, Full Art, Token Full, Token Classic.
-6. **Campos** (uma chamada de OCR): Nome, Tipo e Info nas ROIs do layout; reaproveita a leitura da etapa 2
-   quando o layout é Standard.
-7. **Info** (CV-AD-04): número (`236/249` tem prioridade sobre o ano do copyright) e código da edição (exato;
-   idioma colado como em `FICEN`/`TLEENBI`; trocas típicas de OCR como `F1N`→`FIN`, `JKO`→`IKO`).
-8. **Match** no `cards.db`: set+número cruzado com o nome → nome exato → nome fuzzy. Divergências ficam com
-   `needs_review` abaixo de 90 % e viram `LOW_CONFIDENCE` (o controle recaptura e, no fim, manda para o bin 6).
-
-## Resultados no conjunto de fotos da PoC (63 imagens de `input_cartas`)
-
-| Status | Imagens |
-| --- | --- |
-| IDENTIFIED | 56 (88,9 %) |
-| LOW_CONFIDENCE | 3 (4,8 %) |
-| CROP_FAILED | 4 (6,3 %) |
-| FACE_DOWN | 0 (nenhum falso positivo) |
-
-- Os 7 exemplos do Deliverable 4 são identificados, incluindo a carta em português *Sagui Espinhoso* → Prickly Marmoset.
-- Tempo médio de 0,62 s por captura num PC (Python 3.13, x86-64) — era 1,19 s antes das otimizações abaixo,
-  com resultados idênticos nas 63 fotos; **ainda não medido no Raspberry Pi**.
-
-### Desempenho (medido nas 63 fotos, PC)
-
-| Etapa | Tempo |
-| --- | --- |
-| Detecção de bordas + retificação | ~40 ms (≈ 5 %) |
-| OCR (média de 1,2 chamadas por captura) | ~95 % do restante |
-| Match no SQLite + fuzzy | ~2 ms |
-
-| Otimização | Efeito | Configuração |
-| --- | --- | --- |
-| Pular o OCR de layout quando a leitura padrão já identifica | ~−40 %, sem perdas | `skip_layout_when_identified` |
-| Classificador de ângulo do RapidOCR desligado | ~−11 %, sem perdas | `ocr_angle_cls` |
-| Detector sem ampliar (`"max"`, 960) | ~−20 %, mas 4 cartas a menos confirmadas por set+número | `ocr_det_limit_type/side_len` (padrão mantido) |
-| `ocr_upscale = 1.0` | ~−8 %, mas 4 cartas a menos identificadas | `ocr_upscale` (padrão mantido) |
-| Ler a faixa de layout junto com Nome/Tipo/Info | sem ganho (o custo é por linha de texto, não por chamada) | descartado |
-- As 4 falhas de recorte são cartas pequenas fotografadas à mão com sombra forte sobre fundo claro, situação que
-  a câmara escura com iluminação própria (RNF08) elimina. Os 3 `LOW_CONFIDENCE` são duas fotos de uma carta com
-  moldura *showcase* (a linha de tipo fica fora da ROI) e um recorte errado.
-- O detector de verso foi verificado com fotos sintéticas do verso da carta (→ `FACE_DOWN` nas duas orientações).
-
-O conjunto da PoC não tem gabarito; para medir RNF18 (≥ 90 % em ≥ 100 cartas) e RF17, monte o baralho de
-referência, fotografe-o **na máquina** e rode `batch --truth`.
-
-## Onde esta versão difere do design (Deliverable 3)
-
-| Item | Design | Implementado | Motivo |
-| --- | --- | --- | --- |
-| Cartas não inglesas | `SET_NUMBER_NAME_MISMATCH` → revisão | `SET_NUMBER_LOCALIZED` (90 %) quando o nome não bate com nenhuma carta inglesa e os tipos da linha de tipo (PT/ES/FR/DE/IT) batem com a carta | Senão toda carta em português iria para o bin 6, comprometendo RNF18. Desligável com `accept_localized_cards = false` |
-| `max_area_ratio` | 0,60 | 0,85 (configurável) | Nas fotos de teste a carta ocupa até 67 % do frame; recalibrar com o enquadramento final |
-| Validação do quadrilátero | proporção | + retangularidade ≥ 0,85, sem encostar na borda do frame, proporção por média dos lados | Evita quads "puxados" até o canto da imagem pela sombra |
-| ROIs de Nome/Info | PoC (y 30–85, x 30–300) | Nome y 22–105, Info x 10–320 | O título e o 1.º caractere da edição eram cortados quando o recorte vinha um pouco deslocado |
-| Orientação | só título | + linha de info válida | Corrige rotações erradas e evita uma chamada de OCR a mais em cartas não inglesas |
-| Nomes indexados | nome + faces | + `flavor_name` (Universes Beyond) | Ex.: *The Mechanist, Tactical Tinkerer* = Lita, Mechanical Engineer |
-| Escolha da impressão por nome | mais recente | edição lida pelo OCR primeiro; evita The List / Secret Lair | Inventário mais fiel quando o número não foi lido |
-| Classificação de layout | sempre (1 OCR) | só quando a leitura com as ROIs padrão não identificou a carta | ~−40 % de tempo, resultados idênticos nas 63 fotos. Desligável com `skip_layout_when_identified = false` |
-| `MatchMethod` | — | + `SET_NUMBER_LOCALIZED` | Rastreabilidade do caso acima |
-
-## Requisitos cobertos por este módulo
-
-| Requisito | Como |
-| --- | --- |
-| RF15 | `CameraService` (exposição/AWB fixos); nitidez (variância do Laplaciano) em `result.debug["sharpness"]` |
-| RF17 | Nome, Edição e Número extraídos por OCR; medir com `batch --truth` |
-| RF18 | Confiança ≥ 90 % e sem `needs_review` → `IDENTIFIED`; dados completos (tipo, identidade de cor…) do `cards.db` |
-| RF25 / RF29 / RNF09 | Status explícitos por captura; retentativas e luz no programa de controle (exemplo acima) |
-| RF39 | `FaceDownDetector` → `FACE_DOWN` |
-| RNF15 | Pipeline 100 % local (OpenCV + RapidOCR/ONNX + SQLite); `requests` só é importado pelo `sync` |
-| RNF16 | Scryfall como única fonte, via espelho local |
-| RNF18 / RNF22 | Ferramentas de medição em `batch` (acurácia com gabarito, tempo por captura) |
-| RF33 (opcional) | Não implementado (custo de mana vem do banco, não do OCR) |
-
-## Próximos passos
-
-1. Calibrar `[camera]` e `max_area_ratio` com fotos tiradas **dentro** da câmara de captura.
-2. Medir o tempo por captura no Pi 3B (orçamento de 8,6 s por carta, RNF22). Se faltar margem: resolução da
-   câmara menor, `ocr_det_limit_type = "max"` (validar a precisão por set+número), Pi 4, cooler contra
-   *thermal throttling*.
-3. Fotografar o baralho de referência e medir RNF18/RF17 com `batch --truth`.
-4. Testar o verso da carta com um verso real fotografado na máquina e, se preciso, ajustar `[face_down]`.
