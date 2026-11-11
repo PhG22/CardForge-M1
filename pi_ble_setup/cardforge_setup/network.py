@@ -125,10 +125,19 @@ def parse_active_ssid(output: str) -> Optional[str]:
 
 
 class NmcliWifi(WifiManager):
-    def __init__(self, interface: str = "wlan0", connect_timeout: int = 45, runner: Runner = run_command) -> None:
+    def __init__(
+        self,
+        interface: str = "wlan0",
+        connect_timeout: int = 45,
+        runner: Runner = run_command,
+        connect_attempts: int = 3,
+        retry_delay: float = 3.0,
+    ) -> None:
         super().__init__()
         self.interface = interface
         self.connect_timeout = connect_timeout
+        self.connect_attempts = connect_attempts
+        self.retry_delay = retry_delay
         self._run_cmd = runner
 
     async def connect(self, ssid: str, password: str) -> Optional[str]:
@@ -142,27 +151,40 @@ class NmcliWifi(WifiManager):
             log.info("already connected to Wi-Fi %r: keeping the current connection", ssid)
             return None
 
-        code, out = await self._run_cmd(
-            nm + ["-t", "-f", "SSID", "device", "wifi", "list", "ifname", self.interface, "--rescan", "yes"], 30
-        )
-        visible = code == 0 and ssid in parse_terse_ssids(out)
-
         # Replace the profile from a previous attempt (it may hold a wrong password).
+        # Do it before scanning: if that profile is the active connection, deleting
+        # it drops Wi-Fi, and nmcli forgets the networks it had seen.
         await self._run_cmd(nm + ["connection", "delete", "id", CONNECTION_NAME], 10)
 
-        args = nm + ["--wait", str(self.connect_timeout), "device", "wifi", "connect", ssid]
-        if password:
-            args += ["password", password]
-        args += ["ifname", self.interface, "name", CONNECTION_NAME]
-        if not visible:
-            args += ["hidden", "yes"]  # not in the scan: maybe a hidden network
-        code, out = await self._run_cmd(args, self.connect_timeout + 15)
-        if code != 0:
+        code, out, visible = 0, "", False
+        for attempt in range(1, self.connect_attempts + 1):
+            scan_code, scan_out = await self._run_cmd(
+                nm + ["-t", "-f", "SSID", "device", "wifi", "list", "ifname", self.interface, "--rescan", "yes"], 30
+            )
+            visible = scan_code == 0 and ssid in parse_terse_ssids(scan_out)
+
+            args = nm + ["--wait", str(self.connect_timeout), "device", "wifi", "connect", ssid]
+            if password:
+                args += ["password", password]
+            args += ["ifname", self.interface, "name", CONNECTION_NAME]
+            if not visible:
+                args += ["hidden", "yes"]  # not in the scan: maybe a hidden network
+            code, out = await self._run_cmd(args, self.connect_timeout + 15)
+            if code == 0:
+                break
             await self._run_cmd(nm + ["connection", "delete", "id", CONNECTION_NAME], 10)
+            log.warning("nmcli connect failed (%s, attempt %d, seen in scan: %s): %s",
+                        code, attempt, visible, out.strip())
+            # "No network with SSID" right after a scan that listed it, or a scan
+            # that came back empty while the radio was switching: scan again.
+            if classify_nmcli_failure(code, out) != NETWORK_NOT_FOUND or attempt == self.connect_attempts:
+                break
+            await asyncio.sleep(self.retry_delay)
+
+        if code != 0:
             error = classify_nmcli_failure(code, out)
             if not visible and error == CONNECT_FAILED:
                 error = NETWORK_NOT_FOUND
-            log.warning("nmcli connect failed (%s): %s", code, out.strip())
             return error
 
         # Associated: wait a little for DHCP to hand out an address.

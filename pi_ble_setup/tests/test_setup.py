@@ -187,6 +187,8 @@ class FakeNmcli:
         if "list" in args:
             return 0, self.ssids
         if "connect" in args:
+            if isinstance(self.connect_result, list):
+                return self.connect_result.pop(0) if len(self.connect_result) > 1 else self.connect_result[0]
             return self.connect_result
         if "show" in args:
             return 0, self.ip
@@ -196,7 +198,7 @@ class FakeNmcli:
 def test_nmcli_connect_success_uses_named_profile():
     async def go():
         runner = FakeNmcli()
-        wifi = NmcliWifi(runner=runner)
+        wifi = NmcliWifi(runner=runner, retry_delay=0)
         assert wifi.start("Home", "password1")
         assert not wifi.start("Home", "password1")  # busy
         await wifi.wait()
@@ -213,7 +215,7 @@ def test_nmcli_connect_success_uses_named_profile():
 def test_nmcli_wrong_password_reports_and_cleans_up():
     async def go():
         runner = FakeNmcli(connect_result=(4, "Secrets were required, but not provided"))
-        wifi = NmcliWifi(runner=runner)
+        wifi = NmcliWifi(runner=runner, retry_delay=0)
         wifi.start("Home", "badpassword")
         await wifi.wait()
         return wifi, runner
@@ -226,7 +228,7 @@ def test_nmcli_wrong_password_reports_and_cleans_up():
 def test_nmcli_unknown_network_is_tried_as_hidden_then_not_found():
     async def go():
         runner = FakeNmcli(connect_result=(4, "Activation failed"), ssids="Other\n")
-        wifi = NmcliWifi(runner=runner)
+        wifi = NmcliWifi(runner=runner, retry_delay=0)
         wifi.start("Ghost", "")
         await wifi.wait()
         return wifi, runner
@@ -424,7 +426,7 @@ def test_active_ssid_is_parsed():
 def test_nmcli_already_on_network_keeps_connection():
     async def go():
         runner = FakeNmcli(active="no:Other\nyes:Home\n")
-        wifi = NmcliWifi(runner=runner)
+        wifi = NmcliWifi(runner=runner, retry_delay=0)
         wifi.start("Home", "password1")
         await wifi.wait()
         return wifi, runner
@@ -437,7 +439,7 @@ def test_nmcli_already_on_network_keeps_connection():
 def test_nmcli_on_other_network_switches():
     async def go():
         runner = FakeNmcli(active="yes:Other\n")
-        wifi = NmcliWifi(runner=runner)
+        wifi = NmcliWifi(runner=runner, retry_delay=0)
         wifi.start("Home", "password1")
         await wifi.wait()
         return wifi, runner
@@ -445,3 +447,46 @@ def test_nmcli_on_other_network_switches():
     wifi, runner = asyncio.run(go())
     assert wifi.status.state == "connected"
     assert any("connect" in c for c in runner.calls)
+
+
+def test_nmcli_not_found_after_scan_is_retried():
+    async def go():
+        runner = FakeNmcli(connect_result=[(10, "Error: No network with SSID 'Home' found."), (0, "ok")])
+        wifi = NmcliWifi(runner=runner, retry_delay=0)
+        wifi.start("Home", "password1")
+        await wifi.wait()
+        return wifi, runner
+
+    wifi, runner = asyncio.run(go())
+    assert wifi.status.state == "connected"
+    connects = [c for c in runner.calls if "connect" in c]
+    assert len(connects) == 2
+    # the old profile is deleted before the first scan, so the scan is fresh
+    first_delete = next(i for i, c in enumerate(runner.calls) if "delete" in c)
+    first_scan = next(i for i, c in enumerate(runner.calls) if "SSID" in c)
+    assert first_delete < first_scan
+
+
+def test_nmcli_not_found_gives_up_after_attempts():
+    async def go():
+        runner = FakeNmcli(connect_result=(10, "Error: No network with SSID 'Home' found."))
+        wifi = NmcliWifi(runner=runner, retry_delay=0, connect_attempts=3)
+        wifi.start("Home", "password1")
+        await wifi.wait()
+        return wifi, runner
+
+    wifi, runner = asyncio.run(go())
+    assert wifi.status.error == NETWORK_NOT_FOUND
+    assert len([c for c in runner.calls if "connect" in c]) == 3
+
+
+def test_nmcli_wrong_password_is_not_retried():
+    async def go():
+        runner = FakeNmcli(connect_result=(4, "Secrets were required, but not provided"))
+        wifi = NmcliWifi(runner=runner, retry_delay=0)
+        wifi.start("Home", "badpassword")
+        await wifi.wait()
+        return wifi, runner
+
+    wifi, runner = asyncio.run(go())
+    assert len([c for c in runner.calls if "connect" in c]) == 1
