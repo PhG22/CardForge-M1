@@ -22,6 +22,7 @@ class CameraConfig:
     awb_gains: tuple[float, float] = (1.6, 1.5)  # ganhos (vermelho, azul) fixos; 0 => AWB automático
     warmup_s: float = 0.5
     light_level: int = 60                        # fitas LED da câmara, % (nível base; RNF09 soma degraus)
+    tmp_dir: str = "data/tmp"                    # arquivos temporários (backend rpicam); limpo ao fim de cada run
 
 
 @dataclass
@@ -29,6 +30,19 @@ class FaceDownConfig:
     """Assinatura do verso da carta de Magic: moldura e oval central marrons (verso ≈ 0,85; frentes ≤ 0,67)."""
     min_brown_ratio: float = 0.75
     max_text_chars: int = 2       # caracteres no título tolerados (ruído) para considerar "sem título"
+
+
+@dataclass
+class CropConfig:
+    """
+    Onde está a carta na foto.
+    * "fixed": 4 cantos calibrados uma vez (a carta para sempre no mesmo lugar da câmara de leitura).
+      Sem detecção de bordas a cada foto: mais rápido e sem confundir a borda da carta com o fundo.
+    * "detect": detecção de bordas a cada foto (fotos de outras fontes, como as da prova de conceito).
+    """
+    mode: str = "detect"                         # o vision.toml da máquina usa "fixed"
+    corners: list = field(default_factory=list)  # [[x, y] x 4] em fração do quadro (0–1): TL, TR, BR, BL
+    margin: float = 0.0                          # amplia o recorte em volta da carta (0.02 = 2 %)
 
 
 @dataclass
@@ -60,6 +74,7 @@ class VisionConfig:
     # false = comportamento estrito do design CV-AD-04 (SET_NUMBER_NAME_MISMATCH -> needs_review).
     accept_localized_cards: bool = True
     camera: CameraConfig = field(default_factory=CameraConfig)
+    crop: CropConfig = field(default_factory=CropConfig)
     face_down: FaceDownConfig = field(default_factory=FaceDownConfig)
 
     @classmethod
@@ -77,6 +92,8 @@ class VisionConfig:
         with open(p, "rb") as f:
             data = tomllib.load(f)
         _apply(cfg, data, str(p))
+        if cfg.crop.mode not in ("fixed", "detect"):
+            raise ValueError(f"{p}: [crop] mode must be \"fixed\" or \"detect\"")
         # Caminho relativo do banco é relativo ao vision.toml.
         if not Path(cfg.db_path).is_absolute():
             cfg.db_path = str((p.parent / cfg.db_path).resolve())

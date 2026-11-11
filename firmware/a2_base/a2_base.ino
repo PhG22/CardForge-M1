@@ -33,7 +33,9 @@
     A5  homing IR (HIGH = strip)
     D6  DRV8825 DIR      D5  STEP      D4  SLEEP     D3  RESET     D2  M2 (HIGH = 1/16)
     A0  <- MAX485 RO     A1  -> MAX485 DI            D13 -> MAX485 DE + RE
-    Tray IR sensors: not wired yet (TRAY_IR_PINS = NO_PIN -> reported as empty)
+    Tray IR sensors (FC-51, LOW = card in the tray), reported in STATUS as TRAYS=<6 digits>:
+    tray 1 D10   tray 2 D8   tray 3 D11   tray 4 D7   tray 5 D9   tray 6 D12
+    The Pi reads them only before a run starts (RF07), never during a run (RF13).
 */
 
 #include <SoftwareSerial.h>
@@ -59,9 +61,11 @@ const int     IR_ACTIVE   = HIGH;   // this module goes HIGH over the strip
 const uint8_t IR_CONFIRM  = 3;
 
 // Tray "has cards" sensors, tray 1..6. NO_PIN = not wired (reported as empty).
+// Inputs with pull-up: an unplugged sensor reads HIGH = empty instead of floating.
 const uint8_t NO_PIN = 255;
-const uint8_t TRAY_IR_PINS[6] = {NO_PIN, NO_PIN, NO_PIN, NO_PIN, NO_PIN, NO_PIN};
+const uint8_t TRAY_IR_PINS[6] = {10, 8, 11, 7, 9, 12};
 const int     TRAY_IR_ACTIVE  = LOW;
+const unsigned long TRAY_SAMPLE_MS = 5;  // 3 equal samples 5 ms apart -> new stable value
 
 // ===================== Geometry (hardware/wiring-and-calibration.md) =====================
 const long  STEPS_PER_BASE_TURN = 12800;      // measured: 4 motor turns (76/19 gearing)
@@ -395,11 +399,29 @@ const char *stateName() {
   }
 }
 
-void traysField(char *out) {
+// Debounced tray sensors: a reading must repeat IR_CONFIRM times (one every TRAY_SAMPLE_MS)
+// before it counts, so a card edge or a flicker of the IR module does not toggle TRAYS.
+bool          trayFull[6];
+uint8_t       trayChanges[6];
+unsigned long lastTraySample = 0;
+
+void sampleTrays() {
+  if (millis() - lastTraySample < TRAY_SAMPLE_MS) return;
+  lastTraySample = millis();
   for (uint8_t i = 0; i < 6; i++) {
-    bool full = TRAY_IR_PINS[i] != NO_PIN && digitalRead(TRAY_IR_PINS[i]) == TRAY_IR_ACTIVE;
-    out[i] = full ? '1' : '0';
+    if (TRAY_IR_PINS[i] == NO_PIN) continue;
+    bool raw = digitalRead(TRAY_IR_PINS[i]) == TRAY_IR_ACTIVE;
+    if (raw == trayFull[i]) {
+      trayChanges[i] = 0;
+    } else if (++trayChanges[i] >= IR_CONFIRM) {
+      trayFull[i] = raw;
+      trayChanges[i] = 0;
+    }
   }
+}
+
+void traysField(char *out) {
+  for (uint8_t i = 0; i < 6; i++) out[i] = trayFull[i] ? '1' : '0';
   out[6] = '\0';
 }
 
@@ -527,7 +549,11 @@ void setup() {
   pinMode(RS485_DE_PIN, OUTPUT);
   digitalWrite(RS485_DE_PIN, LOW);
   pinMode(HOME_IR_PIN, INPUT);
-  for (uint8_t i = 0; i < 6; i++) if (TRAY_IR_PINS[i] != NO_PIN) pinMode(TRAY_IR_PINS[i], INPUT);
+  for (uint8_t i = 0; i < 6; i++) {
+    if (TRAY_IR_PINS[i] == NO_PIN) continue;
+    pinMode(TRAY_IR_PINS[i], INPUT_PULLUP);
+    trayFull[i] = digitalRead(TRAY_IR_PINS[i]) == TRAY_IR_ACTIVE;   // start from the real state
+  }
   pinMode(DIR_PIN, OUTPUT);
   pinMode(STEP_PIN, OUTPUT);
   pinMode(SLEEP_PIN, OUTPUT);
@@ -561,4 +587,5 @@ void setup() {
 void loop() {
   pollBus();
   updateAction();
+  sampleTrays();
 }

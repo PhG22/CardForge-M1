@@ -138,23 +138,12 @@ class TopModule:
     def stop(self) -> None:
         self._bus.transact(self.ADDRESS, "STOP")
 
-    # Optional commands (docs/PROTOCOL.md 5.1). Firmware without them answers ERR BAD_CMD.
+    # Optional command (docs/PROTOCOL.md 5.1). Firmware without it answers ERR BAD_CMD.
     def set_light(self, level: int) -> None:
         """Chamber LED strips, 0-100 % (RNF08 / RNF09)."""
         if not 0 <= level <= 100:
             raise ValueError(f"light level out of range: {level}")
         self._bus.transact(self.ADDRESS, "LIGHT", int(level))
-
-    def set_led(self, mode: str) -> None:
-        """RGB status LED pattern (RF16, Appendix B), e.g. IDLE, RUNNING, FEED_JAM."""
-        if mode not in LED_MODES:
-            raise ValueError(f"unknown LED mode: {mode}")
-        self._bus.transact(self.ADDRESS, "LED", mode)
-
-
-# Status LED patterns (Requirements, Appendix B). The firmware maps each to a color/blink.
-LED_MODES = ("OFF", "IDLE", "RUNNING", "FEED_JAM", "DOUBLE_FEED", "STARTUP_BLOCKED", "PAUSED_CONN",
-             "SETUP", "NO_NETWORK")
 
 
 class BottomModule:

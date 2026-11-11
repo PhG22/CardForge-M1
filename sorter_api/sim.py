@@ -16,7 +16,7 @@ import logging
 import threading
 import time
 
-from .modules import LED_MODES, TRAY_COUNT
+from .modules import TRAY_COUNT
 from .protocol import REPLY_START, REQUEST_START, Frame, FrameError, decode_frame, encode_frame
 
 log = logging.getLogger(__name__)
@@ -103,7 +103,6 @@ class SimTop(_SimDevice):
         self._feed_fail_at: float | None = None
         self._drop_at: float | None = None
         self.light: int | None = None       # optional LIGHT command
-        self.led: str | None = None         # optional LED command
 
     def tick(self, now: float) -> None:
         if self._feed_fail_at is not None:
@@ -170,11 +169,6 @@ class SimTop(_SimDevice):
             return []
         if command == "LIGHT" and self.world.optional_commands:
             self.light = _int_arg(args, 0, 0, 100)
-            return []
-        if command == "LED" and self.world.optional_commands:
-            if len(args) != 1 or args[0] not in LED_MODES:
-                raise SimError("BAD_ARG")
-            self.led = args[0]
             return []
         raise SimError("BAD_CMD")
 
@@ -268,7 +262,7 @@ class SimWorld:
     def __init__(self, stack_cards: int = 8, time_scale: float = 1.0, bottom_present: bool = True,
                  optional_commands: bool = True) -> None:
         self.lock = threading.Lock()
-        self.optional_commands = optional_commands  # False = firmware without LIGHT / LED (a1_top.ino today)
+        self.optional_commands = optional_commands  # False = firmware without LIGHT (a1_top.ino today)
         self.scale = time_scale
         self.bottom_present = bottom_present  # False = top-only bench, nothing answers as A2
         self.top = SimTop(self)
@@ -328,7 +322,6 @@ class SimWorld:
                 "cards_lost": self.bottom.cards_lost,
                 "offline_modules": sorted(self.offline),
                 "light_level": self.top.light,
-                "status_led": self.top.led,
             }
 
 

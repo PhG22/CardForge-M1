@@ -36,6 +36,11 @@ awb_gains = [1.6, 1.5]               # [0, 0] = balanço de branco automático; 
 warmup_s = 0.5
 light_level = 60                     # fitas LED, % (precisa do comando LIGHT no A1); gravado pela calibração
 
+[crop]                               # onde está a carta na foto
+mode = "fixed"                       # "fixed" = 4 cantos calibrados, sem detecção de bordas; "detect" = detecção a cada foto
+corners = []                         # gravados por "Salvar recorte fixo" em /calibration: [[x, y] x 4], fração do quadro
+margin = 0.0                         # amplia o recorte em volta da carta (0.02 = 2 %)
+
 [face_down]                          # RF39
 min_brown_ratio = 0.75
 max_text_chars = 2

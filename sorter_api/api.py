@@ -45,6 +45,7 @@ from .identifier import PlaceholderIdentifier, VisionIdentifier
 from .modules import BottomModule, TopModule
 from .protocol import FrameError
 from .sim import SimSerialPort, SimWorld
+from .status_led import NetworkMonitor, build_status_led
 from .store import RunStore
 
 log = logging.getLogger(__name__)
@@ -95,6 +96,8 @@ def build_identifier(settings: Settings, vision=None):
                             if p.suffix.lower() in (".jpg", ".jpeg", ".png"))
             if not images:
                 raise RuntimeError(f"MTG_VISION=files but {settings.vision_images} has no images")
+            # Photos from other cameras/positions: the card is found by border detection, not the fixed crop.
+            cfg.crop.mode = "detect"
             vision = VisionModule(cfg, camera=FileCameraService(images, cfg.camera))
         elif settings.vision == "camera":
             vision = VisionModule(cfg)
@@ -142,15 +145,24 @@ def create_app(settings: Settings | None = None, serial_port: SerialPort | None 
         hub.bind_loop(asyncio.get_running_loop())
         store = RunStore(settings.run_db)
         identifier, vision_module = await asyncio.to_thread(build_identifier, settings, vision)
-        controller = SorterController(TopModule(bus), BottomModule(bus), identifier, hub, settings, store)
+        status_led = build_status_led(settings.led, settings.led_pins, settings.simulate)
+        monitor = None
+        if settings.network_monitor == "on" or (settings.network_monitor == "auto" and not settings.simulate
+                                                and NetworkMonitor.available()):
+            monitor = NetworkMonitor(status_led)
+            monitor.start()
+        controller = SorterController(TopModule(bus), BottomModule(bus), identifier, hub, settings, store,
+                                      status_led)
         if isinstance(identifier, VisionIdentifier):
             identifier.set_light = controller.set_chamber_light
         app.state.controller = controller
         app.state.events = hub
         app.state.sim_world = sim_world
         app.state.store = store
+        app.state.status_led = status_led
         # The camera calibration page needs a real VisionModule (camera or photo files).
         app.state.vision_module = vision_module if hasattr(vision_module, "calibration_snapshot") else None
+        app.state.crop_samples = []        # card positions measured on the calibration page
         if not settings.app_password:
             log.warning("MTG_APP_PASSWORD is empty: the app can sign in with any username and password")
         await asyncio.to_thread(controller.power_on)
@@ -162,6 +174,9 @@ def create_app(settings: Settings | None = None, serial_port: SerialPort | None 
             yield
         finally:
             await asyncio.to_thread(controller.shutdown)
+            if monitor is not None:
+                monitor.stop()
+            status_led.close()
             bus.close()
             if vision_module is not None and vision is None:
                 vision_module.close()
@@ -338,8 +353,8 @@ def create_app(settings: Settings | None = None, serial_port: SerialPort | None 
     if settings.simulate:
         @app.get("/sim/state", tags=["simulator"])
         def sim_state(request: Request):
-            """What the simulated machine looks like right now."""
-            return request.app.state.sim_world.describe()
+            """What the simulated machine looks like right now (+ the Pi's status LED)."""
+            return {**request.app.state.sim_world.describe(), "status_led": request.app.state.status_led.mode}
 
         @app.put("/sim/state", tags=["simulator"])
         def set_sim_state(update: SimStateUpdate, request: Request):

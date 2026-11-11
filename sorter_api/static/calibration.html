@@ -84,6 +84,18 @@
       <ul id="advice"></ul>
     </section>
     <section>
+      <h2>Recorte fixo da carta</h2>
+      <p class="muted">A carta para sempre no mesmo lugar, então a identificação não procura a borda da carta em cada foto: usa estes 4 cantos.
+        Para calibrar: <b>Alimentar 1 carta</b> → <b>Medir posição desta carta</b> → <b>Descartar</b>, repetindo com 4 ou 5 cartas, e então <b>Salvar recorte fixo</b>.
+        Na imagem, verde = borda detectada agora, laranja = recorte fixo salvo.</p>
+      <table id="crop"></table>
+      <div class="row">
+        <button id="b-crop-sample">Medir posição desta carta</button>
+        <button id="b-crop-reset">Limpar medições</button>
+        <button class="primary" id="b-crop-save">Salvar recorte fixo</button>
+      </div>
+    </section>
+    <section>
       <h2>Luz ambiente × escuro (RNF08)</h2>
       <p class="muted">Com a carta parada: marque a referência, mude a luz da sala (acenda/apague) e capture de novo. A variação do brilho da carta deve ficar em até 10 %.</p>
       <div class="row"><button id="b-ref">Marcar referência</button></div>
@@ -137,7 +149,9 @@ function showMetrics(m) {
   const tag = (ok, text) => `<span class="${ok ? 'ok' : 'warn'}">${text}</span>`;
   rows.push(['Brilho do quadro', m.frame.brightness.toFixed(0) + ' / 255']);
   rows.push(['Pixels estourados', tag(m.frame.clipped_high_pct <= 2, m.frame.clipped_high_pct.toFixed(1) + ' %')]);
-  rows.push(['Carta encontrada', m.card_found ? tag(true, 'sim — ' + m.strategy) : '<span class="bad">não</span>']);
+  rows.push(['Recorte', m.crop.mode === 'fixed' ? (m.crop.calibrated ? 'fixo' : '<span class="bad">fixo, não calibrado</span>') : 'detecção de bordas']);
+  rows.push(['Borda detectada', m.detected ? tag(true, 'sim — ' + m.detected.strategy) : '<span class="warn">não</span>']);
+  if (m.crop.offset_px !== undefined) rows.push(['Desvio da carta × recorte fixo', tag(m.crop.offset_pct <= 2, m.crop.offset_px.toFixed(0) + ' px (' + m.crop.offset_pct.toFixed(1) + ' %)')]);
   if (m.card_found) {
     const c = m.card;
     rows.push(['Área da carta no quadro', (m.area_ratio * 100).toFixed(0) + ' %']);
@@ -199,6 +213,23 @@ $('b-auto').onclick = e => guarded(e.target, async () => {
 });
 $('b-save').onclick = e => guarded(e.target, async () => { const d = await call('POST', '/calibration/save'); msg(d.message, 'ok'); });
 $('b-ref').onclick = e => guarded(e.target, async () => { const d = await call('POST', '/calibration/reference'); msg(d.message, 'ok'); });
+
+function showCrop(c) {
+  const rows = [['Modo', c.mode === 'fixed' ? 'recorte fixo' : 'detecção de bordas'],
+                ['Calibrado', c.calibrated ? '<span class="ok">sim</span>' : '<span class="warn">não</span>'],
+                ['Medições nesta sessão', String(c.samples)]];
+  if (c.spread_px !== undefined)
+    rows.push(['Variação entre as cartas', `<span class="${c.spread_px <= 15 ? 'ok' : 'warn'}">${c.spread_px.toFixed(0)} px</span>`]);
+  $('crop').innerHTML = rows.map(r => `<tr><td>${r[0]}</td><td>${r[1]}</td></tr>`).join('');
+}
+$('b-crop-sample').onclick = e => guarded(e.target, async () => {
+  const d = await call('POST', '/calibration/crop/sample'); showCrop(d.crop); msg(d.message, 'ok'); await snapshot();
+});
+$('b-crop-reset').onclick = e => guarded(e.target, async () => { const d = await call('DELETE', '/calibration/crop/samples'); showCrop(d.crop); msg('Medições apagadas.'); });
+$('b-crop-save').onclick = e => guarded(e.target, async () => {
+  const d = await call('POST', '/calibration/crop/save'); showCrop(d.crop); msg(d.message, 'ok'); await snapshot();
+});
+call('GET', '/calibration/crop').then(d => showCrop(d.crop)).catch(() => {});
 $('b-feed').onclick = e => guarded(e.target, async () => {
   msg('Alimentando uma carta…'); const d = await call('POST', '/calibration/feed'); msg(d.message, 'ok'); await snapshot();
 });

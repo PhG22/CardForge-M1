@@ -3,7 +3,7 @@ Calibração da câmera com a máquina montada (página /calibration do serviço
 
 Mede, numa foto da carta parada na câmara de leitura:
 * brilho e saturação do quadro (áreas estouradas / pretas) -> ajuste de exposição e ganho;
-* se a carta foi encontrada, a estratégia e a área ocupada -> enquadramento e max/min_area_ratio;
+* onde a carta está (detecção de bordas usada só aqui) -> calibração e conferência do recorte fixo;
 * uniformidade da luz na carta (grade 3 × 3) e o equilíbrio de cor -> posição das fitas LED e branco;
 * nitidez da carta inteira e da linha de informação (texto pequeno) -> foco (RF15).
 Também grava os valores escolhidos na seção [camera] do vision.toml.
@@ -18,7 +18,7 @@ import numpy as np
 
 from .capture.camera import sharpness
 from .config import VisionConfig
-from .detection import CardDetector, PerspectiveRectifier
+from .detection import CardDetector, PerspectiveRectifier, fixed_quad, normalized_corners, order_points
 from .ocr.rois import CardLayout, RoiCatalog
 
 # Referências medidas nas 63 fotos da PoC: cartas lidas por edição+número tinham brilho 64–133 e
@@ -28,6 +28,7 @@ MAX_CLIPPED_PCT = 2.0               # % de pixels estourados (≥ 250) no quadro
 MAX_UNEVENNESS_PCT = 20.0           # (máx − mín) / máx das 9 células da grade — só com alvo branco
 MIN_INFO_SHARPNESS = 70.0           # variância do Laplaciano na linha de informação
 NEUTRAL_MAX_SATURATION = 35         # alvo neutro (cartão branco/cinza liso): saturação média HSV abaixo disso
+MAX_CROP_OFFSET_PCT = 2.0           # desvio aceitável entre a carta detectada e o recorte fixo (% da largura)
 
 
 def frame_metrics(image: np.ndarray, cfg: VisionConfig) -> tuple[dict, np.ndarray]:
@@ -40,13 +41,35 @@ def frame_metrics(image: np.ndarray, cfg: VisionConfig) -> tuple[dict, np.ndarra
                   "clipped_high_pct": round(float((gray >= 250).mean() * 100), 2),
                   "clipped_low_pct": round(float((gray <= 5).mean() * 100), 2)},
         "card_found": False,
+        "crop": {"mode": cfg.crop.mode, "calibrated": len(cfg.crop.corners) == 4},
     }
     overlay = image.copy()
-    quad = CardDetector(cfg).detect(image)
+    lw = max(2, w // 300)
+    # A detecção de bordas aqui só MEDE onde a carta está (para calibrar e conferir o recorte fixo);
+    # com crop.mode = "fixed" o pipeline de identificação não a usa.
+    detected = CardDetector(cfg).detect(image)
+    fixed = fixed_quad(cfg.crop, image.shape) if cfg.crop.mode == "fixed" else None
+    if detected is not None:
+        m["detected"] = {"strategy": detected.strategy.value,
+                         "corners_norm": normalized_corners(detected, image.shape)}
+        cv2.polylines(overlay, [detected.corners.astype(np.int32).reshape(-1, 1, 2)], True, (0, 255, 0), lw)
+    if fixed is not None:
+        cv2.polylines(overlay, [fixed.corners.astype(np.int32).reshape(-1, 1, 2)], True, (255, 160, 0), lw)
+        if detected is not None:
+            offset = float(np.linalg.norm(order_points(fixed.corners) - order_points(detected.corners), axis=1).max())
+            card_w = float(np.linalg.norm(order_points(fixed.corners)[1] - order_points(fixed.corners)[0]))
+            m["crop"].update(offset_px=round(offset, 1), offset_pct=round(offset / max(card_w, 1.0) * 100, 1))
+
+    quad = fixed if cfg.crop.mode == "fixed" else detected      # o que a identificação usaria
     if quad is None:
-        m["advice"] = ["Carta não encontrada: confira se há uma carta parada na plataforma, o enquadramento "
-                       "e o contraste da borda com o fundo."]
-        _label(overlay, "CARTA NAO ENCONTRADA", (0, 0, 255))
+        if cfg.crop.mode == "fixed":
+            m["advice"] = ["Recorte fixo não calibrado: alimente uma carta e use “Medir posição desta carta” "
+                           "(algumas cartas) e depois “Salvar recorte fixo”."]
+            _label(overlay, "RECORTE FIXO NAO CALIBRADO", (0, 0, 255))
+        else:
+            m["advice"] = ["Carta não encontrada: confira se há uma carta parada na plataforma, o enquadramento "
+                           "e o contraste da borda com o fundo."]
+            _label(overlay, "CARTA NAO ENCONTRADA", (0, 0, 255))
         return m, overlay
 
     card = PerspectiveRectifier(cfg).rectify(image, quad).image
@@ -76,9 +99,10 @@ def frame_metrics(image: np.ndarray, cfg: VisionConfig) -> tuple[dict, np.ndarra
     })
     m["advice"] = _advice(m, cfg)
 
-    cv2.polylines(overlay, [quad.corners.astype(np.int32).reshape(-1, 1, 2)], True, (0, 255, 0),
-                  max(2, w // 300))
-    _label(overlay, f"area {area_ratio:.0%}  {quad.strategy.value}", (0, 200, 0))
+    label = f"area {area_ratio:.0%}  {quad.strategy.value}"
+    if "offset_px" in m["crop"]:
+        label += f"  desvio {m['crop']['offset_px']:.0f} px"
+    _label(overlay, label, (0, 200, 0))
     return m, overlay
 
 
@@ -98,11 +122,15 @@ def _advice(m: dict, cfg: VisionConfig) -> list[str]:
     if c["info_sharpness"] < MIN_INFO_SHARPNESS:
         tips.append(f"Texto pequeno pouco nítido ({c['info_sharpness']:.0f}): confira o foco da lente "
                     "(ou se a carta está tremendo na foto).")
+    offset = m["crop"].get("offset_pct")
+    if offset is not None and offset > MAX_CROP_OFFSET_PCT:
+        tips.append(f"Esta carta está {m['crop']['offset_px']:.0f} px ({offset:.1f} % da largura) fora do recorte "
+                    "fixo: se acontecer com várias cartas, meça de novo ou aumente [crop] margin.")
     ratio = m["area_ratio"]
-    if ratio > cfg.max_area_ratio * 0.95:
+    if cfg.crop.mode == "detect" and ratio > cfg.max_area_ratio * 0.95:
         tips.append(f"A carta ocupa {ratio:.0%} do quadro, perto do limite max_area_ratio "
                     f"({cfg.max_area_ratio:.0%}): use max_area_ratio = {min(ratio * 1.15, 0.95):.2f}.")
-    if ratio < cfg.min_area_ratio * 1.5:
+    if cfg.crop.mode == "detect" and ratio < cfg.min_area_ratio * 1.5:
         tips.append(f"A carta ocupa só {ratio:.0%} do quadro: aproxime a câmera ou reduza min_area_ratio.")
     b, g, r = c["color_means_bgr"]
     if c["neutral_target"] and max(b, g, r) - min(b, g, r) > 0.10 * max(b, g, r, 1.0):

@@ -39,14 +39,17 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
+from pathlib import Path
 
 from .bus import BusError, ModuleError, ModuleNotResponding
 from .config import Settings
 from .events import EventHub
+from .housekeeping import PROJECT_ROOT, cleanup_after_run
 from .identifier import FACE_DOWN, IDENTIFIED, CardIdentifier, Identification
 from .modules import BottomModule, ModuleState, TopModule
 from .protocol import FrameError
 from .sorting import OVERFLOW_TRAY
+from .status_led import MemoryLedDriver, StatusLed
 from .store import RunStore, ScanRecord
 
 log = logging.getLogger(__name__)
@@ -167,6 +170,7 @@ class SorterController:
         events: EventHub,
         settings: Settings,
         store: RunStore | None = None,
+        status_led: StatusLed | None = None,
     ) -> None:
         self.top = top
         self.bottom = bottom
@@ -174,6 +178,7 @@ class SorterController:
         self.events = events
         self.s = settings
         self.store = store
+        self.led = status_led if status_led is not None else StatusLed(MemoryLedDriver())
         self._lock = threading.Lock()
         self._state = ControllerState.IDLE
         self._stop_requested = threading.Event()   # normal stop (also set by an immediate stop)
@@ -181,7 +186,7 @@ class SorterController:
         self._thread: threading.Thread | None = None
         self._run: RunInfo | None = None           # current or last run
         self._in_progress: Identification | None = None   # identified card not dropped yet
-        self._optional_ok = {"LIGHT": True, "LED": True}  # firmware supports the optional commands?
+        self._optional_ok = {"LIGHT": True}  # does the A1 firmware support the optional LIGHT command?
         if store is not None:
             n = store.recover_interrupted(utc_now())
             if n:
@@ -216,6 +221,7 @@ class SorterController:
             self._stop_requested = threading.Event()
             self._abort = threading.Event()
 
+        self._led("IDLE")                          # a STARTUP_BLOCKED from the last attempt ends here
         problems = self._guarded_prepare(home=True, idle_on_fail=True)
         if problems:
             self._set_idle()
@@ -439,10 +445,10 @@ class SorterController:
         return result
 
     def power_on(self) -> None:
-        """Service start: chamber light to its base level, status LED to Idle (RF16)."""
+        """Service start: status LED to Idle (RF16), chamber light to its base level."""
+        self._led("IDLE")
         try:
             self._light(self.s.light_base_level)
-            self._led("IDLE")
         except (BusError, FrameError) as exc:
             log.warning("modules not reachable at power-on: %s", exc)
 
@@ -759,7 +765,7 @@ class SorterController:
                 log.warning("could not send STOP to %s: %s", module.ADDRESS, exc)
 
     def _optional(self, command: str, call) -> None:
-        """LIGHT / LED are optional firmware commands: turned off for good on ERR BAD_CMD."""
+        """LIGHT is an optional A1 firmware command: turned off for good on ERR BAD_CMD."""
         if not self._optional_ok[command]:
             return
         try:
@@ -777,7 +783,8 @@ class SorterController:
         self._optional("LIGHT", lambda: self.top.set_light(level))
 
     def _led(self, mode: str) -> None:
-        self._optional("LED", lambda: self.top.set_led(mode))
+        """RGB status LED on the Pi GPIO (status_led.py)."""
+        self.led.set(mode)
 
     def set_chamber_light(self, level: int) -> None:
         """Used by the vision identifier to raise the light before a retry (RNF09)."""
@@ -806,21 +813,32 @@ class SorterController:
                              "run": run.to_dict()})
 
     def _finish(self, run: RunInfo, status: RunStatus, error_code: str | None, message: str) -> None:
+        stopped_at = utc_now()
+        if self.store is not None:
+            self.store.update_run(run.run_id, status=status.value, stopped_at=stopped_at,
+                                  error_code=error_code, message=message)
+        self._cleanup()                       # before IDLE: a new run never overlaps the cleanup
         with self._lock:
             run.status = status
-            run.stopped_at = utc_now()
+            run.stopped_at = stopped_at
             run.error_code = error_code
             run.message = message
             self._state = ControllerState.IDLE
             self._thread = None
         self._in_progress = None
-        if self.store is not None:
-            self.store.update_run(run.run_id, status=status.value, stopped_at=run.stopped_at,
-                                  error_code=error_code, message=message)
         if status is not RunStatus.FAILED:
             self._led("IDLE")
         log.info("run %s %s: %s", run.run_id, status.value, message)
         self.events.publish({"type": "run_finished", "run": run.to_dict(), "message": message})
+
+    def _cleanup(self) -> None:
+        """End of a run: free the SD card (temporary pictures/reports, run.db journal)."""
+        try:
+            root = Path(self.s.project_root) if self.s.project_root else PROJECT_ROOT
+            dirs = [d for d in self.s.cleanup_dirs.split(",") if d.strip()]
+            cleanup_after_run(dirs, root, self.store)
+        except Exception as exc:              # never fail a run because of the cleanup
+            log.warning("cleanup after run failed: %s", exc)
 
 
 _RECORD_FIELDS = {"match_method", "confidence", "card_name", "set_code", "collector_number", "color_identity",

@@ -131,6 +131,31 @@ class VisionModule:
         metrics, overlay = frame_metrics(frame.image, self.cfg)
         return frame, metrics, overlay
 
+    def measure_crop(self):
+        """Onde está a carta parada na plataforma, pela detecção de bordas (só para calibrar o recorte fixo).
+        Devolve (cantos normalizados TL, TR, BR, BL ou None, a foto, o quadrilátero em pixels ou None)."""
+        from .detection import CardDetector, normalized_corners
+
+        with self._lock:
+            frame = self.camera.capture()
+        quad = CardDetector(self.cfg).detect(frame.image)
+        corners = normalized_corners(quad, frame.image.shape) if quad is not None else None
+        return corners, frame.image, quad
+
+    def save_crop(self, corners: list, path=None) -> str:
+        """Liga o recorte fixo com estes cantos (vale na hora) e grava a seção [crop] do vision.toml."""
+        from .calibration import save_section
+
+        if len(corners) != 4:
+            raise ValueError("the fixed crop needs 4 corners")
+        path = path or getattr(self.cfg, "source_path", None) or "vision.toml"
+        with self._lock:
+            self.cfg.crop.mode = "fixed"
+            self.cfg.crop.corners = [[float(x), float(y)] for x, y in corners]
+            save_section(path, "crop", {"mode": "fixed", "corners": self.cfg.crop.corners,
+                                        "margin": float(self.cfg.crop.margin)})
+        return str(path)
+
     def save_camera_settings(self, path=None) -> str:
         """Grava exposição, ganho, branco e luz na seção [camera] do vision.toml."""
         from .calibration import save_section

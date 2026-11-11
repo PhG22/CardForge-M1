@@ -82,10 +82,15 @@ class VisionIdentifier:
 
     def problems(self) -> list[tuple[str, str]]:
         """Pre-run block (CV-SD-04): no card database = no identification."""
+        problems = []
         if not getattr(self.vision, "ready", True):
-            return [("CARD_DB_MISSING", "The card database is missing on the machine. "
-                                        "Run 'python -m cardforge.cv sync' on the Raspberry Pi.")]
-        return []
+            problems.append(("CARD_DB_MISSING", "The card database is missing on the machine. "
+                                                "Run 'python -m cardforge.cv sync' on the Raspberry Pi."))
+        crop = getattr(getattr(self.vision, "cfg", None), "crop", None)
+        if crop is not None and crop.mode == "fixed" and len(crop.corners) != 4:
+            problems.append(("CROP_NOT_CALIBRATED", "The camera crop is not calibrated. Open "
+                                                    "http://<machine-ip>:8000/calibration and save the fixed crop."))
+        return problems
 
     def identify(self, sleep: Callable[[float], None]) -> Identification:
         from cardforge.cv import IdentificationStatus

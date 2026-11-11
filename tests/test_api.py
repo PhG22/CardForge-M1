@@ -13,7 +13,7 @@ def fast_settings(**overrides) -> Settings:
     s = Settings(simulate=True, sim_time_scale=0.02, identify_delay_s=0.01, flap_settle_s=0.01,
                  card_fall_s=0.01, poll_interval_s=0.005, base_poll_interval_s=0.005,
                  home_poll_interval_s=0.005, feed_timeout_s=0.5, drop_timeout_s=0.5,
-                 sim_stack_cards=3, reply_timeout=0.1, run_db=":memory:")
+                 sim_stack_cards=3, reply_timeout=0.1, run_db=":memory:", cleanup_dirs="")
     for k, v in overrides.items():
         setattr(s, k, v)
     return s

@@ -1,6 +1,6 @@
 # CardForge-M1 - software do Raspberry Pi (main loop + API + visao computacional). Python 3.11+.
 # No Raspberry Pi (Raspberry Pi OS 64-bit), picamera2 e gpiozero vem do apt; crie o venv com acesso a eles:
-#   sudo apt install -y python3-picamera2 python3-gpiozero
+#   sudo apt install -y python3-picamera2 python3-gpiozero python3-lgpio
 #   python3 -m venv --system-site-packages .venv
 
 # API de controle (sorter_api)

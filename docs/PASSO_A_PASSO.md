@@ -27,12 +27,18 @@ seguir.
 | **Banco de cartas** | [`cardforge/data/`](../cardforge/data/), `data/cards.db` | espelho local do Scryfall, criado por `python -m cardforge.cv sync` |
 | **Configuração da visão e da câmera** | [`vision.toml`](../vision.toml) | limiares, câmera (IMX219), luz; a calibração grava aqui |
 | **Firmware** | [`firmware/`](../firmware/) | `a1_top` (módulo de cima: rolo, flap, IR da pilha e da plataforma), `a2_base` (base: motor, homing); `a2_homing_test` e `a2_tray_move_test` são testes de bancada só da base |
-| **Protocolo RS-485** | [docs/PROTOCOL.md](PROTOCOL.md) | quadros, comandos, códigos de erro; 5.1 = comandos `LIGHT`/`LED` que faltam no firmware |
+| **Protocolo RS-485** | [docs/PROTOCOL.md](PROTOCOL.md) | quadros, comandos, códigos de erro; 5.1 = comando `LIGHT` que falta no firmware |
+| **LED de status** | [`sorter_api/status_led.py`](../sorter_api/status_led.py) | LED RGB no GPIO do Pi (17, 22, 27): cores e piscadas do Apêndice B, estado da rede |
+| **Recorte fixo da carta** | [`cardforge/cv/detection/fixed.py`](../cardforge/cv/detection/fixed.py), `vision.toml` `[crop]` | os 4 cantos onde a carta para; calibrados pela página `/calibration` |
+| **Wi-Fi por Bluetooth** | [`pi_ble_setup/`](../pi_ble_setup/) | serviço separado (README próprio) |
+| **App mobile (no repositório)** | [`cardforgeapp/`](../cardforgeapp/) | projeto Flutter |
 | **Referência da API** | [docs/API.md](API.md) | cada rota, resposta e evento |
 | **Serviço no boot** | [`deploy/sorter-api.service`](../deploy/sorter-api.service) | unidade systemd |
 | **Testes** | [`tests/`](../tests/) | `test_vision` (visão), `test_protocol` (quadros), `test_api` (API + simulador), `test_integration` (loop completo, persistência, app, visão real em fotos), `test_calibration` |
 | **App mobile** | pasta `CardForge App` (projeto Flutter separado) | sem alterações; aponta para o Pi pelo `.env` |
-| **Prova de conceito antiga** | `mtg_scanner.py`, `atualizar_*.py`, `*.json` na raiz | só referência; pode ser apagada |
+| **Prova de conceito antiga** | [`deprecated/`](../deprecated/) | só referência; pode ser apagada |
+| **Fotos da calibração do recorte** | `calibragem_recorte/` (criada na primeira medição) | cada foto usada para medir o recorte fixo: original, anotada, `medicoes.csv` e o recorte salvo |
+| **Arquivos de sistema do Pi** | [`sorter_api/housekeeping.py`](../sorter_api/housekeeping.py) | guarda as fotos da calibração e limpa os temporários ao fim de cada run |
 
 ---
 
@@ -64,7 +70,7 @@ python -m cardforge.cv sync
 python -m pytest -q
 ```
 
-**Esperado:** `88 passed`. Os testes usam os Arduinos simulados; `test_integration` e `test_calibration` também rodam
+**Esperado:** `101 passed`. Os testes usam os Arduinos simulados; `test_integration` e `test_calibration` também rodam
 a visão de verdade sobre fotos de `input_cartas/`.
 
 ### A3. Subir o sistema completo simulado
@@ -201,7 +207,7 @@ cd /home/pi/CardForge-M1
 ```
 
 ```bash
-sudo apt install -y python3-picamera2 python3-gpiozero
+sudo apt install -y python3-picamera2 python3-gpiozero python3-lgpio
 ```
 
 ```bash
@@ -222,14 +228,15 @@ O último comando cria/atualiza o `data/cards.db` (precisa de internet só agora
 .venv/bin/python -m pytest -q
 ```
 
-**Esperado:** `88 passed` também no Pi (mais lento).
+**Esperado:** `101 passed` também no Pi (mais lento).
 
 ### B3. Firmware (Arduino IDE, no PC)
 
 1. `firmware/a1_top/a1_top.ino` → Arduino do **módulo de cima** (endereço A1). Pinos padrão: rolo D9, flap D10,
    IR da plataforma D6, IR da pilha D5, RS-485 em D4 (RO) / D3 (DI) / D13 (DE+RE).
 2. `firmware/a2_base/a2_base.ino` → Arduino da **base** (endereço A2). Pinos: STEP D5, DIR D6, SLEEP D4, RESET D3,
-   M2 D2, IR do homing A5, RS-485 em A0 (RO) / A1 (DI) / D13 (DE+RE).
+   M2 D2, IR do homing A5, RS-485 em A0 (RO) / A1 (DI) / D13 (DE+RE), IR dos bins: bin 1 D10, bin 2 D8, bin 3 D11,
+   bin 4 D7, bin 5 D9, bin 6 D12 (FC-51, LOW = carta no bin).
 3. Os dois a 9600 baud (igual a `MTG_BAUDRATE`). Os pinos estão no começo de cada `.ino`; mude lá se a fiação
    for diferente.
 
@@ -259,6 +266,20 @@ curl <ip-do-pi>:8000/hardware/status
 
 **Esperado:** `"top": {"online": true, ...}` e `"bottom": {"online": true, ...}`. Coloque e tire cartas da pilha
 e confira `stack_has_card` mudando. Se um módulo aparece `online: false`: alimentação, cabo A/B, endereço e baud.
+
+**Sensores IR dos bins:** com todos os bins vazios, `"trays_with_cards": []`. Ponha uma carta em cada bin, um de cada
+vez, e confira que só aquele número aparece (ex.: carta no bin 4 → `[4]`). Número errado = fio trocado (corrija em
+`TRAY_IR_PINS` no `a2_base.ino`); bin que nunca aparece = sensor desalinhado ou desligado (com o pull-up interno, um
+sensor solto lê "vazio"). Com uma carta em algum bin, `curl -X POST <ip-do-pi>:8000/run/start` deve responder 409
+`TRAYS_NOT_EMPTY` listando o bin.
+
+### C1b. LED de status
+
+Ao subir o serviço o LED fica **verde fixo**. Confira os outros estados: Start com um bin ocupado → **amarelo fixo**;
+uma run → **verde piscando**; trave o alimentador durante uma run → **vermelho fixo** (Resume volta ao verde
+piscando). Desconecte o Wi-Fi com a máquina parada (`sudo nmcli radio wifi off`) → **azul piscando** em até 5 s
+(`sudo nmcli radio wifi on` para voltar). LED apagado ou cor trocada: confira a fiação (COM no pino 9, vermelho 11,
+azul 13, verde 15) ou ajuste `MTG_LED_PINS` (ordem R,G,B).
 
 ### C2. Só o módulo de cima (se a base ainda não estiver pronta)
 
@@ -306,12 +327,22 @@ e abra `http://<ip-do-pi>:8000/calibration` no celular ou notebook. Sem acesso �
 ssh -L 8000:localhost:8000 pi@<ip-do-pi>
 ```
 
-1. **Cartão branco** liso do tamanho de uma carta no topo da pilha → **Alimentar 1 carta**.
-2. **Autocalibrar (exposição + branco)**. Em **Medidas**: *luz desigual* ≤ 20 % e *pixels estourados* ≤ 2 %.
+1. **Recorte fixo**: ponha cartas comuns na pilha; **Alimentar 1 carta** → **Medir posição desta carta** →
+   **Descartar carta (bin 6)**, repetindo com 4 ou 5 cartas; depois **Salvar recorte fixo**. Daí em diante a
+   identificação não procura a borda da carta: usa estes cantos. A *variação entre as cartas* deve ficar em até
+   ~15 px; se passar disso, a carta não para sempre no mesmo lugar (confira o flap) ou use `[crop] margin`.
+   Sem esse passo, o Start é recusado com `CROP_NOT_CALIBRATED`.
+   Cada medição guarda a foto em `calibragem_recorte/` na pasta do projeto: a original em resolução cheia,
+   uma cópia com a borda detectada desenhada (`_anotada`), e uma linha em `medicoes.csv` com os cantos. Fotos em
+   que a borda não foi encontrada também ficam (`_sem_borda`), e cada **Salvar recorte fixo** gera um
+   `recorte_salvo_<data>.json`. Para trazer as fotos para o PC e mandá-las para análise:
+   `scp -r pi@<ip-do-pi>:/home/pi/CardForge-M1/calibragem_recorte .`
+2. **Cartão branco** liso do tamanho de uma carta no topo da pilha → **Alimentar 1 carta**.
+   **Autocalibrar (exposição + branco)**. Em **Medidas**: *luz desigual* ≤ 20 % e *pixels estourados* ≤ 2 %.
    Fora disso, ajuste a posição/difusão das fitas LED (essa é a única parte física).
 3. **Descartar carta (bin 6)**, ponha cartas comuns na pilha e **Alimentar 1 carta**. **Capturar** (ou **Ao vivo**):
-   *brilho da carta* entre 60 e 180, *nitidez do texto pequeno* acima de 70, *carta encontrada: sim*. Ajuste
-   exposição, ganho e luz e **Aplicar**.
+   *brilho da carta* entre 60 e 180, *nitidez do texto pequeno* acima de 70, *desvio × recorte fixo* até 2 %.
+   Ajuste exposição, ganho e luz e **Aplicar**.
 4. **Identificar a carta** em algumas cartas diferentes (comuns, foils, tokens, em português, de cabeça para baixo,
    um verso): confira a leitura e a carta encontrada.
 5. **Luz ambiente × escuro**: **Marcar referência**, acenda/apague a luz da sala, **Capturar** — até 10 % (RNF08).
@@ -346,8 +377,9 @@ file,set,number
 002.jpg,FIC,61
 ```
 
-O benchmark carrega um segundo OCR, pesado para o Pi 3B com o serviço no ar: rode no PC (copie `fotos_ref/`) ou
-pare o serviço antes.
+O benchmark carrega um segundo OCR, pesado para o Pi 3B com o serviço no ar: rode no PC (copie `fotos_ref/` e o
+`vision.toml` calibrado) ou pare o serviço antes. As fotos da máquina usam o recorte fixo do `vision.toml`; para
+fotos de outras fontes (como `input_cartas/`), acrescente `--detect` ao comando.
 
 ```bash
 python -m cardforge.cv batch fotos_ref --truth gabarito.csv --out relatorios_ref
@@ -406,7 +438,10 @@ Esvazie os bins (o Start recusa bins com cartas), e consulte os resultados em `/
 |---|---|
 | `MODULE_OFFLINE` (503) no Start | Arduino sem energia, cabo A/B invertido, baud diferente, porta serial errada (`MTG_SERIAL_PORT`) |
 | `CARD_DB_MISSING` no Start | Falta `data/cards.db`: `.venv/bin/python -m cardforge.cv sync` |
-| `TRAYS_NOT_EMPTY` sem cartas nos bins | IR dos bins invertido ou desalinhado (hoje o `a2_base` responde sempre "vazio": os IR dos bins ainda não estão ligados) |
+| `CROP_NOT_CALIBRATED` no Start | Salve o recorte fixo na página `/calibration` (parte D, passo 1) |
+| `TRAYS_NOT_EMPTY` sem cartas nos bins | Sensor IR do bin desalinhado (vendo a parede) ou fio trocado: confira bin a bin (parte C1) |
+| Muitas cartas `CROP_FAILED` ou lidas tortas | Câmera ou plataforma mudaram de lugar: refaça o recorte fixo (parte D, passo 1). As fotos usadas estão em `calibragem_recorte/` |
+| Sumiram arquivos de `capturas/` ou `relatorios/` | Ao fim de cada run o serviço esvazia as pastas temporárias (`MTG_CLEANUP_DIRS`); copie o que quiser guardar antes, ou use outro nome de pasta (ex.: `relatorios_ref`) |
 | Run pausada com `FEED_TIMEOUT` | Carta presa no alimentador ou pilha vazia com o IR da pilha dizendo o contrário. Libere e use Resume |
 | Run pausada com `DROP_FAILED` | Carta presa na plataforma: retire-a (ela não é registrada) e use Resume |
 | Muitas cartas no bin 6 | Calibração (parte D): brilho, foco, enquadramento. Veja `attention` nos eventos e os motivos em `/runs/<id>` |
@@ -414,4 +449,5 @@ Esvazie os bins (o Start recusa bins com cartas), e consulte os resultados em `/
 | Página de calibração: `RUN_ACTIVE` | Há uma run ativa ou pausada: termine com Stop |
 | Log: `expects sensor imx219 but the camera reports ...` | Câmera errada ou `dtoverlay` antigo no `config.txt` (parte B1) |
 | `rpicam-hello` diz que a câmera está em uso | O serviço está com ela aberta: `sudo systemctl stop sorter-api` |
-| LED de status e luz não mudam | O firmware do A1 ainda não tem `LED`/`LIGHT` (PROTOCOL.md 5.1); o log avisa uma vez |
+| Luz da câmara não muda | O firmware do A1 ainda não tem `LIGHT` (PROTOCOL.md 5.1); o log avisa uma vez |
+| LED de status apagado | Fiação (COM no pino 9) ou `MTG_LED=off`; no log, `status LED disabled` indica que o GPIO não abriu |

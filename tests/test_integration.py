@@ -5,6 +5,7 @@ on the platform. The last one runs the real computer vision on photos from
 input_cartas against data/cards.db (skipped if they are missing).
 """
 
+import tempfile
 import time
 from pathlib import Path
 
@@ -24,7 +25,9 @@ ROOT = Path(__file__).resolve().parents[1]
 def fast_settings(**overrides) -> Settings:
     s = Settings(simulate=True, sim_time_scale=0.02, flap_settle_s=0.01, card_fall_s=0.01, poll_interval_s=0.005,
                  base_poll_interval_s=0.005, home_poll_interval_s=0.005, feed_timeout_s=0.5, drop_timeout_s=0.5,
-                 sim_stack_cards=3, reply_timeout=0.1, run_db=":memory:")
+                 sim_stack_cards=3, reply_timeout=0.1, run_db=":memory:",
+                 # never touch the repository's own folders from the tests
+                 cleanup_dirs="", crop_captures_dir=tempfile.mkdtemp(prefix="calibragem_"))
     for k, v in overrides.items():
         setattr(s, k, v)
     return s

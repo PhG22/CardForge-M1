@@ -19,7 +19,8 @@ cardforge/
     config.py                #   VisionConfig (lido de vision.toml)
     capture/                 #   CameraService (Picamera2, Camera v2 IMX219), RpicamCameraService (rpicam-still), FileCameraService
     calibration.py           #   métricas de calibração e gravação do [camera] no vision.toml
-    detection/               #   ContourCandidateGenerator, QuadrilateralFinder, CardDetector, PerspectiveRectifier
+    detection/               #   fixed.py (recorte fixo calibrado) · ContourCandidateGenerator, QuadrilateralFinder,
+                             #   CardDetector (detecção de bordas: só calibração e fotos de outras fontes), PerspectiveRectifier
     ocr/                     #   OcrEngine, OrientationResolver, FaceDownDetector, LayoutClassifier, RoiCatalog, FieldExtractor
     matching/                #   InfoLineParser, SetCodeCatalog, NameIndex, CardMatcher
     report.py, __main__.py   #   relatórios e CLI
@@ -33,8 +34,8 @@ data/cards.db                # espelho local do Scryfall (gerado pelo comando sy
 ```
 
 Os arquivos da PoC (`mtg_scanner.py`, `atualizar_base_local.py`, `atualizar_sets.py`, `mini_scryfall.json`,
-`sets_oficiais.json`) foram mantidos intactos para referência e podem ser removidos: o `cards.db` substitui
-os dois JSON.
+`sets_oficiais.json`) estão em [`deprecated/`](../deprecated/), só para referência, e podem ser removidos: o
+`cards.db` substitui os dois JSON.
 
 ## Instalação
 
@@ -57,9 +58,9 @@ venv/bin/pip install -r requirements.txt
 
 ```bash
 python -m cardforge.cv sync                    # cria/atualiza data/cards.db (precisa de internet, ~20 s + download)
-python -m cardforge.cv identify foto.jpg        # identifica imagens e imprime JSON
-python -m cardforge.cv batch input_cartas --out relatorios
-python -m cardforge.cv batch input_cartas --truth gabarito.csv   # mede a acurácia (RNF18)
+python -m cardforge.cv identify foto.jpg        # identifica imagens e imprime JSON (--detect: fotos de fora da máquina)
+python -m cardforge.cv batch input_cartas --detect --out relatorios   # fotos da PoC: detecção de bordas
+python -m cardforge.cv batch fotos_ref --truth gabarito.csv     # fotos da máquina (recorte fixo): acurácia RNF18
 python -m cardforge.cv camera -n 5              # no Pi: captura com a câmara e identifica
 python -m unittest discover -s tests -v
 ```

@@ -65,6 +65,16 @@ class Settings:
     light_base_level: int = 60          # chamber LEDs, % (needs the optional LIGHT command on A1)
     light_step: int = 20                # added before each retry (RNF09)
 
+    # --- RGB status LED on the Pi GPIO (status_led.py)
+    led: str = "auto"                   # auto = GPIO on the Pi, in memory with --simulate; gpio; off
+    led_pins: str = "17,22,27"          # BCM R,G,B = physical pins 11, 15, 13 (common cathode, COM on pin 9)
+    network_monitor: str = "auto"       # auto = show Setup / No Network (blue) when nmcli exists; on; off
+
+    # --- files on the SD card (housekeeping.py)
+    project_root: str = ""              # empty = the folder that holds sorter_api/
+    crop_captures_dir: str = "calibragem_recorte"   # fixed-crop calibration pictures, kept for debugging
+    cleanup_dirs: str = "data/tmp,capturas,relatorios"  # emptied at the end of every run ("" = no cleanup)
+
     # --- runs
     max_cards_per_run: int = 250        # RNF27: a batch never exceeds one full feed load
     run_db: str = "data/run.db"         # local_run / local_cards (RF19, RNF19)
@@ -76,7 +86,7 @@ class Settings:
     # --- simulator only
     sim_stack_cards: int = 8
     sim_time_scale: float = 1.0         # <1 makes the simulated motors faster
-    sim_optional_commands: bool = True  # False = simulate a1_top.ino as it is today (no LIGHT / LED)
+    sim_optional_commands: bool = True  # False = simulate a1_top.ino as it is today (no LIGHT)
 
     @classmethod
     def from_env(cls) -> "Settings":

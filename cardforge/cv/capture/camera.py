@@ -192,7 +192,8 @@ class RpicamCameraService(_Tunable):
         return Frame(image, source=self.COMMAND)
 
     def auto_calibrate(self, settle_s: float = 2.0) -> dict:
-        fd, tmp = tempfile.mkstemp(suffix=".png")
+        Path(self.cfg.tmp_dir).mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(suffix=".png", dir=self.cfg.tmp_dir)
         os.close(fd)
         try:
             proc = self._run(self.command(tmp, auto=True), capture_output=True, timeout=20, check=True)

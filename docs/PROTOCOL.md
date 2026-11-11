@@ -123,35 +123,30 @@ Notes:
 * The flap drop sequence is done by the Pi: `FLAP 0`, wait until `PLAT=0`, wait
   0.5 s, `FLAP 80`.
 
-### 5.1 Optional A1 commands: chamber light and status LED (not in `a1_top.ino` yet)
+### 5.1 Optional A1 command: chamber light (not in `a1_top.ino` yet)
 
-The Pi already sends these. While the firmware answers `ERR BAD_CMD`, the Pi turns
+The Pi already sends it. While the firmware answers `ERR BAD_CMD`, the Pi turns
 the feature off for the rest of the session and the machine works as before.
 
 | Command | Reply | What it does |
 |---|---|---|
 | `LIGHT <0-100>` | `OK` | Chamber LED strips, percent. Instant command, state unchanged. The Pi sends the base level (60) at power-on and at every Start, then +20 before each identification retry (RNF09), then back to the base level |
-| `LED <MODE>` | `OK` | RGB status LED pattern (RF16, Requirements Appendix B). Instant command. The firmware makes the blinking by itself (non-blocking, `millis()`) |
 
-| `MODE` | Pattern | Sent by the Pi when |
-|---|---|---|
-| `OFF` | off | — |
-| `IDLE` | solid green | power-on, run finished |
-| `RUNNING` | green, 1 Hz | run running / resumed |
-| `FEED_JAM` | solid red | run paused by a fault; also module offline (Appendix C) |
-| `DOUBLE_FEED` | red, 2 Hz | not sent (RF06 not built) |
-| `STARTUP_BLOCKED` | solid yellow | Start refused (stack empty, trays not empty, ...) |
-| `PAUSED_CONN` | yellow, 1 Hz | not sent (identification is offline, RF30 does not apply) |
-| `SETUP` / `NO_NETWORK` | solid blue / blue 1 Hz | reserved for Bluetooth Wi-Fi setup (RF40/RF41) |
+The RGB **status LED** is not on the bus: it is wired to the Raspberry Pi GPIO (17/22/27) and driven by
+`sorter_api/status_led.py`.
 
-Wiring note: the circuit diagram (Rev E) puts the LED strip gate (`LED_CTRL`) on D3 and
-the RGB LED on D5/D6/D11, but `a1_top.ino` now uses D3/D4 for the RS-485 SoftwareSerial
-and D5/D6 for the IR sensors. Pick free PWM pins (D9/D10 are taken by Timer1 for the
-servos) before adding these commands.
+Wiring note: the circuit diagram (Rev E) puts the LED strip gate (`LED_CTRL`) on D3, but
+`a1_top.ino` now uses D3/D4 for the RS-485 SoftwareSerial and D5/D6 for the IR sensors.
+Pick a free PWM pin (D9/D10 are taken by Timer1 for the servos) before adding `LIGHT`.
 
 ## 6. A2 — bottom module (rotating base)
 
 Hardware: stepper (base), homing IR (reflective strip), 6 tray IRs. Firmware: `firmware/a2_base`.
+
+Tray IR sensors (FC-51, LOW = card in the tray): tray 1 D10, tray 2 D8, tray 3 D11, tray 4 D7, tray 5 D9,
+tray 6 D12, with the internal pull-up (an unplugged sensor reads "empty"). The firmware debounces them (3 equal
+readings 5 ms apart) and reports them in `TRAYS`. The Pi reads them before a run starts (RF07) and never uses
+them during a run (RF13).
 
 | Command | Reply | What it does |
 |---|---|---|

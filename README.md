@@ -23,17 +23,18 @@ App mobile (Flutter) ──HTTP──► Raspberry Pi: python -m sorter_api ─�
 ## O main loop
 
 **Start** (`POST /run/start` ou o botão Start do app):
-1. Verificações rápidas (< 1 s): banco de cartas carregado, cartas na pilha, plataforma livre, 6 bins vazios.
+1. Verificações rápidas (< 1 s): banco de cartas carregado, recorte da câmera calibrado, cartas na pilha,
+   plataforma livre e os **6 sensores IR dos bins** vazios (RF07).
    Se algo falha, recusa na hora, listando todos os problemas.
 2. A2 faz o homing da base enquanto A1 para o rolo, fecha o flap e acende a luz da câmara.
-3. Verificações repetidas; cria a run em `run.db`; LED de status em "Running".
+3. Verificações repetidas; cria a run em `run.db`; LED de status em "Running" (verde piscando).
 
 **Para cada carta** (até a pilha esvaziar, um Stop ou 250 cartas — RNF27):
 
 | Passo | Quem | Requisitos |
 |---|---|---|
 | 1. Alimenta uma carta até o IR da plataforma | A1 (`FEED`) | RF01, RF05, RF09 |
-| 2. Foto + identificação, até 3 capturas; luz +20 % antes de cada nova tentativa | Pi: câmera + `cardforge.cv` | RF15, RF17, RF18, RF29, RNF09, RNF15 |
+| 2. Foto + identificação, até 3 capturas; luz +20 % antes de cada nova tentativa. A carta é cortada pelo **recorte fixo** calibrado (sem detecção de bordas) | Pi: câmera + `cardforge.cv` | RF15, RF17, RF18, RF29, RNF09, RNF15 |
 | 3. Bin pela identidade de cor: W→1, U→2, B→3, R→4, G→5; incolor, multicolor, não identificada e virada → 6 | Pi: [`sorting.py`](sorter_api/sorting.py) | RF20, RF25, RF39 |
 | 4. Gira a base até o bin | A2 (`GOTO`) | RF03 |
 | 5. Abre o flap, espera a carta cair, fecha | A1 (`FLAP`) | RNF04 |
@@ -48,6 +49,11 @@ desligar e religar). O botão de emergência corta a energia no hardware (RF14).
 **Stop**: termina a carta em andamento — se já foi identificada vai para o seu bin, senão para o bin 6 — registra,
 fecha o flap e para os motores. Nenhuma carta fica na máquina.
 
+**Armazenamento**: as fotos de cada carta ficam só na memória; no cartão SD vai apenas a linha da carta em
+`run.db`. Ao fim de cada run, o serviço esvazia as pastas temporárias (`data/tmp`, `capturas`, `relatorios` — as
+saídas dos comandos de bancada), apaga downloads interrompidos (`data/*.tmp`) e compacta o journal do `run.db`. O
+código, o `vision.toml`, o `cards.db`, o `run.db` e as fotos de `calibragem_recorte/` nunca são apagados.
+
 **Resultados** (RF22): só depois do fim da run, em `GET /runs/{id}` (contagem por bin + todas as cartas);
 inventário em `GET /cards` (app) e `GET /inventory/export.csv` (RF24, RFC 4180).
 
@@ -58,7 +64,7 @@ inventário em `GET /cards` (app) e `GET /inventory/export.csv` (RF24, RFC 4180)
 2. **Código e dependências**:
    ```bash
    git clone <este repositório> /home/pi/CardForge-M1 && cd /home/pi/CardForge-M1
-   sudo apt install -y python3-picamera2 python3-gpiozero
+   sudo apt install -y python3-picamera2 python3-gpiozero python3-lgpio
    python3 -m venv --system-site-packages .venv
    .venv/bin/pip install -r requirements.txt
    ```
@@ -93,6 +99,11 @@ ssh -L 8000:localhost:8000 pi@<ip-do-pi>
 
 Procedimento sugerido:
 
+0. **Recorte fixo** (uma vez, e de novo se a câmera ou a plataforma mudarem de lugar): **Alimentar 1 carta** →
+   **Medir posição desta carta** → **Descartar carta (bin 6)**, com 4 ou 5 cartas; **Salvar recorte fixo**. A média
+   das posições vira o recorte usado em todas as fotos, sem detecção de bordas. A página mostra a *variação entre as
+   cartas* (até ~15 px é tranquilo) e, a cada captura, o *desvio* da carta atual em relação ao recorte (verde =
+   borda detectada agora, laranja = recorte salvo). Sem recorte salvo, o Start é recusado com `CROP_NOT_CALIBRATED`.
 1. **Cartão branco**: coloque um cartão branco liso do tamanho de uma carta no topo da pilha e toque em
    **Alimentar 1 carta** (o alimentador o leva até a plataforma, o flap o segura).
 2. **Autocalibrar (exposição + branco)**: a câmera ajusta exposição e balanço de branco sozinha com o cartão
@@ -142,13 +153,36 @@ As da comunicação RS-485 e da mecânica estão em [`sorter_api/config.py`](sor
 | `MTG_MAX_CARDS_PER_RUN` | `250` | Fim automático da run (RNF27) |
 | `MTG_RUN_DB` | `data/run.db` | Banco local das runs |
 | `MTG_APP_USERNAME` / `MTG_APP_PASSWORD` | `admin` / *(vazia)* | Login do app. Senha vazia = qualquer credencial é aceita (só para testes) |
+| `MTG_CROP_CAPTURES_DIR` | `calibragem_recorte` | Onde ficam as fotos usadas para calibrar o recorte fixo (nunca apagadas automaticamente) |
+| `MTG_CLEANUP_DIRS` | `data/tmp,capturas,relatorios` | Pastas esvaziadas ao fim de cada run (`""` = não limpar) |
+| `MTG_LED` | `auto` | LED de status no GPIO do Pi: `auto` (GPIO no Pi, em memória com `--simulate`), `gpio`, `off` |
+| `MTG_LED_PINS` | `17,22,27` | GPIO (BCM) do vermelho, verde e azul = pinos físicos 11, 15 e 13; catodo comum no pino 9 |
+| `MTG_NETWORK_MONITOR` | `auto` | Mostra Setup / No Network (azul) consultando o NetworkManager (`nmcli`); `on` / `off` |
+
+### LED de status (RF16, RF41)
+
+LED RGB de catodo comum ligado ao Raspberry Pi: COM → pino 9 (GND), vermelho → pino 11 (GPIO 17), azul → pino 13
+(GPIO 27), verde → pino 15 (GPIO 22). Quem o controla é o próprio serviço ([`sorter_api/status_led.py`](sorter_api/status_led.py)),
+seguindo o Apêndice B dos requisitos:
+
+| Estado | LED | Quando |
+|---|---|---|
+| Idle | verde fixo | ligado e pronto, run terminada |
+| Running | verde piscando 1 Hz | run em andamento |
+| Feed Jam | vermelho fixo | run pausada por falha (atolamento, carta presa, base); também módulo sem resposta |
+| Startup Blocked | amarelo fixo | Start recusado (bin com carta, pilha vazia...), até o próximo comando |
+| Setup | azul fixo | nenhuma rede Wi-Fi configurada ainda (configuração por Bluetooth) |
+| No Network | azul piscando 1 Hz | Wi-Fi configurado mas desconectado |
+| Emergency Stop / Double-Feed / Paused – Connection Lost | vermelho 4 Hz / vermelho 2 Hz / amarelo 1 Hz | implementados, mas não acontecem: o botão de emergência corta a energia do Pi, RF06 não foi construído, a identificação é offline |
+
+Os estados de rede (azul) só aparecem com a máquina parada; o estado da máquina tem prioridade.
 
 ## Sem hardware (PC)
 
 ```bash
 pip install -r requirements.txt
 MTG_VISION=files python -m sorter_api --simulate     # Arduinos simulados + visão real sobre input_cartas/
-python -m pytest -q                                  # 88 testes
+python -m pytest -q                                  # 106 testes (o pi_ble_setup tem os seus: cd pi_ble_setup && python -m pytest tests)
 ```
 
 A página de calibração também funciona assim (`http://localhost:8000/calibration`): a "câmera" mostra as fotos e
@@ -199,10 +233,11 @@ O código pronto (firmware e API) é a referência; o design do Deliverable 3 fo
 |---|---|
 | RF05, RF08, RF09, RF19, RF20, RF22–RF23, RF25–RF27, RF29, RF39, RNF15, RNF16, RNF19, RNF20, RNF23, RNF27 | Implementados e cobertos por testes com o simulador |
 | RF17, RF18, RNF18, RNF22 | Implementados; **medir na máquina** (a visão leva ~4,5 s por captura no Pi, segundo o Deliverable 5) |
-| RF16, RF41 (LED de status), RNF09 (luz) | Lado do Pi pronto; **faltam os comandos `LED` e `LIGHT` no `a1_top.ino`** ([PROTOCOL.md 5.1](docs/PROTOCOL.md)). Até lá o Pi desliga esses recursos sozinho |
-| RF07 (bins vazios no Start) | Implementado; os IR dos bins ainda respondem sempre "vazio" no hardware (Deliverable 5) |
+| RF16, RF32, RF37, RF41 (LED de status) | Implementados no Pi (GPIO 17/22/27) |
+| RNF09 (luz da câmara) | Lado do Pi pronto; **falta o comando `LIGHT` no `a1_top.ino`** ([PROTOCOL.md 5.1](docs/PROTOCOL.md)). Até lá o Pi desliga esse recurso sozinho |
+| RF07, RF12, RF13 (sensores IR dos bins) | Implementados: `a2_base.ino` lê os 6 IR (D10, D8, D11, D7, D9, D12) com filtro; o Pi só os consulta antes de iniciar |
 | RF24, RF36 | API pronta; falta a tela no app |
-| RF40, RF41 (Wi-Fi por Bluetooth) | Não implementado: o app ainda não tem o transporte Bluetooth |
+| RF40 (Wi-Fi por Bluetooth) | Serviço `pi_ble_setup/` + app (`cardforgeapp/`) |
 | RF21, RF35, RF06/RF37, RF30 | Opcionais não implementados (RF30 não se aplica: a identificação é offline) |
 
 ## Estrutura
@@ -215,12 +250,18 @@ sorter_api/                 main loop + API (FastAPI, uvicorn)
   store.py                  run.db: local_run, local_cards, tokens do app
   app_compat.py             rotas que o app mobile usa
   calibration_api.py        calibração da câmera pela rede (+ static/calibration.html)
+  status_led.py             LED de status RGB no GPIO do Pi e estado da rede
+  housekeeping.py           fotos da calibração do recorte e limpeza do SD ao fim de cada run
   api.py, events.py         REST + WebSocket
   modules.py, bus.py, protocol.py, sim.py   A1/A2, RS-485, simulador
-cardforge/                  visão computacional (cv, cv/calibration.py) e espelho do Scryfall (data)
+cardforge/                  visão computacional (cv; recorte fixo em cv/detection/fixed.py, calibração em
+                            cv/calibration.py) e espelho do Scryfall (data)
 firmware/                   a1_top, a2_base e testes de bancada da base
 deploy/sorter-api.service   serviço systemd
 docs/                       PASSO_A_PASSO.md, API.md, PROTOCOL.md, VISION.md
-tests/                      test_api, test_protocol, test_integration, test_vision
+tests/                      test_api, test_protocol, test_integration, test_vision, test_calibration,
+                            test_fixed_crop, test_status_led, test_housekeeping
+deprecated/                 prova de conceito da visão (só referência, pode ser apagada)
+calibragem_recorte/         fotos da calibração do recorte (criada pelo serviço; fora do git)
 vision.toml, data/cards.db  configuração e banco de cartas da visão
 ```

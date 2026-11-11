@@ -7,7 +7,7 @@ All bodies are JSON. Every response the app should show to the user has a `messa
 
 This call prepares the machine and checks the start conditions:
 
-1. **Quick checks** (< 1 s): card database loaded, stack IR, platform IR, the 6 tray IRs.
+1. **Quick checks** (< 1 s): card database loaded, camera crop calibrated, stack IR, platform IR, the 6 tray IRs.
    If any fails, the call answers **409** right away, without homing.
 2. **A2** homes the base to the zero position, while **A1** stops the feed roller,
    closes the flap (80°) and sets the chamber light to its base level.
@@ -42,6 +42,7 @@ within 8 s instead.
 | 409 | `TRAYS_NOT_EMPTY` | One or more tray IRs see cards (`trays` lists them) |
 | 409 | `PLATFORM_NOT_CLEAR` | A card was left on the reading platform |
 | 409 | `CARD_DB_MISSING` | `data/cards.db` is missing: run `python -m cardforge.cv sync` |
+| 409 | `CROP_NOT_CALIBRATED` | `vision.toml` `[crop] mode = "fixed"` without corners: save the fixed crop on `/calibration` |
 | 409 | `RUN_ACTIVE` | A run is already starting / running / stopping / paused |
 | 409 | `START_CANCELLED` | `/run/stop` was called during the start checks |
 | 503 | `MODULE_OFFLINE` | A1 or A2 did not answer (`module` says which) |
@@ -246,6 +247,14 @@ routes; all answer **409** `RUN_ACTIVE` during a run and **409** `VISION_OFF` wi
 | `POST /calibration/reference` | Remembers the card brightness; later snapshots report the change (RNF08, ≤ 10 %) |
 | `POST /calibration/identify` | Full identification of the card on the platform + annotated card |
 | `POST /calibration/feed` / `POST /calibration/drop` | Feed one card onto the platform / drop it into tray 6 (homes the base if needed) |
+| `GET /calibration/crop` | Fixed crop: `mode`, saved `corners`, measured `samples`, their `mean` and `spread_px` |
+| `POST /calibration/crop/sample` | Find the card on the platform by border detection (calibration only) and keep its corners. The picture is saved in `calibragem_recorte/` (original, `_anotada`, `medicoes.csv`; `_sem_borda` when not found) and its name comes back in `picture` |
+| `DELETE /calibration/crop/samples` | Forget the measurements |
+| `POST /calibration/crop/save` | The average position becomes the fixed crop, live and in `vision.toml` `[crop]` |
+
+With the fixed crop the identification never searches for the card border: it warps the picture with the
+saved corners (`strategy: "FIXED"` in the result). `MTG_VISION=files` (photos from elsewhere) always uses
+border detection until a crop is saved.
 
 ## Simulator only (`--simulate`)
 
@@ -255,6 +264,6 @@ routes; all answer **409** `RUN_ACTIVE` during a run and **409** `VISION_OFF` wi
 { "stack_cards": 10, "trays_with_cards": [], "platform_has_card": false,
   "top_jammed": false, "offline_modules": [] }
 ```
-`GET /sim/state` also shows `light_level` and `status_led` (the optional LIGHT / LED
-commands, see PROTOCOL.md 5.1). `MTG_SIM_OPTIONAL_COMMANDS=0` simulates `a1_top.ino`
-as it is today, without them.
+`GET /sim/state` also shows `light_level` (the optional LIGHT command, PROTOCOL.md 5.1) and
+`status_led` (the mode the Pi's RGB LED is showing). `MTG_SIM_OPTIONAL_COMMANDS=0` simulates
+`a1_top.ino` as it is today, without LIGHT.

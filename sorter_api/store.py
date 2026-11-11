@@ -109,6 +109,11 @@ class RunStore:
         with self._lock:
             self._conn.close()
 
+    def compact(self) -> None:
+        """Fold the write-ahead log back into run.db and truncate it (frees space after a run)."""
+        with self._lock:
+            self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+
     # ------------------------------------------------------------ runs
 
     def recover_interrupted(self, now: str) -> int:

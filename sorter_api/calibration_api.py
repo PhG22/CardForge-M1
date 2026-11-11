@@ -9,6 +9,11 @@
     POST /calibration/save             write the current values to vision.toml ([camera])
     POST /calibration/reference        remember the card brightness, to compare ambient light vs. dark (RNF08)
     POST /calibration/identify         full identification of the card on the platform
+    GET  /calibration/crop             fixed crop: mode, corners, measured samples
+    POST /calibration/crop/sample      measure where the card on the platform is (border detection, calibration only);
+                                       the picture is kept in calibragem_recorte/ (original, annotated, medicoes.csv)
+    DELETE /calibration/crop/samples   forget the measurements
+    POST /calibration/crop/save        the average position becomes the fixed crop (vision.toml [crop])
     POST /calibration/feed             feed one card onto the platform (A1)
     POST /calibration/drop             drop it into the overflow tray 6 (A2 + A1)
 
@@ -32,6 +37,7 @@ from pydantic import BaseModel, Field
 
 from .bus import BusError, ModuleNotResponding
 from .controller import HardwareFault, ManualRefused, _describe_fault
+from .housekeeping import PROJECT_ROOT, CropCaptureLog, project_path
 from .protocol import FrameError
 
 log = logging.getLogger(__name__)
@@ -193,6 +199,76 @@ def create_calibration_router(settings) -> APIRouter:
 
             return {"ok": True, "result": result.to_dict(),
                     "image": "data:image/jpeg;base64," + base64.b64encode(jpeg(annotate(result), 630)).decode()}
+        return handle(run)
+
+    # ---- fixed crop: measure where the card stops (a few cards), save the average as the crop
+
+    def crop_log(request: Request) -> CropCaptureLog:
+        root = Path(settings.project_root) if settings.project_root else PROJECT_ROOT
+        return CropCaptureLog(project_path(settings.crop_captures_dir, root))
+
+    def crop_summary(request: Request, size=None) -> dict:
+        import numpy as np
+
+        vision = request.app.state.vision_module
+        samples = request.app.state.crop_samples
+        out = {"mode": vision.cfg.crop.mode, "calibrated": len(vision.cfg.crop.corners) == 4,
+               "corners": vision.cfg.crop.corners, "samples": len(samples)}
+        if samples:
+            pts = np.array(samples, dtype=np.float64)                        # (n, 4, 2), fractions
+            mean = pts.mean(axis=0)
+            h, w = size or vision.cfg.camera.resolution[::-1]
+            spread = np.abs(pts - mean) * np.array([w, h])                   # px at the camera resolution
+            out.update(mean=[[round(float(x), 5), round(float(y), 5)] for x, y in mean],
+                       spread_px=round(float(np.linalg.norm(spread, axis=2).max()), 1))
+        return out
+
+    @router.get("/crop")
+    def crop_status(request: Request):
+        def run():
+            vision_of(request)
+            return {"ok": True, "crop": crop_summary(request)}
+        return handle(run)
+
+    @router.post("/crop/sample")
+    def crop_sample(request: Request):
+        """Find the card on the platform (border detection, calibration only) and keep its corners."""
+        def run():
+            vision = vision_of(request)
+            with still_card(vision):
+                corners, image, quad = vision.measure_crop()
+            # Every picture is kept (also the failed ones) to debug the crop later.
+            saved = crop_log(request).save_sample(image, corners, quad.strategy.value if quad else None,
+                                                  quad.corners if quad else None)
+            if corners is None:
+                raise Refused(409, "NO_CARD", "The card border was not found in this picture: check the light "
+                                              f"and that a card is on the platform. Picture saved as {saved}.")
+            request.app.state.crop_samples.append(corners)
+            return {"ok": True, "crop": crop_summary(request, image.shape[:2]), "picture": saved,
+                    "message": f"Card position measured ({len(request.app.state.crop_samples)} so far), "
+                               f"picture saved as {saved}."}
+        return handle(run)
+
+    @router.delete("/crop/samples")
+    def crop_reset(request: Request):
+        def run():
+            vision_of(request)
+            request.app.state.crop_samples.clear()
+            return {"ok": True, "crop": crop_summary(request)}
+        return handle(run)
+
+    @router.post("/crop/save")
+    def crop_save(request: Request):
+        """The average of the measured positions becomes the fixed crop (now and in vision.toml)."""
+        def run():
+            vision = vision_of(request)
+            summary = crop_summary(request)
+            if not summary["samples"]:
+                raise Refused(409, "NO_SAMPLES", "Measure the position of at least one card first.")
+            path = vision.save_crop(summary["mean"])
+            crop_log(request).save_result(summary, path)
+            return {"ok": True, "crop": crop_summary(request),
+                    "message": f"Fixed crop saved in {path}: cards are no longer searched for in the picture."}
         return handle(run)
 
     @router.post("/feed")

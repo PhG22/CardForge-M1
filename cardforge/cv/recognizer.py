@@ -8,7 +8,7 @@ import numpy as np
 from ..data.repository import CardRepository
 from .capture.camera import Frame, sharpness
 from .config import VisionConfig
-from .detection import CardDetector, PerspectiveRectifier
+from .detection import CardDetector, PerspectiveRectifier, fixed_quad
 from .matching import CardMatcher, CollectorInfo, InfoLineParser, MatchMethod, MatchResult, NameIndex, SetCodeCatalog
 from .ocr import (CardLayout, ExtractedFields, FaceDownDetector, FieldExtractor, LayoutClassifier, OcrEngine,
                   OrientationResolver, RoiCatalog)
@@ -44,11 +44,16 @@ class CardRecognizer:
             result.debug["ocr_calls"] = self.ocr.calls - calls0
             return result
 
-        # 1. Borda da carta e correção de perspectiva
-        quad = self.detector.detect(image)
+        # 1. Onde está a carta: recorte fixo calibrado (máquina) ou detecção de bordas (outras fotos)
+        if self.cfg.crop.mode == "fixed":
+            quad = fixed_quad(self.cfg.crop, image.shape)
+            failure = "crop not calibrated"
+        else:
+            quad = self.detector.detect(image)
+            failure = "card border not found"
         if quad is None:
             return done(IdentificationResult(IdentificationStatus.CROP_FAILED,
-                                             debug={"sharpness": round(sharpness(image), 1)}))
+                                             debug={"sharpness": round(sharpness(image), 1), "crop": failure}))
         card = self.rectifier.rectify(image, quad)
         debug = {"strategy": quad.strategy.value, "sharpness": round(sharpness(card.image), 1)}
 
