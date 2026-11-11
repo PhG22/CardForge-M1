@@ -114,6 +114,16 @@ def parse_terse_ssids(output: str) -> List[str]:
     return ssids
 
 
+def parse_active_ssid(output: str) -> Optional[str]:
+    """Parses `nmcli -t -f ACTIVE,SSID device wifi list`: lines like `yes:Home`."""
+    for line in output.splitlines():
+        active, _, ssid = line.partition(":")
+        if active.strip() == "yes":
+            ssid = ssid.replace("\\:", ":").replace("\\\\", "\\").strip()
+            return ssid or None
+    return None
+
+
 class NmcliWifi(WifiManager):
     def __init__(self, interface: str = "wlan0", connect_timeout: int = 45, runner: Runner = run_command) -> None:
         super().__init__()
@@ -124,6 +134,13 @@ class NmcliWifi(WifiManager):
     async def connect(self, ssid: str, password: str) -> Optional[str]:
         nm = ["nmcli"]
         await self._run_cmd(nm + ["radio", "wifi", "on"], 10)
+
+        # Already on that network (set up with Raspberry Pi Imager, the desktop,
+        # or an earlier link): reconnecting would only drop Wi-Fi, and on a Pi 3
+        # the Bluetooth link with it, so report success right away.
+        if await self.active_ssid() == ssid and await self.interface_ip():
+            log.info("already connected to Wi-Fi %r: keeping the current connection", ssid)
+            return None
 
         code, out = await self._run_cmd(
             nm + ["-t", "-f", "SSID", "device", "wifi", "list", "ifname", self.interface, "--rescan", "yes"], 30
@@ -154,6 +171,16 @@ class NmcliWifi(WifiManager):
                 return None
             await asyncio.sleep(0.5)
         return CONNECT_FAILED
+
+    async def active_ssid(self) -> Optional[str]:
+        """SSID the interface is connected to right now, if any."""
+        code, out = await self._run_cmd(
+            ["nmcli", "-t", "-f", "ACTIVE,SSID", "device", "wifi", "list", "ifname", self.interface, "--rescan", "no"],
+            10,
+        )
+        if code != 0:
+            return None
+        return parse_active_ssid(out)
 
     async def interface_ip(self) -> Optional[str]:
         code, out = await self._run_cmd(["nmcli", "-g", "IP4.ADDRESS", "device", "show", self.interface], 10)

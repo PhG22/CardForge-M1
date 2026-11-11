@@ -20,6 +20,7 @@ from cardforge_setup.network import (
     NmcliWifi,
     SimulatedWifi,
     classify_nmcli_failure,
+    parse_active_ssid,
     parse_terse_ssids,
 )
 from cardforge_setup.protocol import SetupProtocol
@@ -172,14 +173,17 @@ def test_terse_ssid_list_is_unescaped():
 
 
 class FakeNmcli:
-    def __init__(self, connect_result=(0, "ok"), ssids="Home\n", ip="192.168.0.42/24"):
+    def __init__(self, connect_result=(0, "ok"), ssids="Home\n", ip="192.168.0.42/24", active=""):
         self.calls = []
+        self.active = active
         self.connect_result = connect_result
         self.ssids = ssids
         self.ip = ip
 
     async def __call__(self, args, timeout):
         self.calls.append(list(args))
+        if "ACTIVE,SSID" in args:
+            return 0, self.active
         if "list" in args:
             return 0, self.ssids
         if "connect" in args:
@@ -410,3 +414,34 @@ def test_ble_server_accepts_writes_from_another_thread_and_retries_full_queue():
 
     reply = json.loads(b"".join(asyncio.run(go())))
     assert reply == {"id": 3, "ok": True}
+
+
+def test_active_ssid_is_parsed():
+    assert parse_active_ssid("no:Other\nyes:Cafe\\: 2.4G\n") == "Cafe: 2.4G"
+    assert parse_active_ssid("no:Other\n") is None
+
+
+def test_nmcli_already_on_network_keeps_connection():
+    async def go():
+        runner = FakeNmcli(active="no:Other\nyes:Home\n")
+        wifi = NmcliWifi(runner=runner)
+        wifi.start("Home", "password1")
+        await wifi.wait()
+        return wifi, runner
+
+    wifi, runner = asyncio.run(go())
+    assert wifi.status.state == "connected"
+    assert not any("connect" in c or "delete" in c for c in runner.calls)
+
+
+def test_nmcli_on_other_network_switches():
+    async def go():
+        runner = FakeNmcli(active="yes:Other\n")
+        wifi = NmcliWifi(runner=runner)
+        wifi.start("Home", "password1")
+        await wifi.wait()
+        return wifi, runner
+
+    wifi, runner = asyncio.run(go())
+    assert wifi.status.state == "connected"
+    assert any("connect" in c for c in runner.calls)
