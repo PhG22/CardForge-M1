@@ -57,7 +57,7 @@ const uint8_t SLEEP_PIN   = 4;
 const uint8_t RESET_PIN   = 3;
 const uint8_t M2_PIN      = 2;
 const uint8_t HOME_IR_PIN = A5;     // PC5
-const int     IR_ACTIVE   = HIGH;   // this module goes HIGH over the strip
+const int     IR_ACTIVE   = LOW;   // this module goes HIGH over the strip
 const uint8_t IR_CONFIRM  = 3;
 
 // Tray "has cards" sensors, tray 1..6. NO_PIN = not wired (reported as empty).
