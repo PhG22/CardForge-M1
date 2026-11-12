@@ -11,3 +11,4 @@ relatorios/
 capturas/
 # fotos da calibração do recorte: ficam só no Pi (veja docs/PASSO_A_PASSO.md, parte D)
 calibragem_recorte/
+*.patch
