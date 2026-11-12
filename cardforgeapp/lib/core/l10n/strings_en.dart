@@ -632,6 +632,21 @@ class EnStrings extends AppStrings {
 
   // Alerts
   @override
+  String get alertsChannelName => 'Machine alerts';
+  @override
+  String get alertsChannelDescription =>
+      'Faults that pause a run and the end of a run, also with the app closed.';
+  @override
+  String get watchChannelName => 'Run in progress';
+  @override
+  String get watchChannelDescription =>
+      'Shown while CardForge watches a run for alerts.';
+  @override
+  String get watchingRunTitle => 'Sorting in progress';
+  @override
+  String watchingRunText(String? machineName) =>
+      'You will be notified if ${machineName ?? yourMachine.toLowerCase()} needs you.';
+  @override
   String get noAlerts => 'No alerts yet';
   @override
   String get noAlertsHint => 'Machine events will show up here.';

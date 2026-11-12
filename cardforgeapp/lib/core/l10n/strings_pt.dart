@@ -638,6 +638,21 @@ class PtStrings extends AppStrings {
 
   // Alerts
   @override
+  String get alertsChannelName => 'Alertas da máquina';
+  @override
+  String get alertsChannelDescription =>
+      'Falhas que pausam uma ordenação e o fim da ordenação, também com o app fechado.';
+  @override
+  String get watchChannelName => 'Ordenação em andamento';
+  @override
+  String get watchChannelDescription =>
+      'Aparece enquanto o CardForge acompanha uma ordenação.';
+  @override
+  String get watchingRunTitle => 'Ordenação em andamento';
+  @override
+  String watchingRunText(String? machineName) =>
+      'Você será avisado se ${machineName ?? yourMachine.toLowerCase()} precisar de você.';
+  @override
   String get noAlerts => 'Nenhum alerta ainda';
   @override
   String get noAlertsHint => 'Os eventos da máquina vão aparecer aqui.';

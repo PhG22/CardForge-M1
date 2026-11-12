@@ -14,6 +14,7 @@ The run loop only needs identify() to return an Identification.
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass, field
 from typing import Callable, Optional, Protocol
 
@@ -96,20 +97,29 @@ class VisionIdentifier:
         from cardforge.cv import IdentificationStatus
 
         result, attempt, level, last_error = None, 0, self.light_base, ""
+        slowest_capture_ms: int | None = None
         try:
             for attempt in range(1, self.attempts + 1):
+                began = time.perf_counter()
                 if attempt > 1:
                     sleep(0)                    # a stop request ends the retries here
                     level = min(100, level + self.light_step)
                     self._light(level)
+                called = time.perf_counter()
                 try:
                     result = self.vision.identify()
                 except Exception as exc:        # camera/vision fault: count it as a failed capture
                     log.exception("vision identify() failed")
                     last_error = str(exc)
                     continue
-                log.info("capture %d: %s %s%% %s", attempt, result.status.value, result.confidence,
-                         result.card.name if result.card else "-")
+                # RF02 / RF15: the capture routine = (light change for a retry) + the photo.
+                capture_ms = getattr(result, "debug", {}).get("capture_ms")
+                if isinstance(capture_ms, int):
+                    routine_ms = int((called - began) * 1000) + capture_ms
+                    slowest_capture_ms = max(slowest_capture_ms or 0, routine_ms)
+                log.info("capture %d: %s %s%% %s (photo %s ms, recognition %s ms)", attempt, result.status.value,
+                         result.confidence, result.card.name if result.card else "-", capture_ms,
+                         getattr(result, "elapsed_ms", None))
                 if result.status.is_final:
                     break
         finally:
@@ -120,6 +130,8 @@ class VisionIdentifier:
             return Identification(OVERFLOW_TRAY, None, UNIDENTIFIED, attempt,
                                   {"error_message": f"vision error: {last_error}"})
         details = _details(result)
+        if slowest_capture_ms is not None:
+            details["capture_ms"] = slowest_capture_ms
         if result.status is IdentificationStatus.IDENTIFIED and result.card is not None:
             tray = tray_for_color_identity(result.card.color_identity)
             return Identification(tray, result.card.print_id, IDENTIFIED, attempt, details)

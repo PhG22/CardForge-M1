@@ -31,7 +31,9 @@ is never contacted: no homing, no tray check, no base moves.
 
 from __future__ import annotations
 
+import json
 import logging
+import os
 import threading
 import time
 import uuid
@@ -47,7 +49,7 @@ from .config import Settings
 from .events import EventHub
 from .housekeeping import PROJECT_ROOT, cleanup_after_run
 from .identifier import FACE_DOWN, IDENTIFIED, CardIdentifier, Identification
-from .modules import BottomModule, ModuleState, TopModule
+from .modules import HOME_TRAY, BottomModule, ModuleState, TopModule
 from .protocol import FrameError
 from .sorting import OVERFLOW_TRAY
 from .status_led import MemoryLedDriver, StatusLed
@@ -134,6 +136,60 @@ class RunLimitReached(Exception):
     """RNF27: the batch reached its maximum number of cards."""
 
 
+CAPTURE_ROUTINE_LIMIT_S = 2.0     # RF02 / RF15: card held still for the photo, at most 2.0 s
+
+
+@dataclass
+class RunTiming:
+    """Measured during a run, for RNF22 (>= 7 cards/min, <= 8.6 s per card, with no retries)
+    and RF02 / RF15 (capture routine <= 2.0 s). The time of each card runs from the start
+    of its feed to the end of its drop, so a pause (fault) does not count."""
+
+    cards: int = 0
+    total_s: float = 0.0
+    nominal_cards: int = 0            # identified (or rejected) at the first capture: no retry
+    nominal_total_s: float = 0.0
+    slowest_capture_s: float | None = None
+    last_card: dict | None = None
+
+    def add(self, phases: dict, attempts: int) -> None:
+        total = phases["total_s"]
+        self.cards += 1
+        self.total_s += total
+        if attempts <= 1:
+            self.nominal_cards += 1
+            self.nominal_total_s += total
+        capture = phases.get("capture_s")
+        if capture is not None:
+            self.slowest_capture_s = max(self.slowest_capture_s or 0.0, capture)
+        self.last_card = phases
+
+    @staticmethod
+    def _rate(cards: int, seconds: float) -> float | None:
+        return round(60.0 * cards / seconds, 1) if cards and seconds > 0 else None
+
+    def to_dict(self) -> dict:
+        return {
+            "cards": self.cards,
+            "seconds_per_card": round(self.total_s / self.cards, 2) if self.cards else None,
+            "cards_per_min": self._rate(self.cards, self.total_s),
+            "nominal_cards": self.nominal_cards,
+            "nominal_seconds_per_card": (round(self.nominal_total_s / self.nominal_cards, 2)
+                                         if self.nominal_cards else None),
+            "nominal_cards_per_min": self._rate(self.nominal_cards, self.nominal_total_s),
+            "slowest_capture_s": self.slowest_capture_s,
+            "last_card": self.last_card,
+        }
+
+    def summary(self) -> str | None:
+        if not self.cards:
+            return None
+        text = f"{self._rate(self.cards, self.total_s)} cards/min ({self.total_s / self.cards:.1f} s per card"
+        if self.nominal_cards and self.nominal_cards != self.cards:
+            text += f"; {self._rate(self.nominal_cards, self.nominal_total_s)} cards/min without retries"
+        return text + ")."
+
+
 @dataclass
 class RunInfo:
     run_id: str                     # UUIDv4 = local_run.local_uuid
@@ -195,6 +251,8 @@ class SorterController:
         self._optional_ok = {"LIGHT": True}  # does the A1 firmware support the optional LIGHT command?
         self._power_on_homing = threading.Event()   # set while the base homes after the service start (RF08)
         self._homing_thread: threading.Thread | None = None
+        self._saved_steps: int | None = None        # last base position written to base_state_file
+        self._timing = RunTiming()                  # of the current or last run (RNF22, RF02)
         if store is not None:
             n = store.recover_interrupted(utc_now())
             if n:
@@ -211,6 +269,8 @@ class SorterController:
             return {
                 "state": self._state.value,
                 "run": self._run.to_dict() if self._run else None,
+                # RNF22 / RF02: general run-status figures, no card identity (RF23).
+                "timing": self._timing.to_dict(),
             }
 
     @property
@@ -250,6 +310,7 @@ class SorterController:
             if self.store is not None:
                 self.store.create_run(run.run_id, run.started_at, owner)
             self._run = run
+            self._timing = RunTiming()
             self._launch(run)
         self.events.publish({"type": "run_started", "run": run.to_dict()})
         return run
@@ -334,9 +395,9 @@ class SorterController:
         self._require_bottom()
         return self.bottom.status().to_dict()
 
-    def base_home(self) -> dict:
+    def base_home(self, hint_steps: int | None = None) -> dict:
         ms = int(self.s.home_timeout_s * 1000)
-        return self._manual(lambda: self.bottom.start_home(ms), self.s.home_timeout_s + 2.0,
+        return self._manual(lambda: self.bottom.start_home(ms, hint_steps), self.s.home_timeout_s + 2.0,
                             "HOME_TIMEOUT", "The base did not find the strip in time.",
                             poll_s=self.s.home_poll_interval_s)
 
@@ -370,6 +431,7 @@ class SorterController:
             while True:
                 status = self.bottom.status()
                 if status.state == ModuleState.IDLE:
+                    self._remember_base(status)
                     return status.to_dict()
                 if status.state == ModuleState.ERROR:
                     raise HardwareFault(status.error or "MODULE_ERROR",
@@ -473,10 +535,13 @@ class SorterController:
 
     def _home_at_power_on(self) -> None:
         started = time.monotonic()
+        hint = self._saved_base_steps()
         try:
-            status = self.base_home()
-            log.info("base homed at power-on in %.1f s (tray %s, drift %s)", time.monotonic() - started,
-                     status.get("position"), status.get("drift"))
+            status = self.base_home(hint)
+            log.info("base homed at power-on in %.1f s (tray %s, drift %s%s)", time.monotonic() - started,
+                     status.get("position"), status.get("drift"),
+                     "" if hint is None else f", from the saved position {hint}")
+            self._check_drift(status.get("drift"), "power-on")
         except ManualRefused as exc:            # a run or a test move got there first: it homes by itself
             log.info("power-on homing skipped: %s", exc.message)
         except (BusError, FrameError, HardwareFault) as exc:
@@ -540,16 +605,18 @@ class SorterController:
         self._check_abort()
 
         # Quick checks first (< 1 s), so a refused start answers before the long homing.
-        problems = self._check_conditions(self.top.status(),
-                                          self.bottom.status() if s.bottom_enabled else None,
-                                          resuming=resuming)
+        bottom_now = self.bottom.status() if s.bottom_enabled else None
+        problems = self._check_conditions(self.top.status(), bottom_now, resuming=resuming)
         if problems:
             return problems
 
         # Bottom first: homing takes the longest and runs on A2 by itself,
-        # while we set up A1 over the same bus.
+        # while we set up A1 over the same bus. A homed base knows where it is; otherwise
+        # the saved position lets it go straight to the strip (RF08).
+        homing_started = time.monotonic()
         if s.bottom_enabled and home:
-            self.bottom.start_home(int(s.home_timeout_s * 1000))
+            hint = None if bottom_now is not None and bottom_now.homed else self._saved_base_steps()
+            self.bottom.start_home(int(s.home_timeout_s * 1000), hint)
 
         self.top.roller_stop()                    # feed roller must not rotate
         self.top.set_flap(s.flap_closed_angle)    # flap closed (80 degrees)
@@ -560,6 +627,9 @@ class SorterController:
         if s.bottom_enabled and home:
             bottom = self._wait_idle(self.bottom, s.home_timeout_s + 2.0, "HOME_TIMEOUT",
                                      "The base did not reach the zero position.", poll_s=s.home_poll_interval_s)
+            log.info("base homed before the run in %.1f s (drift %s)", time.monotonic() - homing_started,
+                     bottom.drift)
+            self._check_drift(bottom.drift, "run start")
         # Checked again after homing: someone may have touched the machine meanwhile.
         return self._check_conditions(self.top.status(), bottom, resuming=resuming)
 
@@ -611,6 +681,7 @@ class SorterController:
             if stopped:
                 cleared = self._clear_out(run)
                 self._safe_stop_modules()
+                self._park_base()
                 n = run.cards_processed
                 if cleared:
                     message = (f"Run stopped by user: the card in progress was sorted, {n} card(s) "
@@ -620,12 +691,15 @@ class SorterController:
                 self._finish(run, RunStatus.CANCELLED, None, message)
             elif limit:
                 self._safe_stop_modules()
+                self._park_base()
                 self._finish(run, RunStatus.COMPLETED, "BATCH_LIMIT",
                              f"Batch limit reached: {run.cards_processed} card(s) processed. "
-                             "Empty the trays and start a new run for the remaining cards.")
+                             "Empty the trays and start a new run for the remaining cards."
+                             + self._timing_note())
             else:
+                self._park_base()
                 self._finish(run, RunStatus.COMPLETED, None,
-                             f"Stack is empty: {run.cards_processed} card(s) processed.")
+                             f"Stack is empty: {run.cards_processed} card(s) processed." + self._timing_note())
         except Aborted:
             self._safe_stop_modules()
             self._finish(run, RunStatus.CANCELLED, None,
@@ -654,6 +728,8 @@ class SorterController:
     def _sort_one_card(self, run: RunInfo) -> None:
         s = self.s
         card_number = run.cards_processed + 1
+        phases: dict = {"card": card_number}
+        began = time.monotonic()
 
         # 1. Feed one card from the stack onto the platform.
         #    A normal stop does not interrupt this: the card is in the feeder.
@@ -663,28 +739,46 @@ class SorterController:
                               "The card did not reach the platform.")
         if not top.platform_has_card:
             raise HardwareFault("FEED_FAILED", "Feeding finished but no card is on the platform.")
+        fed = time.monotonic()
+        phases["feed_s"] = round(fed - began, 2)
 
         # 2. Take pictures and identify it. A normal stop ends the retries early;
         #    _clear_out() then sends the card to its tray (or to the overflow tray).
         if self._stop_requested.is_set():
             raise StopRequested()
+        identify_started = time.monotonic()
         result = self.identifier.identify(self._sleep_unless_stopped)
         self._in_progress = result
+        phases["identify_s"] = round(time.monotonic() - identify_started, 2)
+        capture_ms = result.details.get("capture_ms")
+        if isinstance(capture_ms, int):             # card held still until the photo is taken
+            phases["capture_s"] = round(identify_started - fed + capture_ms / 1000, 2)
         if self._stop_requested.is_set():
             raise StopRequested()
 
         # 3. Turn the base so the target tray is under the platform, 4. drop the card.
-        tray = self._route_and_drop(result.tray)
+        tray = self._route_and_drop(result.tray, phases)
         self._record(run, card_number, result, tray)
+        phases["total_s"] = round(time.monotonic() - began, 2)
+        self._timing.add(phases, result.attempts)
+        log.info("card %d: %s", card_number, ", ".join(f"{k} {v}" for k, v in phases.items() if k != "card"))
+        if phases.get("capture_s") is not None and phases["capture_s"] > CAPTURE_ROUTINE_LIMIT_S:
+            log.warning("card %d: capture routine took %.2f s (RF02 limit %.1f s)", card_number,
+                        phases["capture_s"], CAPTURE_ROUTINE_LIMIT_S)
 
-    def _route_and_drop(self, tray: int) -> int | None:
+    def _route_and_drop(self, tray: int, phases: dict | None = None) -> int | None:
         s = self.s
+        moved = time.monotonic()
         if s.bottom_enabled:
             ms = self.bottom.start_goto(tray)
             self._wait_idle(self.bottom, s.move_timeout_s, "MOVE_TIMEOUT",
                             f"The base did not reach tray {tray}.",
                             poll_s=s.base_poll_interval_s, quiet_s=_quiet_time(ms))
+        dropped = time.monotonic()
         self._drop_card()
+        if phases is not None:
+            phases["move_s"] = round(dropped - moved, 2)
+            phases["drop_s"] = round(time.monotonic() - dropped, 2)
         return tray if s.bottom_enabled else None
 
     def _record(self, run: RunInfo, card_number: int, result: Identification, tray: int | None,
@@ -774,12 +868,69 @@ class SorterController:
         while True:
             status = module.status()
             if status.state == ModuleState.IDLE:
+                if module is self.bottom:
+                    self._remember_base(status)
                 return status
             if status.state == ModuleState.ERROR:
                 raise HardwareFault(status.error or "MODULE_ERROR", _error_message(module.ADDRESS, status.error))
             if time.monotonic() > deadline:
                 raise HardwareFault(timeout_code, timeout_message)
             self._sleep(poll_s)
+
+    def _timing_note(self) -> str:
+        summary = self._timing.summary()
+        if summary is None:
+            return ""
+        log.info("run throughput: %s", self._timing.to_dict())
+        return " " + summary[0].upper() + summary[1:]
+
+    # ------------------------------------------- base position (RF08: homing in 5 s)
+
+    def _park_base(self) -> None:
+        """End of a run: back to the home tray, so the next homing (next Start, or the next
+        power-on with the saved position) is only the short final approach."""
+        s = self.s
+        if not (s.bottom_enabled and s.park_base_after_run):
+            return
+        try:
+            ms = self.bottom.start_goto(HOME_TRAY)
+            self._wait_idle(self.bottom, s.move_timeout_s, "MOVE_TIMEOUT", f"The base did not reach tray {HOME_TRAY}.",
+                            poll_s=s.base_poll_interval_s, quiet_s=_quiet_time(ms))
+        except (Aborted, BusError, FrameError, HardwareFault, ModuleError) as exc:
+            log.warning("could not park the base at tray %d after the run: %s", HOME_TRAY, exc)
+
+    def _saved_base_steps(self) -> int | None:
+        """Where the base was last seen (steps from home), if it was saved."""
+        path = self.s.base_state_file
+        if not path:
+            return None
+        try:
+            steps = int(json.loads(Path(path).read_text(encoding="utf-8"))["steps"])
+        except (OSError, ValueError, KeyError, TypeError):
+            return None
+        return steps if abs(steps) <= 20000 else None
+
+    def _remember_base(self, status) -> None:
+        """After every finished base move: save the position (atomic write, only when it changed)."""
+        path = self.s.base_state_file
+        steps = getattr(status, "steps", None)
+        if not path or steps is None or not getattr(status, "homed", False) or steps == self._saved_steps:
+            return
+        try:
+            target = Path(path)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            tmp = target.with_suffix(target.suffix + ".tmp")
+            tmp.write_text(json.dumps({"steps": steps, "at": utc_now()}), encoding="utf-8")
+            os.replace(tmp, target)
+            self._saved_steps = steps
+        except OSError as exc:
+            log.warning("could not save the base position to %s: %s", path, exc)
+
+    def _check_drift(self, drift: int | None, when: str) -> None:
+        if drift is not None and abs(drift) > self.s.drift_warn_steps:
+            log.warning("homing at %s found the base %d steps off (more than %d): the motor lost steps; "
+                        "check the base motion profile (FAST_PROFILE) and the belt/gear",
+                        when, drift, self.s.drift_warn_steps)
 
     def _sleep(self, seconds: float) -> None:
         """Wait; only an immediate stop interrupts it."""
@@ -891,7 +1042,7 @@ _RECORD_FIELDS = {"match_method", "confidence", "card_name", "set_code", "collec
 _MODULE_NAMES = {TopModule.ADDRESS: "top", BottomModule.ADDRESS: "bottom"}
 
 _ERROR_MESSAGES = {
-    "FEED_TIMEOUT": "The feeder could not move a card onto the platform (jam or empty stack).",
+    "FEED_TIMEOUT": "Feed jam: no card reached the platform after 2 pull attempts (jam or empty stack).",
     "FEED_FAILED": "Feeding finished but no card is on the platform.",
     "DROP_FAILED": "The card did not fall from the platform (stuck?).",
     "HOME_TIMEOUT": "The base could not find the zero position. Check the zero IR sensor.",

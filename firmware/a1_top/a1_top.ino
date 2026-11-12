@@ -5,12 +5,17 @@
   the cycle: this sketch only executes commands and reports its sensors
   (docs/PROTOCOL.md, section 5).
 
-    PING                -> OK FW=1.0
-    STATUS              -> OK STATE=IDLE|BUSY|ERROR STACK=0/1 PLAT=0/1 FLAP=<deg> ROLLER=0/1 [ERR=..]
+    PING                -> OK FW=1.1
+    STATUS              -> OK STATE=IDLE|BUSY|ERROR STACK=0/1 PLAT=0/1 FLAP=<deg> ROLLER=0/1
+                              ATTEMPT=<0-2> [ERR=..]
     ROLLER STOP         -> stop the feed roller (also cancels a FEED)
     FLAP <0-180>        -> move the flap servo (80 = closed, 0 = open)
-    FEED <timeout_ms>   -> feed ONE card onto the platform in small steps (run 150 ms,
-                           pause 150 ms, check the IR); ERR=FEED_TIMEOUT if none arrives
+    FEED <timeout_ms>   -> feed ONE card onto the platform (RF05): up to 2 pull attempts of
+                           timeout_ms / 2 each, in small steps (run 150 ms, pause 150 ms,
+                           check the IR). No card after the first attempt: the roller stops
+                           for 0.5 s, then the second attempt. No card after the second:
+                           Feed Jam = ERR=FEED_TIMEOUT, roller stopped at once.
+                           ATTEMPT in STATUS = the attempt running (or the last one).
     STOP                -> stop the roller, cancel FEED, clear the error (flap keeps its angle)
 
   Power-up: flap closed (80), roller stopped, nothing moves until the Pi asks.
@@ -40,7 +45,7 @@ const uint8_t       RS485_DE_PIN        = 13;    // MAX485 DE + RE tied together
 const long          RS485_BAUD          = 9600;  // = MTG_BAUDRATE on the Pi
 const char          MY_ADDRESS[]        = "A1";
 const unsigned long REPLY_DELAY_US      = 3000;  // give the Pi time to release the bus
-const unsigned long DUPLICATE_WINDOW_MS = 1000;  // PROTOCOL.md 3.4
+const unsigned long DUPLICATE_WINDOW_MS = 2000;  // PROTOCOL.md 3.4 (covers the Pi's 3 resends)
 
 // ===================== Pins =====================
 // The servos MUST stay on D9 and D10: those are the Timer1 hardware PWM pins (OC1A / OC1B).
@@ -57,6 +62,9 @@ const int           FEEDER_STOP_US = 1500;  // trim (e.g. 1490 / 1510) if it cre
 const int           FEEDER_RUN_US  = 1300;  // use 1700 if it spins the wrong way
 const unsigned long FEED_STEP_MS   = 150;   // how long one feeder step runs
 const unsigned long FEED_PAUSE_MS  = 150;   // pause after each step before checking the IR
+// RF05: pull attempts per feed cycle before Feed Jam, and the roller stop between them
+const uint8_t       FEED_ATTEMPTS       = 2;
+const unsigned long FEED_RETRY_PAUSE_MS = 500;
 // true = cut the servo signal whenever the roller is stopped. Most continuous servos
 // then stop dead (no creep). Keep false if yours keeps turning without a signal.
 const bool FEEDER_DETACH_WHEN_STOPPED = false;
@@ -83,7 +91,7 @@ const uint8_t NO_DE_PIN = 255;
 const bool    STATUS_LED = (RS485_DE_PIN != LED_BUILTIN);   // D13 is shared with the LED
 
 enum ModuleState { STATE_IDLE, STATE_BUSY, STATE_ERROR };
-enum FeedPhase   { FEED_OFF, FEED_RUN, FEED_PAUSE };
+enum FeedPhase   { FEED_OFF, FEED_RUN, FEED_PAUSE, FEED_RETRY };
 
 struct IrInput {
   uint8_t       pin;
@@ -153,9 +161,10 @@ IrInput stackIr = {STACK_IR_PIN, STACK_IR_ACTIVE, false, 0, 0};
 ModuleState   state         = STATE_IDLE;
 const char   *errorCode     = NULL;
 FeedPhase     feedPhase     = FEED_OFF;
-unsigned long feedStartedAt = 0;
+unsigned long attemptStartedAt = 0;
 unsigned long phaseStartedAt = 0;
-unsigned long feedTimeoutMs = 0;
+unsigned long attemptMs     = 0;           // length of one pull attempt
+uint8_t       feedAttempt   = 0;           // 1 or 2 while feeding; 0 = never fed
 bool          rollerRunning = false;
 int           flapAngle     = FLAP_CLOSED;
 
@@ -207,25 +216,50 @@ void endFeed() {
 }
 
 void startFeed(unsigned long timeoutMs, unsigned long now) {
-  feedTimeoutMs  = timeoutMs;
-  feedStartedAt  = now;
-  phaseStartedAt = now;
-  feedPhase      = FEED_RUN;
-  state          = STATE_BUSY;
-  errorCode      = NULL;
+  attemptMs = timeoutMs / FEED_ATTEMPTS;
+  if (attemptMs < FEED_STEP_MS + FEED_PAUSE_MS) attemptMs = FEED_STEP_MS + FEED_PAUSE_MS;
+  feedAttempt      = 1;
+  attemptStartedAt = now;
+  phaseStartedAt   = now;
+  feedPhase        = FEED_RUN;
+  state            = STATE_BUSY;
+  errorCode        = NULL;
   feederRun();
-  DEBUG_LOG(F("FEED started"));
+  DEBUG_LOG(F("FEED started: pull attempt 1"));
 }
 
 // Non-blocking version of feedStep() + the IR check of the old loop()
 void updateFeed(unsigned long now) {
   if (feedPhase == FEED_OFF) return;
 
-  if (now - feedStartedAt >= feedTimeoutMs) {
-    endFeed();
-    state     = STATE_ERROR;
-    errorCode = "FEED_TIMEOUT";
-    DEBUG_LOG(F("FEED_TIMEOUT: no card reached the platform"));
+  if (feedPhase == FEED_RETRY) {               // roller stopped between the two attempts
+    if (now - phaseStartedAt >= FEED_RETRY_PAUSE_MS) {
+      feedAttempt++;
+      attemptStartedAt = now;
+      phaseStartedAt   = now;
+      feedPhase        = FEED_RUN;
+      feederRun();
+      DEBUG_LOG(F("FEED: pull attempt 2"));
+    }
+    return;
+  }
+
+  if (now - attemptStartedAt >= attemptMs) {   // this pull attempt is over: check the IR (RF09)
+    feederStop();
+    if (platIr.stable) {
+      endFeed();
+      state = STATE_IDLE;
+      DEBUG_LOG(F("FEED done: card on the platform"));
+    } else if (feedAttempt < FEED_ATTEMPTS) {
+      feedPhase      = FEED_RETRY;
+      phaseStartedAt = now;
+      DEBUG_LOG(F("FEED: no card after pull attempt 1"));
+    } else {
+      endFeed();                               // RF05: Feed Jam, roller already stopped
+      state     = STATE_ERROR;
+      errorCode = "FEED_TIMEOUT";
+      DEBUG_LOG(F("FEED_TIMEOUT: no card after 2 pull attempts (Feed Jam)"));
+    }
     return;
   }
 
@@ -321,12 +355,12 @@ void execute(const char *cmd, const char *arg, char *out, size_t size) {
   long value;
 
   if (strcmp(cmd, "PING") == 0) {
-    snprintf(out, size, "OK FW=1.0");
+    snprintf(out, size, "OK FW=1.1");
 
   } else if (strcmp(cmd, "STATUS") == 0) {
-    int n = snprintf(out, size, "OK STATE=%s STACK=%d PLAT=%d FLAP=%d ROLLER=%d",
+    int n = snprintf(out, size, "OK STATE=%s STACK=%d PLAT=%d FLAP=%d ROLLER=%d ATTEMPT=%d",
                      stateName(), stackIr.stable ? 1 : 0, platIr.stable ? 1 : 0,
-                     flapAngle, rollerRunning ? 1 : 0);
+                     flapAngle, rollerRunning ? 1 : 0, feedAttempt);
     if (state == STATE_ERROR && errorCode != NULL && n > 0 && (size_t)n < size) {
       snprintf(out + n, size - n, " ERR=%s", errorCode);
     }

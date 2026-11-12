@@ -9,14 +9,24 @@
   only after the server confirmed it; a failed upload is retried with exponential
   backoff (10 s, 20 s, 40 s ... up to sync_retry_max_s), also after a reboot.
 
+* AlertForwarder (RF38): sends each alert of a run (a fault that paused it, the end of
+  the run) to POST /machine/events for the user who started the run. The server keeps
+  it, and the app's background service shows it as a notification even when the app is
+  closed or the phone is locked. Resent with backoff while the server is unreachable,
+  for at most alert_max_age_s; the server stores a resent alert once (event_id).
+
 Scans never wait for the network: each card is committed to run.db first (RNF19/RNF20).
 """
 
 from __future__ import annotations
 
 import logging
+import queue
 import threading
+import time
+import uuid
 from datetime import datetime, timedelta, timezone
+from typing import Callable, Iterable
 
 import httpx
 
@@ -70,6 +80,10 @@ class ServerClient:
     def upload_run(self, payload: dict) -> dict:
         """POST /sync/runs. Returns {run_id, created, cards_received, cards_inserted}."""
         return self._json(self._call("POST", "/sync/runs", self.machine_token, json=payload))
+
+    def post_event(self, alert: dict) -> dict:
+        """POST /machine/events (RF38). Returns {id, created}."""
+        return self._json(self._call("POST", "/machine/events", self.machine_token, json=alert))
 
     def _call(self, method: str, path: str, token: str, json: dict | None = None) -> httpx.Response:
         try:
@@ -161,3 +175,126 @@ class SyncWorker:
         log.info("run %s uploaded to the server as #%s (%s card(s))", run_id, result["run_id"],
                  result.get("cards_received"))
         return 1
+
+
+# ------------------------------------------------------------------ alerts (RF38)
+
+ALERT_RETRY_DELAYS_S = (2.0, 5.0, 10.0, 30.0, 60.0)
+ALERT_MESSAGE_MAX = 500          # = the server's limit
+
+
+def _now_iso() -> str:
+    return _iso(datetime.now(timezone.utc))
+
+
+class AlertForwarder:
+    """Listens to the controller's events (EventHub.add_listener) and sends the alerts of
+    runs that have an owner to the server, one at a time and in order."""
+
+    def __init__(self, store: RunStore, client: ServerClient, max_age_s: float = 900.0,
+                 retry_delays: Iterable[float] = ALERT_RETRY_DELAYS_S,
+                 clock: Callable[[], float] = time.monotonic) -> None:
+        self.store = store
+        self.client = client
+        self.max_age_s = max_age_s
+        self.retry_delays = tuple(retry_delays)
+        self._clock = clock
+        self._queue: queue.Queue = queue.Queue(maxsize=200)
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+        self.sent = 0
+        self.dropped = 0
+
+    # -- EventHub listener (runs in the thread that published the event)
+
+    def handle(self, event: dict) -> None:
+        alert = self.alert_for(event)
+        if alert is None:
+            return
+        try:
+            self._queue.put_nowait((self._clock(), alert))
+        except queue.Full:
+            self.dropped += 1
+            log.warning("too many alerts waiting for the server: %s %s dropped", alert["kind"], alert["code"])
+
+    def alert_for(self, event: dict) -> dict | None:
+        """The server alert for a controller event, or None if it is not one (or the run has no owner)."""
+        kind = {"fault": "fault", "run_finished": "run_ended"}.get(event.get("type"))
+        run = event.get("run") or {}
+        run_id = run.get("run_id")
+        if kind is None or not run_id:
+            return None
+        row = self.store.get_run(run_id)
+        owner_id = row.get("started_by") if row else None
+        if owner_id is None:                  # started without a server: nobody to tell
+            return None
+        message = event.get("message") or run.get("message")
+        alert = {"event_id": str(uuid.uuid4()), "owner_id": int(owner_id), "run_id": run_id, "kind": kind,
+                 "message": message[:ALERT_MESSAGE_MAX] if message else None,
+                 "cards_processed": run.get("cards_processed")}
+        if kind == "fault":
+            alert.update(code=event.get("fault") or run.get("error_code") or "FAULT", status=None,
+                         time=event.get("time") or run.get("fault_at") or _now_iso())
+        else:
+            alert.update(code=run.get("error_code"), status=run.get("status"),
+                         time=run.get("stopped_at") or _now_iso())
+        return alert
+
+    # -- delivery
+
+    def start(self) -> None:
+        self._thread = threading.Thread(target=self._loop, name="alert-forwarder", daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=5)
+
+    def pending(self) -> int:
+        return self._queue.qsize()
+
+    def process_pending(self) -> int:
+        """Send what is queued now, in the calling thread (tests). Returns how many were sent."""
+        sent = 0
+        while True:
+            try:
+                queued_at, alert = self._queue.get_nowait()
+            except queue.Empty:
+                return sent
+            sent += self._deliver(queued_at, alert)
+
+    def _loop(self) -> None:
+        while not self._stop.is_set():
+            try:
+                queued_at, alert = self._queue.get(timeout=0.5)
+            except queue.Empty:
+                continue
+            try:
+                self._deliver(queued_at, alert)
+            except Exception:                 # never let the forwarder die
+                log.exception("alert delivery failed")
+
+    def _deliver(self, queued_at: float, alert: dict) -> int:
+        attempt = 0
+        while True:
+            try:
+                result = self.client.post_event(alert)
+            except ServerError as exc:
+                retry = isinstance(exc, ServerUnreachable) or exc.status is None or exc.status >= 500
+                delay = self.retry_delays[min(attempt, len(self.retry_delays) - 1)] if self.retry_delays else 0.0
+                if not retry or self._clock() + delay - queued_at > self.max_age_s:
+                    self.dropped += 1
+                    log.error("alert %s %s for run %s not delivered: %s", alert["kind"],
+                              alert["code"] or alert["status"], alert["run_id"], exc)
+                    return 0
+                attempt += 1
+                log.warning("alert %s for run %s: server unreachable, retry %d in %.0f s (%s)",
+                            alert["kind"], alert["run_id"], attempt, delay, exc)
+                if self._stop.wait(delay):
+                    return 0
+                continue
+            self.sent += 1
+            log.info("alert %s %s for run %s sent to the server (#%s)", alert["kind"],
+                     alert["code"] or alert["status"], alert["run_id"], result.get("id"))
+            return 1

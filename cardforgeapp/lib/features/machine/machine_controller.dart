@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 
 import '../alerts/alerts_controller.dart';
 import '../alerts/machine_alert.dart';
+import '../notifications/background_alerts.dart';
 import 'api/machine_api.dart';
 import 'api/machine_api_models.dart';
 import 'machine_link_service.dart';
@@ -41,6 +42,8 @@ class SortedCard {
 ///   WebSocket (`/ws/events`) open, reconnecting when it drops.
 /// - Keeps the run state up to date and raises alerts (run finished, a fault
 ///   that paused the run, connection lost) whatever screen is open (RF27).
+/// - While a run is active, keeps [BackgroundAlerts] watching it, so its
+///   alerts also arrive as notifications with the app closed (RF38).
 /// - Runs the commands of the Machine control screen.
 class MachineController extends ChangeNotifier {
   MachineController({
@@ -48,6 +51,7 @@ class MachineController extends ChangeNotifier {
     required MachineApi Function(MachineAddress address) apiFor,
     required AlertsController alerts,
     required MachineLinkService linkService,
+    BackgroundAlerts backgroundAlerts = const NoBackgroundAlerts(),
     this.retryDelays = const [
       Duration(seconds: 2),
       Duration(seconds: 5),
@@ -57,8 +61,10 @@ class MachineController extends ChangeNotifier {
   })  : _store = store,
         _apiFor = apiFor,
         _alerts = alerts,
-        _linkService = linkService;
+        _linkService = linkService,
+        _backgroundAlerts = backgroundAlerts;
 
+  final BackgroundAlerts _backgroundAlerts;
   final MachineStore _store;
   final MachineApi Function(MachineAddress address) _apiFor;
   final AlertsController _alerts;
@@ -99,6 +105,7 @@ class MachineController extends ChangeNotifier {
   String? _runningRunId; // to notice a run that ended while we were offline
   final Set<String> _alertedRuns = {};
   final Set<String> _alertedFaults = {}; // "<run id>@<fault time>": one alert per fault
+  bool _reportedOnline = false; // last value given to BackgroundAlerts.setAppConnected
 
   LinkedMachine? get machine => _store.machine;
 
@@ -305,6 +312,14 @@ class MachineController extends ChangeNotifier {
   void _applySnapshot(MachineSnapshot next) {
     snapshot = next;
     final run = next.run;
+    // RF38: an active run is watched in the background too; none = stop watching.
+    if (run != null &&
+        (run.status == RunStatus.running || run.status == RunStatus.paused)) {
+      unawaited(
+          _backgroundAlerts.watchRun(run.runId, machineName: machine?.name));
+    } else if (next.state == ControllerState.idle) {
+      unawaited(_backgroundAlerts.noActiveRun());
+    }
     if (run == null) return;
     if (run.status == RunStatus.running || run.status == RunStatus.paused) {
       _runningRunId = run.runId;
@@ -497,7 +512,12 @@ class MachineController extends ChangeNotifier {
   Future<void> forget() => _store.clear();
 
   void _notify() {
-    if (!_disposed) notifyListeners();
+    if (_disposed) return;
+    if (isOnline != _reportedOnline) {
+      _reportedOnline = isOnline;
+      _backgroundAlerts.setAppConnected(isOnline);
+    }
+    notifyListeners();
   }
 
   /// Stops following the machine (app closing, tests).

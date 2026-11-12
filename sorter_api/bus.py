@@ -108,7 +108,7 @@ class RS485Bus:
         baudrate: int,
         direction_pin: DirectionPin | None = None,
         reply_timeout: float = 0.3,
-        retries: int = 2,
+        retries: int = 3,
         frame_gap: float = 0.002,
     ) -> None:
         self._port = port

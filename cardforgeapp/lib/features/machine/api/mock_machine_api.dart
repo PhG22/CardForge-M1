@@ -87,8 +87,8 @@ class MockMachineApi implements MachineApi {
     if (!_jammed && number == jamAtCard) {
       _jammed = true;
       _timer?.cancel();
-      const message = 'The feeder could not move a card onto the platform. '
-          'Fix it, then press Resume.';
+      const message = 'Feed jam: no card reached the platform after 2 pull '
+          'attempts (jam or empty stack). Fix it, then press Resume.';
       final now = DateTime.now().toUtc();
       final paused = RunInfo(
         runId: run.runId,

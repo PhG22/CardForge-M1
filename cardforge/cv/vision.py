@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from typing import Optional
 
 import numpy as np
@@ -68,8 +69,12 @@ class VisionModule:
         with self._lock:
             if not self.ready:
                 raise DatabaseUnavailable("vision module not started")
+            t0 = time.perf_counter()
             frame = self.camera.capture()
-            return self.recognizer.recognize(frame)
+            capture_ms = int((time.perf_counter() - t0) * 1000)
+            result = self.recognizer.recognize(frame)
+            result.debug["capture_ms"] = capture_ms          # RF02 / RF15: the photo itself
+            return result
 
     def recognize(self, frame: Frame | np.ndarray) -> IdentificationResult:
         """Reconhece uma imagem já capturada (bancada, testes, relatórios)."""

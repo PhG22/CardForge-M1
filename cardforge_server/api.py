@@ -10,8 +10,12 @@
     GET  /runs/{id}            per-tray counts + every card of one run (RF22)
     GET  /cards                the user's collection, grouped by name, with trays ("Cards in folders")
     GET  /cards/export         every card the user owns, rows for the app's CSV export (RF24)
+    POST /machine/events       an alert of a run: fault / run end (the Pi, machine token)  (RF38)
+    GET  /notifications        the user's alerts after an id (of one run: run_id); waits up to
+                               `wait` s for a new one
+                               (the app's background service: notifications with the app closed)
 
-App routes take `Authorization: Bearer <access token>`; /sync/runs takes
+App routes take `Authorization: Bearer <access token>`; /sync/runs and /machine/events take
 `Authorization: Bearer <machine token>`. Errors are {"code": ..., "message": ...}.
 
 Run with:  python -m cardforge_server        (settings from CF_* env variables)
@@ -19,6 +23,7 @@ Run with:  python -m cardforge_server        (settings from CF_* env variables)
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import secrets
@@ -33,10 +38,12 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
+from starlette.concurrency import run_in_threadpool
 
 from . import repository as repo
 from .config import ServerSettings
 from .db import migrate, open_pool
+from .notifications import NotificationBroker
 from .security import (bearer, burn_verify_time, hash_password, issue_token, machine_token_ok, needs_rehash,
                        read_token, verify_password)
 
@@ -105,6 +112,22 @@ class SyncBody(BaseModel):
     cards: List[SyncCard] = Field(default_factory=list)
 
 
+class MachineEventBody(BaseModel):
+    """RF38: one alert of a run, sent by the Pi when it happens."""
+    event_id: UUID                                    # chosen by the Pi: a resend is stored once
+    owner_id: int                                     # the user who started the run
+    run_id: Optional[UUID] = None                     # local_run.local_uuid
+    kind: Literal["fault", "run_ended"]
+    code: Optional[str] = Field(None, max_length=64)  # fault code / error code of the end
+    status: Optional[Literal["completed", "cancelled", "failed"]] = None
+    message: Optional[str] = Field(None, max_length=500)
+    cards_processed: Optional[int] = Field(None, ge=0)
+    time: datetime
+
+
+NOTIFICATION_WAIT_MAX_S = 30.0
+
+
 # ------------------------------------------------------------------ app
 
 def create_app(settings: ServerSettings | None = None) -> FastAPI:
@@ -119,6 +142,7 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
     if not settings.machine_token_list:
         log.warning("CF_MACHINE_TOKENS is empty: no sorter machine can upload runs")
     ttl_s = settings.token_ttl_hours * 3600
+    broker = NotificationBroker()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -127,12 +151,14 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
             if applied:
                 log.info("database migrated: %s", ", ".join(applied))
         app.state.pool = open_pool(settings.database_url, settings.pool_max_size)
+        broker.bind_loop(asyncio.get_running_loop())
         try:
             yield
         finally:
             app.state.pool.close()
 
     app = FastAPI(title="CardForge server", version="1.0.0", lifespan=lifespan)
+    app.state.notifications = broker
     app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
     @app.exception_handler(ApiError)
@@ -266,6 +292,70 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
     def export(user: dict = Depends(current_user), conn=Depends(db)):
         rows = repo.export_rows(conn, user["id"])
         return {"rows": rows, "total_cards": sum(r["quantity"] for r in rows)}
+
+    # -------------------------------------------------------------- alerts (RF38)
+
+    @app.post("/machine/events", status_code=201, dependencies=[Depends(machine)])
+    def machine_event(body: MachineEventBody, request: Request):
+        """An alert of a run (a fault that paused it, or its end), for the user who started it."""
+        if body.kind == "fault" and not body.code:
+            raise ApiError(422, "INVALID_EVENT", "A fault needs its code.")
+        if body.kind == "run_ended" and body.status is None:
+            raise ApiError(422, "INVALID_EVENT", "The end of a run needs its status.")
+        # Own transaction, committed before the waiting apps are woken up.
+        with request.app.state.pool.connection() as conn:
+            if repo.get_user(conn, body.owner_id) is None:
+                raise ApiError(422, "UNKNOWN_USER", f"User {body.owner_id} does not exist on this server.")
+            notification_id, created = repo.insert_notification(conn, body.owner_id, body.model_dump())
+        if created:
+            broker.publish(body.owner_id)
+            log.info("alert #%s for user %s: %s %s", notification_id, body.owner_id, body.kind,
+                     body.code or body.status)
+        return {"id": notification_id, "created": created}
+
+    @app.get("/notifications")
+    async def notifications(request: Request, after: Optional[int] = None, wait: float = 0, limit: int = 50,
+                            run_id: Optional[UUID] = None, authorization: Optional[str] = Header(None)):
+        """The user's alerts with an id above `after` (oldest first) and the id to ask after next.
+        run_id: only the alerts of that run (the app's background service watches one run).
+        Without `after`: no alerts, only the current last id (where a new watcher starts).
+        With `wait` > 0 and nothing new yet, the request waits up to `wait` seconds (max 30)
+        for the next alert. No database connection is held while it waits."""
+        token = bearer(authorization)
+        user_id = read_token(token, secret) if token else None
+        if user_id is None:
+            raise ApiError(401, "UNAUTHORIZED", "Sign in again.")
+        pool = request.app.state.pool
+        limit = max(1, min(limit, 200))
+        wait = max(0.0, min(wait, NOTIFICATION_WAIT_MAX_S))
+
+        def load():
+            with pool.connection() as conn:
+                user = repo.get_user(conn, user_id)
+                if user is None or not user["is_active"]:
+                    return None
+                last = repo.last_notification_id(conn, user_id)
+                if after is None:
+                    return [], last
+                items = repo.notifications_after(conn, user_id, max(0, after), limit,
+                                                 str(run_id) if run_id else None)
+                # An `after` above the last id (database recreated): start again from the last id.
+                return items, (items[-1]["id"] if items else min(after, last))
+
+        waiter = broker.subscribe(user_id)
+        try:
+            result = await run_in_threadpool(load)
+            if result is None:
+                raise ApiError(401, "UNAUTHORIZED", "Sign in again.")
+            items, last = result
+            if not items and after is not None and wait > 0 and await broker.wait(waiter, wait):
+                result = await run_in_threadpool(load)
+                if result is None:
+                    raise ApiError(401, "UNAUTHORIZED", "Sign in again.")
+                items, last = result
+        finally:
+            broker.unsubscribe(user_id, waiter)
+        return {"notifications": items, "last_id": last}
 
     return app
 

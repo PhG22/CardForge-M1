@@ -5,6 +5,7 @@ import 'package:cardforge/features/machine/machine_controller.dart';
 import 'package:cardforge/features/machine/machine_models.dart';
 import 'package:cardforge/features/machine/machine_store.dart';
 import 'package:cardforge/features/machine/mock_machine_link_service.dart';
+import 'package:cardforge/features/notifications/background_alerts.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -23,6 +24,7 @@ void main() {
 
   Future<MachineController> start({
     Map<String, Object> prefs = linkedMachinePrefs,
+    BackgroundAlerts backgroundAlerts = const NoBackgroundAlerts(),
   }) async {
     SharedPreferences.setMockInitialValues(Map<String, Object>.of(prefs));
     store = MachineStore(await SharedPreferences.getInstance());
@@ -37,6 +39,7 @@ void main() {
         stepDelay: Duration.zero,
         address: _newAddress,
       ),
+      backgroundAlerts: backgroundAlerts,
       retryDelays: const [Duration(milliseconds: 10)],
     );
     addTearDown(controller.dispose);
@@ -348,4 +351,53 @@ void main() {
     expect(controller.canStart, isFalse);
     expect(controller.canMoveBase, isFalse);
   });
+
+  test('an active run is watched in the background until it ends (RF38)',
+      () async {
+    final background = _FakeBackgroundAlerts();
+    final controller = await start(backgroundAlerts: background);
+    expect(background.connected, [true]);
+    background.noActiveRunCalls = 0; // the idle machine at connect
+
+    api.emit(RunStartedEvent(FakeMachineApi.runningRun()));
+    final paused = FakeMachineApi.pausedRun();
+    api.emit(
+        FaultEvent(code: 'FEED_TIMEOUT', time: paused.faultAt, run: paused));
+    await pumpEventQueue();
+    expect(background.watched.toSet(), {'run-1'});
+    expect(background.machineNames.toSet(), {'CardForge-A1B2'});
+    expect(background.noActiveRunCalls, 0);
+
+    api.emit(const RunFinishedEvent(
+        RunInfo(runId: 'run-1', status: RunStatus.cancelled), null));
+    await pumpEventQueue();
+    expect(background.noActiveRunCalls, 1);
+
+    api.reachable = false;
+    await api.dropEvents();
+    await pumpEventQueue();
+    expect(controller.isOnline, isFalse);
+    expect(background.connected, [true, false]);
+  });
+}
+
+class _FakeBackgroundAlerts implements BackgroundAlerts {
+  final List<String> watched = [];
+  final List<String?> machineNames = [];
+  final List<bool> connected = [];
+  int noActiveRunCalls = 0;
+
+  @override
+  Future<void> watchRun(String runId, {String? machineName}) async {
+    watched.add(runId);
+    machineNames.add(machineName);
+  }
+
+  @override
+  Future<void> noActiveRun() async {
+    noActiveRunCalls++;
+  }
+
+  @override
+  void setAppConnected(bool connected) => this.connected.add(connected);
 }

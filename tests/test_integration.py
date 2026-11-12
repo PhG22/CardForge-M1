@@ -27,7 +27,7 @@ def fast_settings(**overrides) -> Settings:
                  base_poll_interval_s=0.005, home_poll_interval_s=0.005, feed_timeout_s=0.5, drop_timeout_s=0.5,
                  sim_stack_cards=3, reply_timeout=0.1, run_db=":memory:", home_on_power_on=False,
                  # never touch the repository's own folders from the tests
-                 cleanup_dirs="", crop_captures_dir=tempfile.mkdtemp(prefix="calibragem_"))
+                 cleanup_dirs="", base_state_file="", crop_captures_dir=tempfile.mkdtemp(prefix="calibragem_"))
     for k, v in overrides.items():
         setattr(s, k, v)
     return s

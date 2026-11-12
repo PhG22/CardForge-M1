@@ -49,5 +49,5 @@ def server(pg_url):
                               machine_tokens=f"other-token,{MACHINE_TOKEN}")
     with TestClient(create_app(settings)) as client:
         with psycopg.connect(pg_url, autocommit=True) as conn:
-            conn.execute("TRUNCATE cards, runs, users RESTART IDENTITY CASCADE")
+            conn.execute("TRUNCATE notifications, cards, runs, users RESTART IDENTITY CASCADE")
         yield client

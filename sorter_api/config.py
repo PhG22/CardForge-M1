@@ -30,7 +30,7 @@ class Settings:
     de_rts: bool = False                # laptop + USB-TTL adapter: DE+RE wired to the adapter's RTS pin
     de_rts_invert: bool = False         # flip if the module never answers with de_rts on
     reply_timeout: float = 0.3          # seconds to wait for a reply frame
-    retries: int = 2                    # resends after a timeout / bad checksum
+    retries: int = 3                    # RNF10: retransmissions after a timeout / bad checksum, then link lost
     frame_gap_s: float = 0.002          # quiet time between a reply and the next request
 
     # --- modules
@@ -42,9 +42,12 @@ class Settings:
     flap_settle_s: float = 0.5          # time for the flap servo to reach its angle
     drop_timeout_s: float = 3.0         # max time for the card to leave the platform
     card_fall_s: float = 0.5            # after the platform IR clears, before closing the flap
-    feed_timeout_s: float = 10.0        # Arduino gives up feeding after this (~33 feed steps)
+    feed_timeout_s: float = 10.0        # RF05: 2 pull attempts of 5 s each (~16 feed steps each)
     home_timeout_s: float = 40.0        # Arduino gives up homing after this (gentle ramp: ~20 s)
     home_on_power_on: bool = True       # RF08: home the base when the service starts (and again at every Start)
+    park_base_after_run: bool = True    # RF08: back to the home tray after a run, so the next homing is short
+    base_state_file: str = "data/base_position.json"   # last base position, for a fast power-on homing ("" = off)
+    drift_warn_steps: int = 5           # log a warning when a homing finds the base further off than this
     move_timeout_s: float = 15.0        # Pi gives up waiting for GOTO / MOVE after this
     base_steps_per_turn: int = 12800    # for /base/move with degrees (measured: 4:1 gearing)
     poll_interval_s: float = 0.1        # STATUS polling period while a module is BUSY
@@ -88,6 +91,8 @@ class Settings:
     server_timeout_s: float = 5.0
     sync_interval_s: float = 60.0       # how often to look for runs still to upload
     sync_retry_max_s: float = 900.0     # longest wait between two failed uploads of a run
+    server_alerts: bool = True          # RF38: send faults and run ends to the server (app notifications)
+    alert_max_age_s: float = 900.0      # give up resending an alert after this long
 
     # --- app sign-in on the Pi itself (app_compat.py), only WITHOUT a server.
     # POST /auth/login: empty password = any credentials are accepted.

@@ -3,12 +3,15 @@
 `cardforge_server/` is the server of the design (Deliverable 3, DB01–DB08): it owns the
 PostgreSQL database, the user accounts, and every finished run with its cards. The app
 talks to it for sign-up, sign-in, the run history, the collection and the CSV export;
-the Raspberry Pi talks to it to check who started a run and to upload the run when it ends.
+the Raspberry Pi talks to it to check who started a run, to upload the run when it ends, and
+to send the alerts of a run (a fault that paused it, its end) that the app shows as
+notifications with the app closed (RF38).
 
 ```
-App ──HTTPS──► CardForge server ──► PostgreSQL (users, runs, cards)
+App ──HTTPS──► CardForge server ──► PostgreSQL (users, runs, cards, notifications)
  │   signup/login, /runs, /cards, /cards/export        ▲
- │                                                      │ POST /sync/runs (machine token)
+ │   background service: GET /notifications?wait=25   │ POST /sync/runs (machine token)
+ │                                                      │ POST /machine/events (machine token, RF38)
  └──Wi-Fi──► Raspberry Pi (sorter_api) ── run.db (SQLite: local_run, local_cards) ──┘
      POST /run/start + the user's token  ─► GET /auth/me (who is this?)
 ```
@@ -32,6 +35,7 @@ server starts (or with `python -m cardforge_server migrate`) and recorded in
 | `001_init.sql` | DB team's schema v1: `users`, `runs`, `cards` (unchanged) |
 | `002_sync_keys.sql` | DB team's `local_uuid` columns + unique indexes for idempotent upload (unchanged) |
 | `003_card_details.sql` | What the app shows: `runs.error_code/message/synced_at`; per card: tray (`bin`), number in the run, name, set, collector number, color identity, type, mana cost, rarity, `flag` (`unidentified` / `face_down`). An unidentified card has no `card_identifier` (it was `NOT NULL`). |
+| `004_notifications.sql` | RF38: `notifications` — one row per alert of a run, for the user who started it: `kind` (`fault` / `run_ended`), `code`, `status`, `message`, `cards_processed`, `event_time`; `event_id` (unique, chosen by the Pi) makes a resend idempotent. Rows older than 30 days are deleted when a new alert arrives. |
 
 Mapping from the Pi's `local_cards.scan_status`:
 
@@ -193,6 +197,32 @@ file (RF24, RFC 4180), as in the design (DB05).
   "total_cards": 3 }
 ```
 
+### POST /machine/events (machine) — RF38
+
+An alert of a run, sent by the Pi when it happens. `201 {"id": 12, "created": true}`;
+the same `event_id` again → `{"id": 12, "created": false}` (nothing stored twice).
+```json
+{ "event_id": "c3a5…", "owner_id": 7, "run_id": "<local_uuid>", "kind": "fault",
+  "code": "FEED_TIMEOUT", "message": "Feed jam: …", "cards_processed": 4,
+  "time": "2026-11-11T20:03:07.000Z" }
+```
+`kind`: `fault` (needs `code`) or `run_ended` (needs `status`: `completed` / `cancelled` / `failed`).
+**422** `UNKNOWN_USER`, `INVALID_EVENT`; **401** `BAD_MACHINE_TOKEN`.
+
+### GET /notifications?run_id=&after=&wait= — RF38
+
+The signed-in user's alerts with an id above `after`, oldest first, and the id to ask after
+next: `{"notifications": [ {"id", "run_id", "kind", "code", "status", "message",
+"cards_processed", "time", "received_at"} ], "last_id": 12}`. `run_id` limits it to one run
+(the app's background service watches the active run). With `wait` (seconds, max 30) and
+nothing new yet, the request **waits** for the next alert and returns as soon as it is
+stored (long polling; no database connection is held while waiting). Without `after`: no
+alerts, just the current `last_id`.
+
+The app uses it from an Android foreground service while a run is active, so the alerts
+arrive as notifications even when the app is in the background or the phone is locked —
+no Firebase or other push service: only this server.
+
 ## On the Raspberry Pi
 
 * `POST /run/start` with a server configured needs `Authorization: Bearer <the app user's
@@ -203,6 +233,10 @@ file (RF24, RFC 4180), as in the design (DB05).
   **502** `SERVER_ERROR`. Only the start needs the server; the run itself does not.
 * `GET /sync/status` → `{ "enabled", "server_url", "synced", "pending", "failed",
   "local_only", "last_error" }`. `POST /sync/now` retries the uploads right away.
+* RF38: the `AlertForwarder` sends every fault that pauses a run and every run end to
+  `POST /machine/events`, for runs that have an owner. It resends with backoff (2, 5, 10,
+  30, 60 s) while the server is unreachable, for at most `MTG_ALERT_MAX_AGE_S` (900 s);
+  a refusal (4xx) is not resent. `MTG_SERVER_ALERTS=0` turns it off.
 * `run.db` (schema version 2) gained `local_run.started_by, owner_name, remote_run_id,
   last_sync_error, synced_at, next_sync_at` and `local_cards.owner_id`. An existing
   `run.db` is migrated in place on start; its old runs have no owner and stay on the Pi
@@ -225,8 +259,10 @@ pip install -r requirements.txt -r cardforge_server/requirements.txt
 CF_TEST_DATABASE_URL=postgresql://cardforge:cardforge@localhost:5432/postgres python -m pytest -q
 ```
 The role in `CF_TEST_DATABASE_URL` needs `CREATEDB`: each test session makes and drops its
-own database. Without the variable the 25 PostgreSQL tests are skipped.
+own database. Without the variable the 36 PostgreSQL tests are skipped.
 `tests/test_server.py` covers accounts, upload (idempotency, consistency, ownership),
 results, collection and export; `tests/test_sync.py` covers the `run.db` migration, the
 SyncWorker (backoff, outage), the owner check at Start, and one run end to end
-(simulated machine → `run.db` → upload → PostgreSQL → the app's queries).
+(simulated machine → `run.db` → upload → PostgreSQL → the app's queries);
+`tests/test_notifications.py` and `tests/test_alerts.py` cover the alerts (RF38): storage,
+one user only, idempotent resend, waiting requests, the Pi's forwarder and one jam end to end.
