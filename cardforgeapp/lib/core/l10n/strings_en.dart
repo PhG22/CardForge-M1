@@ -448,7 +448,7 @@ class EnStrings extends AppStrings {
   @override
   String flapValue(int angle) => switch (angle) {
         80 => 'Closed (80°)',
-        0 => 'Open (0°)',
+        5 => 'Open (5°)',
         _ => '$angle°',
       };
   @override

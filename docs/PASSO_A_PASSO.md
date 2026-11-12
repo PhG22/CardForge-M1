@@ -235,11 +235,11 @@ Sem `MTG_SERVER_URL`, o Start do Pi não pede login (como antes) e as runs ficam
 ### B2. Código
 
 ```bash
-git clone <url-do-repositório> /home/pi/CardForge-M1
+git clone <url-do-repositório> /home/raspad/CardForge-M1
 ```
 
 ```bash
-cd /home/pi/CardForge-M1
+cd /home/raspad/CardForge-M1
 ```
 
 ```bash
@@ -332,6 +332,18 @@ curl -X POST <ip-do-pi>:8000/run/start
 
 **Esperado:** cada carta é alimentada até a plataforma, espera 2 s e cai; ao esvaziar a pilha, a run termina.
 
+### C2b. Flap
+
+```bash
+curl -X POST <ip-do-pi>:8000/flap -H 'Content-Type: application/json' -d '{"angle": 5}'
+```
+
+Mova o flap para qualquer ângulo (0–180) até achar a melhor abertura; `{"position": "open"}` / `{"position": "closed"}`
+usa os ângulos da run (aberto 5°, fechado 80°). Para a run usar outro ângulo sem reiniciar a API:
+`curl -X PUT <ip-do-pi>:8000/flap/angles -H 'Content-Type: application/json' -d '{"open_angle": 8}'`. Isso não fica
+salvo: para manter, use `MTG_FLAP_OPEN_ANGLE` / `MTG_FLAP_CLOSED_ANGLE`. Cuidado: abrir o flap derruba a carta que
+estiver na plataforma.
+
 ### C3. Base
 
 ```bash
@@ -368,7 +380,7 @@ e abra `http://<ip-do-pi>:8000/calibration` no celular ou notebook. Sem acesso �
 `http://localhost:8000/calibration`:
 
 ```bash
-ssh -L 8000:localhost:8000 pi@<ip-do-pi>
+ssh -L 8000:localhost:8000 raspad@<ip-do-pi>
 ```
 
 1. **Recorte fixo**: ponha cartas comuns na pilha; **Alimentar 1 carta** → **Medir posição desta carta** →
@@ -380,7 +392,7 @@ ssh -L 8000:localhost:8000 pi@<ip-do-pi>
    uma cópia com a borda detectada desenhada (`_anotada`), e uma linha em `medicoes.csv` com os cantos. Fotos em
    que a borda não foi encontrada também ficam (`_sem_borda`), e cada **Salvar recorte fixo** gera um
    `recorte_salvo_<data>.json`. Para trazer as fotos para o PC e mandá-las para análise:
-   `scp -r pi@<ip-do-pi>:/home/pi/CardForge-M1/calibragem_recorte .`
+   `scp -r raspad@<ip-do-pi>:/home/raspad/CardForge-M1/calibragem_recorte .`
 2. **Cartão branco** liso do tamanho de uma carta no topo da pilha → **Alimentar 1 carta**.
    **Autocalibrar (exposição + branco)**. Em **Medidas**: *luz desigual* ≤ 20 % e *pixels estourados* ≤ 2 %.
    Fora disso, ajuste a posição/difusão das fitas LED (essa é a única parte física).

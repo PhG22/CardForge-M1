@@ -454,7 +454,7 @@ class PtStrings extends AppStrings {
   @override
   String flapValue(int angle) => switch (angle) {
         80 => 'Fechada (80°)',
-        0 => 'Aberta (0°)',
+        5 => 'Aberta (5°)',
         _ => '$angle°',
       };
   @override

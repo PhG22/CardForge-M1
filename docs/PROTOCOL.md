@@ -102,7 +102,7 @@ Hardware: 360° servo (feed roller), 180° servo (stopper flap), stack IR, platf
 | `PING` | `OK [FW=x.y]` | Liveness check |
 | `STATUS` | `OK STATE=.. STACK=0/1 PLAT=0/1 FLAP=<deg> ROLLER=0/1 ATTEMPT=<0-2> [ERR=..]` | Current state and sensors |
 | `ROLLER STOP` | `OK` | Roller to neutral (no rotation). Cancels a running FEED |
-| `FLAP <0-180>` | `OK` | Move flap servo to angle. Instant command, state unchanged. **80 = closed**, **0 = open (drop)** |
+| `FLAP <0-180>` | `OK` | Move flap servo to angle. Instant command, state unchanged. **80 = closed**, **5 = open (drop)** |
 | `FEED <timeout_ms>` | `OK` | *Action* (RF05). Up to **2 pull attempts** of `timeout_ms / 2` each: run the roller until **PLAT=1**, then stop it at once → `IDLE`. No card at the end of the first attempt → roller stopped 0.5 s, then the second attempt. No card at the end of the second → **Feed Jam**: roller stopped at once, `ERROR` + `ERR=FEED_TIMEOUT`. If PLAT is already 1, finish immediately |
 | `STOP` | `OK` | Stop roller, cancel any action, state `IDLE`. Flap keeps its angle |
 
@@ -122,7 +122,7 @@ Notes:
   then checks the IR, like `feeder_flap_test.ino`. While the roller turns, it
   watches the raw platform IR and stops the roller the moment the card arrives.
   It does this even while it is sending a reply.
-* The flap drop sequence is done by the Pi: `FLAP 0`, wait until `PLAT=0`, wait
+* The flap drop sequence is done by the Pi: `FLAP 5`, wait until `PLAT=0`, wait
   0.5 s, `FLAP 80`.
 
 ### 5.1 Optional A1 command: chamber light (not in `a1_top.ino` yet)
@@ -197,8 +197,8 @@ unknown), it polls once per second.
    (Pi: take picture / identify — placeholder waits 2 s)
 >A2 56 GOTO 2*71               <A2 56 OK*74                                              base turning
 >A2 57 STATUS*65               <A2 57 OK STATE=IDLE HOMED=1 POS=2 ZERO=0 TRAYS=100000*41 at tray 2
->A1 58 FLAP 0*76               <A1 58 OK*79                                              open flap
->A1 59 STATUS*68               <A1 59 OK STATE=IDLE STACK=1 PLAT=0 FLAP=0 ROLLER=0*61    card dropped
+>A1 58 FLAP 5*73               <A1 58 OK*79                                              open flap
+>A1 59 STATUS*68               <A1 59 OK STATE=IDLE STACK=1 PLAT=0 FLAP=5 ROLLER=0*64    card dropped
 >A1 60 FLAP 80*45              <A1 60 OK*72                                              close flap
 ```
 

@@ -10,6 +10,8 @@
     GET  /inventory/export.csv   every sorted card, RFC 4180 CSV (RF24)
     GET  /stack           does the stack IR see cards?
     GET  /hardware/status live STATUS of A1 and A2 (debugging)
+    GET  /flap, POST /flap, PUT /flap/angles   flap test: move it to any angle, tune the
+                          open/closed angles the runs use (live, until restart)
     GET  /health          liveness check
     GET  /sync/status     upload of finished runs to the CardForge server (sync.py)
     POST /sync/now        try the uploads now instead of waiting for the next retry
@@ -74,6 +76,16 @@ def open_serial(settings: Settings) -> SerialPort:
 class BaseMove(BaseModel):
     steps: Optional[int] = Field(None, description="Absolute position in steps from home (+ = clockwise)")
     degrees: Optional[float] = Field(None, description="Absolute position in degrees from home (+ = clockwise)")
+
+
+class FlapMove(BaseModel):
+    angle: Optional[int] = Field(None, description="Any angle 0-180 (degrees)")
+    position: Optional[str] = Field(None, description='"open" or "closed": the angles the runs use')
+
+
+class FlapAngles(BaseModel):
+    open_angle: Optional[int] = Field(None, description="Angle the runs open the flap to (drop)")
+    closed_angle: Optional[int] = Field(None, description="Angle the runs close the flap to")
 
 
 class SimStateUpdate(BaseModel):
@@ -369,6 +381,56 @@ def create_app(settings: Settings | None = None, serial_port: SerialPort | None 
         return _base_call(lambda: controller_of(request).base_move(steps),
                           lambda s: f"Base at {s['steps']} steps from home"
                                     + (f" (tray {s['position']})." if s['position'] else "."))
+
+    # ---------------------------------------------------- manual flap control (A1)
+    def _flap_call(fn, message):
+        try:
+            status = fn()
+        except ManualRefused as exc:
+            return JSONResponse(status_code=exc.http_status,
+                                content={"ok": False, "code": exc.code, "message": exc.message})
+        except ModuleNotResponding:
+            return JSONResponse(status_code=503, content={
+                "ok": False, "code": "MODULE_OFFLINE",
+                "message": "The top module (A1) is not responding. Check its power and the RS-485 cable."})
+        except (HardwareFault, ModuleError, FrameError) as exc:
+            code, text = _describe_fault(exc)
+            return JSONResponse(status_code=500, content={"ok": False, "code": code, "message": text})
+        return {"ok": True, "message": message(status), "flap": status}
+
+    @app.get("/flap", tags=["flap"])
+    def flap_status(request: Request):
+        """The flap's last commanded angle and the open/closed angles the runs use."""
+        return _flap_call(controller_of(request).flap_status,
+                          lambda s: f"Flap at {s['angle']} degrees.")
+
+    @app.post("/flap", tags=["flap"])
+    def flap_move(body: FlapMove, request: Request):
+        """Move the flap for testing: {"angle": 5} (any 0-180) or {"position": "open" | "closed"}.
+        A card on the platform falls when the flap opens. The flap stays where it was moved."""
+        if (body.angle is None) == (body.position is None):
+            return JSONResponse(status_code=400, content={"ok": False, "code": "BAD_ANGLE",
+                                                          "message": 'Give exactly one of "angle" or "position".'})
+        if body.position is not None:
+            if body.position not in ("open", "closed"):
+                return JSONResponse(status_code=400, content={
+                    "ok": False, "code": "BAD_ANGLE", "message": '"position" must be "open" or "closed".'})
+            angle = settings.flap_open_angle if body.position == "open" else settings.flap_closed_angle
+        else:
+            angle = body.angle
+        return _flap_call(lambda: controller_of(request).flap_set(angle),
+                          lambda s: f"Flap at {s['angle']} degrees.")
+
+    @app.put("/flap/angles", tags=["flap"])
+    def flap_angles(body: FlapAngles, request: Request):
+        """Change the open/closed angles the runs use, live. Not saved: set
+        MTG_FLAP_OPEN_ANGLE / MTG_FLAP_CLOSED_ANGLE to keep them after a restart."""
+        if body.open_angle is None and body.closed_angle is None:
+            return JSONResponse(status_code=400, content={
+                "ok": False, "code": "BAD_ANGLE", "message": 'Give "open_angle", "closed_angle" or both.'})
+        return _flap_call(lambda: controller_of(request).flap_set_angles(body.open_angle, body.closed_angle),
+                          lambda s: f"Runs now open the flap to {s['open_angle']} and close it to "
+                                    f"{s['closed_angle']} degrees (until the API restarts).")
 
     @app.get("/health")
     def health(request: Request):

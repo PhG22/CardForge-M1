@@ -69,7 +69,7 @@ class ControllerState(str, Enum):
     RUNNING = "running"
     STOPPING = "stopping"
     PAUSED = "paused"            # a mechanical fault holds the run until /run/resume or /run/stop
-    MANUAL = "manual"            # a /base/... test move is running
+    MANUAL = "manual"            # a /base/... or /flap test move is running
 
 
 class RunStatus(str, Enum):
@@ -442,6 +442,38 @@ class SorterController:
                 time.sleep(poll_s)
         finally:
             self._set_idle()
+
+    # ------------------------------------------------------- manual flap (testing)
+
+    def flap_status(self) -> dict:
+        """The flap's last commanded angle (A1 STATUS) and the angles the runs use."""
+        return {"angle": self.top.status().flap_angle,
+                "open_angle": self.s.flap_open_angle,
+                "closed_angle": self.s.flap_closed_angle}
+
+    def flap_set(self, angle: int) -> dict:
+        """Move the flap to any angle outside a run, wait for the servo, return the status.
+        The flap stays there; the next run start (or /calibration/feed) closes it again."""
+        if not 0 <= angle <= 180:
+            raise ManualRefused(400, "BAD_ANGLE", "The flap angle must be 0 to 180 degrees.")
+        with self._manual_session():
+            self.top.set_flap(angle)
+            time.sleep(self.s.flap_settle_s)
+            return self.flap_status()
+
+    def flap_set_angles(self, open_angle: int | None, closed_angle: int | None) -> dict:
+        """Change the open/closed angles the runs use, live (lost at restart: set
+        MTG_FLAP_OPEN_ANGLE / MTG_FLAP_CLOSED_ANGLE to keep them)."""
+        new_open = self.s.flap_open_angle if open_angle is None else open_angle
+        new_closed = self.s.flap_closed_angle if closed_angle is None else closed_angle
+        if not (0 <= new_open <= 180 and 0 <= new_closed <= 180):
+            raise ManualRefused(400, "BAD_ANGLE", "The flap angles must be 0 to 180 degrees.")
+        if new_open == new_closed:
+            raise ManualRefused(400, "BAD_ANGLE", "The open and closed angles must be different.")
+        self.require_idle()
+        self.s.flap_open_angle, self.s.flap_closed_angle = new_open, new_closed
+        log.info("flap angles changed: open %d, closed %d", new_open, new_closed)
+        return self.flap_status()
 
     # ------------------------------------------- camera calibration helpers (no run)
 

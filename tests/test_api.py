@@ -288,6 +288,58 @@ def test_base_endpoints_refused_in_top_only_mode(top_client):
     assert r.status_code == 409 and r.json()["code"] == "BOTTOM_DISABLED"
 
 
+def test_flap_manual_moves(client):
+    flap = client.get("/flap").json()["flap"]
+    assert flap["open_angle"] == 5 and flap["closed_angle"] == 80
+
+    r = client.post("/flap", json={"angle": 30})
+    assert r.status_code == 200, r.text
+    assert r.json()["flap"]["angle"] == 30
+    assert client.get("/sim/state").json()["flap_angle"] == 30
+
+    assert client.post("/flap", json={"position": "open"}).json()["flap"]["angle"] == 5
+    assert client.post("/flap", json={"position": "closed"}).json()["flap"]["angle"] == 80
+
+
+def test_flap_validation(client):
+    assert client.post("/flap", json={}).status_code == 400
+    assert client.post("/flap", json={"angle": 5, "position": "open"}).status_code == 400
+    assert client.post("/flap", json={"position": "half"}).status_code == 400
+    r = client.post("/flap", json={"angle": 181})
+    assert r.status_code == 400 and r.json()["code"] == "BAD_ANGLE"
+    assert client.put("/flap/angles", json={}).status_code == 400
+    assert client.put("/flap/angles", json={"open_angle": 80}).status_code == 400    # = closed
+    assert client.put("/flap/angles", json={"open_angle": -1}).status_code == 400
+
+
+def test_flap_angles_are_used_by_the_next_run(client):
+    r = client.put("/flap/angles", json={"open_angle": 12})
+    assert r.status_code == 200, r.text
+    assert r.json()["flap"]["open_angle"] == 12 and r.json()["flap"]["closed_angle"] == 80
+    assert client.post("/flap", json={"position": "open"}).json()["flap"]["angle"] == 12
+
+    client.put("/sim/state", json={"stack_cards": 2})
+    assert client.post("/run/start").status_code == 200
+    body = wait_until_idle(client)
+    assert body["run"]["status"] == "completed" and body["run"]["cards_processed"] == 2
+    assert client.get("/sim/state").json()["flap_angle"] == 80     # closed after the run
+
+
+def test_flap_endpoints_refused_during_a_run(client):
+    client.put("/sim/state", json={"stack_cards": 50})
+    assert client.post("/run/start").status_code == 200
+    r = client.post("/flap", json={"angle": 5})
+    assert r.status_code == 409 and r.json()["code"] == "RUN_ACTIVE"
+    r = client.put("/flap/angles", json={"open_angle": 10})
+    assert r.status_code == 409 and r.json()["code"] == "RUN_ACTIVE"
+    assert client.get("/flap").status_code == 200                  # reading is always allowed
+    client.post("/run/stop")
+
+
+def test_flap_works_in_top_only_mode(top_client):
+    assert top_client.post("/flap", json={"angle": 40}).json()["flap"]["angle"] == 40
+
+
 def test_run_after_manual_moves_homes_again(client):
     client.post("/base/home")
     client.post("/base/move", json={"steps": -2000})

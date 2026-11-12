@@ -97,7 +97,7 @@ as linhas da exportação CSV em `GET /cards/export` (o app monta o arquivo, RF2
    câmera e a UART, e desligue o console serial.
 2. **Código e dependências**:
    ```bash
-   git clone <este repositório> /home/pi/CardForge-M1 && cd /home/pi/CardForge-M1
+   git clone <este repositório> /home/raspad/CardForge-M1 && cd /home/raspad/CardForge-M1
    sudo apt install -y python3-picamera2 python3-gpiozero python3-lgpio
    python3 -m venv --system-site-packages .venv
    .venv/bin/pip install -r requirements.txt
@@ -131,7 +131,7 @@ http://<ip-do-pi>:8000/calibration
 Sem acesso direto à rede do Pi, faça um túnel SSH e abra `http://localhost:8000/calibration`:
 
 ```bash
-ssh -L 8000:localhost:8000 pi@<ip-do-pi>
+ssh -L 8000:localhost:8000 raspad@<ip-do-pi>
 ```
 
 Procedimento sugerido:

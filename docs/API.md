@@ -166,6 +166,26 @@ check for lost steps: home → do some moves → home again → read `drift`. 0 
 fine. Avoid calling `GET /base/status` in a fast loop while the base is moving,
 because every request on the bus makes the motor stagger slightly.
 
+## Flap test endpoints (top module A1)
+
+These let you test the flap outside a run, for example to find the best opening angle.
+`POST /flap` and `PUT /flap/angles` answer **409** `RUN_ACTIVE` while a run is going;
+`GET /flap` always works. They also work in top-only mode. Each answer has the flap status:
+
+```json
+{ "ok": true, "message": "Flap at 5 degrees.",
+  "flap": { "angle": 5, "open_angle": 5, "closed_angle": 80 } }
+```
+
+| Call | What it does |
+|---|---|
+| `GET /flap` | `angle` = last angle sent to the flap servo; `open_angle` / `closed_angle` = what the runs use |
+| `POST /flap` | Move the flap: `{"angle": 12}` (any 0–180) or `{"position": "open"}` / `{"position": "closed"}`. Waits `flap_settle_s` (0.5 s), then answers. **400** `BAD_ANGLE` if neither or both are given, or out of range |
+| `PUT /flap/angles` | Change the angles the runs use: `{"open_angle": 8}`, `{"closed_angle": 78}` or both. Live, **not saved**: after a restart the API uses `MTG_FLAP_OPEN_ANGLE` (default 5) and `MTG_FLAP_CLOSED_ANGLE` (default 80) again. **400** if out of 0–180 or open = closed |
+
+⚠️ A card on the platform falls when the flap opens, into whatever tray is under it.
+The flap stays where you moved it. The next `POST /run/start` (or `/calibration/feed`) closes it again.
+
 ## GET /stack
 
 Reads the stack IR on the top module (A1):

@@ -13,19 +13,19 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
-User=pi
+User=raspad
 Group=dialout
 # gpio: MAX485 DE/RE pin; video: the CSI camera
 SupplementaryGroups=gpio video
-WorkingDirectory=/home/pi/CardForge-M1
+WorkingDirectory=/home/raspad/CardForge-M1
 # USB-RS485 converter (Deliverable 5): it switches direction by itself, so no DE pin.
 # MAX485 on the Pi UART instead: MTG_SERIAL_PORT=/dev/serial0 and MTG_DE_PIN=<BCM pin of DE+RE>.
 Environment=MTG_SERIAL_PORT=/dev/ttyUSB0
 Environment=MTG_BAUDRATE=9600
 Environment=MTG_VISION=camera
-Environment=MTG_RUN_DB=/home/pi/CardForge-M1/data/run.db
+Environment=MTG_RUN_DB=/home/raspad/CardForge-M1/data/run.db
 # RF08: last base position, for a fast homing at power-on
-Environment=MTG_BASE_STATE_FILE=/home/pi/CardForge-M1/data/base_position.json
+Environment=MTG_BASE_STATE_FILE=/home/raspad/CardForge-M1/data/base_position.json
 # CardForge server (docs/SERVER.md): runs are saved to the account of the app user who
 # pressed Start and uploaded when they end. Put the token in a file, not here:
 #   /etc/cardforge/sorter.env (mode 600):  MTG_MACHINE_TOKEN=<one of the server's CF_MACHINE_TOKENS>
@@ -34,7 +34,7 @@ Environment=MTG_BASE_STATE_FILE=/home/pi/CardForge-M1/data/base_position.json
 # Without a server only: password the app signs in with on the Pi (user "admin").
 # Empty = any credentials are accepted.
 Environment=MTG_APP_PASSWORD=change-me
-ExecStart=/home/pi/CardForge-M1/.venv/bin/python -m sorter_api
+ExecStart=/home/raspad/CardForge-M1/.venv/bin/python -m sorter_api
 Restart=on-failure
 RestartSec=3
 

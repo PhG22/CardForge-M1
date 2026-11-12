@@ -39,7 +39,7 @@ class _LoginScreenState extends State<LoginScreen> {
       await action();
       if (mounted) context.go('/home');
     } on AuthException catch (e) {
-      _showMessage(context.l10n.authError(e.failure));
+      if (mounted) _showMessage(context.l10n.authError(e.failure));
     } finally {
       if (mounted) setState(() => _loading = false);
     }

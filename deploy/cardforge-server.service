@@ -1,5 +1,8 @@
 # systemd unit: the CardForge server (accounts + PostgreSQL + run upload), see docs/SERVER.md.
-#   1. Adjust User, WorkingDirectory and /etc/cardforge/server.env (below).
+#   1. Adjust User, WorkingDirectory and /etc/cardforge/server.env (below). On a homelab:
+#        sudo sed -i "s/^User=pi/User=$USER/; s#/home/pi/#$HOME/#g" /etc/systemd/system/cardforge-server.service
+#      (after step 2). Reach it over Tailscale (http://<tailscale-ip>:8080); do not port-forward
+#      8080 or 5432 and do not use Funnel. With ufw: sudo ufw allow in on tailscale0 to any port 8080 proto tcp
 #   2. sudo cp deploy/cardforge-server.service /etc/systemd/system/
 #   3. sudo systemctl daemon-reload && sudo systemctl enable --now cardforge-server
 #   4. Logs: journalctl -u cardforge-server -f
