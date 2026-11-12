@@ -52,7 +52,7 @@ from .protocol import FrameError
 from .sim import SimSerialPort, SimWorld
 from .status_led import NetworkMonitor, build_status_led
 from .store import RunStore
-from .sync import NotSignedIn, ServerClient, ServerError, ServerUnreachable, SyncWorker
+from .sync import AlertForwarder, NotSignedIn, ServerClient, ServerError, ServerUnreachable, SyncWorker
 
 log = logging.getLogger(__name__)
 
@@ -153,13 +153,16 @@ def create_app(settings: Settings | None = None, serial_port: SerialPort | None 
         store = RunStore(settings.run_db)
         identifier, vision_module = await asyncio.to_thread(build_identifier, settings, vision)
         status_led = build_status_led(settings.led, settings.led_pins, settings.simulate)
-        server, worker = server_client, None
+        server, worker, alerts = server_client, None, None
         if server is None and settings.server_url:
             server = ServerClient(settings.server_url, settings.machine_token, settings.server_timeout_s)
         if server is not None:
             if not settings.machine_token and server_client is None:
                 log.warning("MTG_MACHINE_TOKEN is empty: the server will refuse the run uploads")
             worker = SyncWorker(store, server, settings.sync_interval_s, settings.sync_retry_max_s)
+            if settings.server_alerts:
+                alerts = AlertForwarder(store, server, settings.alert_max_age_s)
+                hub.add_listener(alerts.handle)
         monitor = None
         if settings.network_monitor == "on" or (settings.network_monitor == "auto" and not settings.simulate
                                                 and NetworkMonitor.available()):
@@ -175,6 +178,7 @@ def create_app(settings: Settings | None = None, serial_port: SerialPort | None 
         app.state.store = store
         app.state.server = server
         app.state.sync_worker = worker
+        app.state.alert_forwarder = alerts
         app.state.status_led = status_led
         # The camera calibration page needs a real VisionModule (camera or photo files).
         app.state.vision_module = vision_module if hasattr(vision_module, "calibration_snapshot") else None
@@ -185,6 +189,8 @@ def create_app(settings: Settings | None = None, serial_port: SerialPort | None 
         if worker is not None:
             worker.start()                 # also uploads runs left over from before a reboot
             log.info("runs are uploaded to the CardForge server at %s", server.base_url)
+        if alerts is not None:
+            alerts.start()
         log.info("sorter API ready (%s%s, vision=%s)", "SIMULATED hardware" if settings.simulate
                  else f"{settings.serial_port} @ {settings.baudrate} baud",
                  "" if settings.bottom_enabled else ", TOP MODULE ONLY",
@@ -195,6 +201,8 @@ def create_app(settings: Settings | None = None, serial_port: SerialPort | None 
             await asyncio.to_thread(controller.shutdown)
             if worker is not None:
                 await asyncio.to_thread(worker.stop)
+            if alerts is not None:
+                await asyncio.to_thread(alerts.stop)
             if server is not None and server_client is None:
                 server.close()
             if monitor is not None:

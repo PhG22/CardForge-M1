@@ -182,6 +182,48 @@ def export_rows(conn, user_id: int) -> list[dict]:
              "folder": r["bin"], "status": r["status"], "scryfall_id": r["card_identifier"]} for r in rows]
 
 
+# ------------------------------------------------------------- notifications (RF38)
+
+NOTIFICATION_COLUMNS = ("id, run_local_uuid, kind, code, status, message, cards_processed, event_time, "
+                        "created_at")
+NOTIFICATION_RETENTION_DAYS = 30
+
+
+def insert_notification(conn, user_id: int, event: dict) -> tuple[int, bool]:
+    """Store one alert of a run for its owner. A resent alert (same event_id) is stored once.
+    Returns (id, created)."""
+    row = conn.execute(
+        """
+        INSERT INTO notifications (user_id, event_id, run_local_uuid, kind, code, status, message,
+                                   cards_processed, event_time)
+        VALUES (%(user_id)s, %(event_id)s, %(run_id)s, %(kind)s, %(code)s, %(status)s, %(message)s,
+                %(cards_processed)s, %(time)s)
+        ON CONFLICT (event_id) DO NOTHING
+        RETURNING id
+        """, {**event, "user_id": user_id}).fetchone()
+    if row is not None:
+        conn.execute("DELETE FROM notifications WHERE user_id = %s AND created_at < now() - make_interval(days => %s)",
+                     (user_id, NOTIFICATION_RETENTION_DAYS))
+        return row["id"], True
+    existing = conn.execute("SELECT id FROM notifications WHERE event_id = %s", (event["event_id"],)).fetchone()
+    return existing["id"], False
+
+
+def notifications_after(conn, user_id: int, after: int, limit: int, run_id=None) -> list[dict]:
+    """The user's alerts with an id above `after`, oldest first; only one run's when run_id is given."""
+    rows = conn.execute(
+        f"SELECT {NOTIFICATION_COLUMNS} FROM notifications WHERE user_id = %s AND id > %s "
+        "AND (%s::uuid IS NULL OR run_local_uuid = %s::uuid) ORDER BY id LIMIT %s",
+        (user_id, after, run_id, run_id, limit)).fetchall()
+    return [_notification(r) for r in rows]
+
+
+def last_notification_id(conn, user_id: int) -> int:
+    row = conn.execute("SELECT coalesce(max(id), 0) AS id FROM notifications WHERE user_id = %s",
+                       (user_id,)).fetchone()
+    return row["id"]
+
+
 # ------------------------------------------------------------------ helpers
 
 def iso(value: datetime | None) -> str | None:
@@ -197,6 +239,13 @@ def _run(r: dict) -> dict:
             "cards_processed": r["cards_processed"], "successful_scans": r["successful_scans"],
             "failed_scans": r["failed_scans"], "error_code": r["error_code"], "message": r["message"],
             "synced_at": iso(r["synced_at"])}
+
+
+def _notification(r: dict) -> dict:
+    return {"id": r["id"], "run_id": str(r["run_local_uuid"]) if r["run_local_uuid"] else None,
+            "kind": r["kind"], "code": r["code"], "status": r["status"], "message": r["message"],
+            "cards_processed": r["cards_processed"], "time": iso(r["event_time"]),
+            "received_at": iso(r["created_at"])}
 
 
 def _card(c: dict) -> dict:

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../features/alerts/alerts_controller.dart';
+import '../features/auth/auth_service.dart';
 import '../features/cards/card_repository.dart';
 import '../features/cards/collection_export.dart';
 import '../features/cards/mock_card_repository.dart';
@@ -13,9 +14,11 @@ import '../features/machine/machine_link_service.dart';
 import '../features/machine/machine_models.dart';
 import '../features/machine/machine_store.dart';
 import '../features/machine/mock_machine_link_service.dart';
+import '../features/notifications/background_alerts.dart';
 import '../features/runs/mock_run_repository.dart';
 import '../features/runs/run_repository.dart';
 import 'config/app_config.dart';
+import 'l10n/app_strings.dart';
 import 'l10n/locale_controller.dart';
 
 /// Builds the client for the machine's REST API at an address.
@@ -47,7 +50,9 @@ class AppDependencies {
     CsvSharer? shareCsv,
     MachineApiFactory? machineApiFor,
     List<Duration>? machineRetryDelays,
+    BackgroundAlerts? backgroundAlerts,
   }) {
+    final locale = LocaleController(prefs);
     final alerts = AlertsController();
     final machineStore = MachineStore(prefs);
     final link = linkService ??
@@ -56,7 +61,7 @@ class AppDependencies {
             : BleMachineLinkService());
     final MachineApiFactory apiFor = machineApiFor ?? _defaultMachineApi();
     return AppDependencies(
-      locale: LocaleController(prefs),
+      locale: locale,
       alerts: alerts,
       machineStore: machineStore,
       linkService: link,
@@ -79,6 +84,15 @@ class AppDependencies {
         apiFor: apiFor,
         alerts: alerts,
         linkService: link,
+        // RF38: alerts as notifications with the app closed (needs the server).
+        backgroundAlerts: backgroundAlerts ??
+            (AppConfig.useMockBackend
+                ? const NoBackgroundAlerts()
+                : ForegroundServiceAlerts(
+                    token: AuthService.instance.accessToken,
+                    strings: () => AppStrings.forLocale(locale.locale),
+                    languageCode: () => locale.locale.languageCode,
+                  )),
         retryDelays: machineRetryDelays ??
             const [
               Duration(seconds: 2),

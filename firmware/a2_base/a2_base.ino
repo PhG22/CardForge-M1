@@ -4,10 +4,17 @@
   Implements the A2 part of docs/PROTOCOL.md. The Raspberry Pi / laptop API drives
   the run; this sketch only executes commands and reports its state:
 
-    PING                -> OK FW=1.0
+    PING                -> OK FW=1.1
     STATUS              -> OK STATE=IDLE|BUSY|ERROR HOMED=0/1 POS=<0-6> ZERO=0/1 TRAYS=<6 digits>
                               STEPS=<position> [ERR=..]
-    HOME <timeout_ms>   -> find the reflective strip (= tray 3) -> HOMED=1 POS=3 STEPS=0
+    HOME <timeout_ms> [steps]
+                        -> find the reflective strip (= tray 3) -> HOMED=1 POS=3 STEPS=0.
+                           RF08 (5 s): when the position is known (homed before, or `steps`
+                           = where the Pi last saw the base), it moves fast to just before
+                           the strip and only does the slow final approach there. If the
+                           strip is not where expected (moved by hand, lost steps), it falls
+                           back to the full search: fast seek until the strip, fast back to
+                           just before it, slow final approach.
     GOTO <1-6>          -> OK T=<ms>: turn to that tray (needs HOMED)
     MOVE <steps>        -> OK T=<ms>: turn to an absolute position in steps from home
                            (needs HOMED), + = clockwise. For testing / calibration.
@@ -19,11 +26,12 @@
   Nothing moves at power-up: the base waits for HOME.
 
   Motion: max 0.5 motor turn/s (1600 steps/s at 1/16 step), starting at 200 steps/s.
-    FAST_PROFILE false: the ramp validated on the bench (period falls linearly over 1600
-                        steps). Smooth but slow: a tray-to-tray hop takes ~6.4 s.
-    FAST_PROFILE true : constant acceleration (ACCEL steps/s^2). Same start speed and top
-                        speed, gentler near top speed, a hop takes ~2 s. Check DRIFT (below)
-                        before trusting it.
+    FAST_PROFILE true : (default, RNF22 / RF08) constant acceleration (ACCEL steps/s^2).
+                        Same start speed and top speed, gentler near top speed, a hop takes
+                        ~2 s. The Pi logs DRIFT after every homing: keep it within +-5.
+    FAST_PROFILE false: the first ramp validated on the bench (period falls linearly over
+                        1600 steps). Smooth but slow: a tray-to-tray hop takes ~6.4 s, and
+                        7 cards/min (RNF22) cannot be reached with it.
   Step pulses come from a Timer1 interrupt.
 
   DRIFT: every HOME after the first one measures how far off the position was (in
@@ -47,7 +55,7 @@ const uint8_t       RS485_DE_PIN        = 13;    // MAX485 DE + RE
 const long          RS485_BAUD          = 9600;  // = MTG_BAUDRATE on the API side
 const char          MY_ADDRESS[]        = "A2";
 const unsigned long REPLY_DELAY_US      = 3000;
-const unsigned long DUPLICATE_WINDOW_MS = 1000;
+const unsigned long DUPLICATE_WINDOW_MS = 2000;  // covers the Pi's 3 resends (RNF10)
 
 // ===================== Driver / sensor pins =====================
 // STEP must stay on D5 and the homing IR on A5: the interrupt uses their port bits directly.
@@ -83,7 +91,7 @@ const long MOVE_LIMIT = 20000;                // MOVE accepts -20000 .. 20000
 const uint16_t FAST_T       = 1250;           // 625 us/step  = 1600 steps/s = 0.5 motor turn/s (MAX)
 const uint16_t START_T      = FAST_T * 8;     // 5000 us/step = 200 steps/s (ramp start)
 const uint16_t SLOW_T       = FAST_T * 4;     // 2500 us/step = 400 steps/s (homing approach)
-const bool     FAST_PROFILE = false;          // true = constant acceleration (see header)
+const bool     FAST_PROFILE = true;           // false = the slow linear ramp (see header)
 const float    ACCEL        = 1500;           // steps/s^2 for FAST_PROFILE (min ~1000)
 const uint16_t LINEAR_RAMP  = 1600;           // steps of the bench-validated linear ramp
 const uint32_t START_FP     = (uint32_t)START_T << 8;
@@ -124,6 +132,7 @@ struct Motion {
   volatile long     done;
   volatile uint16_t r;            // position in the ramp (0 = slowest)
   volatile uint16_t rMax;         // M_TO: ramp length for this move (short moves: triangle)
+  volatile long     hitPos;       // M_UNTIL: position where the strip change was confirmed
 };
 Motion mv;
 volatile long position = 0;       // steps from home, + = clockwise
@@ -161,6 +170,7 @@ ISR(TIMER1_COMPA_vect) {
     if (!mv.braking) {
       if (stripSeenFast() == mv.untilSeen) {
         if (++mv.confirm >= IR_CONFIRM) {
+          mv.hitPos = position;
           if (!mv.fast || mv.r == 0) { motionFinish(R_HIT); return; }
           mv.braking = true;
           mv.result = R_HIT;
@@ -254,7 +264,7 @@ void stopMotion() {
 // ===================== Module state =====================
 enum ModuleState { STATE_IDLE, STATE_BUSY, STATE_ERROR };
 enum Action      { ACT_NONE, ACT_HOME, ACT_GOTO, ACT_MOVE };
-enum HomeStep    { H_LEAVE, H_SEEK, H_BACK_ON, H_BACK_CLEAR, H_BACKOFF, H_APPROACH };
+enum HomeStep    { H_NEAR, H_NEAR_APPROACH, H_LEAVE, H_SEEK, H_RETURN, H_BACK_CLEAR, H_BACKOFF, H_APPROACH };
 
 ModuleState   state      = STATE_IDLE;
 const char   *errorCode  = NULL;
@@ -282,15 +292,13 @@ void failAction(const char *code) {
   errorCode = code;
 }
 
-void beginHome(unsigned long timeoutMs) {
-  wasHomed      = homed;
-  homed         = false;
-  trayPos       = 0;
-  action        = ACT_HOME;
-  state         = STATE_BUSY;
-  errorCode     = NULL;
-  homeStartedAt = millis();
-  homeTimeoutMs = timeoutMs;
+// Position BACKOFF_STEPS before `zero` on the side the final approach comes from
+long approachStart(long zero) {
+  long approachSign = (HOMING_DIR == CW_DIR) ? 1 : -1;   // + = clockwise
+  return zero - approachSign * BACKOFF_STEPS;
+}
+
+void startFullSeek() {
   if (stripSeenFast()) {                    // on the strip: leave it backwards first
     homeStep = H_LEAVE;
     startUntil(!HOMING_DIR, false, true, 3200L * 2);
@@ -300,13 +308,62 @@ void beginHome(unsigned long timeoutMs) {
   }
 }
 
-// Same sequence as a2_homing_test.ino, one step per finished motion
+void beginHome(unsigned long timeoutMs, bool hasHint, long hint) {
+  bool known    = homed || hasHint;         // position counter valid, or the Pi's saved position
+  if (!homed && hasHint) {
+    noInterrupts();
+    position = hint;
+    interrupts();
+  }
+  wasHomed      = known;                    // DRIFT then says how far off that position was
+  homed         = false;
+  trayPos       = 0;
+  action        = ACT_HOME;
+  state         = STATE_BUSY;
+  errorCode     = NULL;
+  homeStartedAt = millis();
+  homeTimeoutMs = timeoutMs;
+  if (known) {                              // RF08: fast to just before the strip
+    homeStep = H_NEAR;
+    startMoveTo(approachStart(0));
+  } else {
+    startFullSeek();
+  }
+}
+
+void finishHome() {
+  noInterrupts();
+  if (wasHomed) drift = position;           // should be ~0 if no steps were lost
+  position = 0;
+  interrupts();
+  homed   = true;
+  trayPos = HOME_TRAY;
+  action  = ACT_NONE;
+  state   = STATE_IDLE;
+}
+
+// One step per finished motion. The final slow approach (always in HOMING_DIR, from
+// BACKOFF_STEPS before the strip) is the same as in a2_homing_test.ino, so the zero
+// position stays as repeatable as before (RF10).
 void updateHome() {
   if (millis() - homeStartedAt > homeTimeoutMs) { failAction("HOME_TIMEOUT"); return; }
   if (mv.active) return;
   uint8_t res = mv.result;
   int back = !HOMING_DIR;
   switch (homeStep) {
+    case H_NEAR:                            // where the strip should begin, if the position was right
+      if (stripSeenFast()) {                // already on it: the position was off, clear it first
+        homeStep = H_BACK_CLEAR;
+        startUntil(back, false, false, 3200);
+      } else {
+        homeStep = H_NEAR_APPROACH;
+        startUntil(HOMING_DIR, true, false, BACKOFF_STEPS * 3);
+      }
+      break;
+    case H_NEAR_APPROACH:
+      if (res == R_HIT) { finishHome(); return; }
+      startFullSeek();                      // not where expected (moved by hand?): search for it
+      break;
     case H_LEAVE:
       if (res != R_HIT) { failAction("HOME_FAILED"); return; }
       homeStep = H_SEEK;
@@ -314,13 +371,17 @@ void updateHome() {
       break;
     case H_SEEK:                            // fast seek found the strip (and braked past it)
       if (res != R_HIT) { failAction("HOME_FAILED"); return; }
-      homeStep = H_BACK_ON;
-      startUntil(back, true, false, RAMP * 2L + 800);
+      homeStep = H_RETURN;                  // fast back to just before where the strip began
+      startMoveTo(approachStart(mv.hitPos));
       break;
-    case H_BACK_ON:
-      if (res != R_HIT) { failAction("HOME_FAILED"); return; }
-      homeStep = H_BACK_CLEAR;
-      startUntil(back, false, false, 3200);
+    case H_RETURN:
+      if (stripSeenFast()) {                // still on the strip: clear it slowly first
+        homeStep = H_BACK_CLEAR;
+        startUntil(back, false, false, 3200);
+      } else {
+        homeStep = H_APPROACH;
+        startUntil(HOMING_DIR, true, false, BACKOFF_STEPS * 3);
+      }
       break;
     case H_BACK_CLEAR:
       if (res != R_HIT) { failAction("HOME_FAILED"); return; }
@@ -333,14 +394,7 @@ void updateHome() {
       break;
     case H_APPROACH:
       if (res != R_HIT) { failAction("HOME_FAILED"); return; }
-      noInterrupts();
-      if (wasHomed) drift = position;       // should be ~0 if no steps were lost
-      position = 0;
-      interrupts();
-      homed   = true;
-      trayPos = HOME_TRAY;
-      action  = ACT_NONE;
-      state   = STATE_IDLE;
+      finishHome();
       break;
   }
 }
@@ -425,10 +479,10 @@ void traysField(char *out) {
   out[6] = '\0';
 }
 
-void execute(const char *cmd, const char *arg, char *out, size_t size) {
+void execute(const char *cmd, const char *arg, const char *arg2, char *out, size_t size) {
   long value;
   if (strcmp(cmd, "PING") == 0) {
-    snprintf(out, size, "OK FW=1.0");
+    snprintf(out, size, "OK FW=1.1");
 
   } else if (strcmp(cmd, "STATUS") == 0) {
     char trays[7];
@@ -441,8 +495,11 @@ void execute(const char *cmd, const char *arg, char *out, size_t size) {
 
   } else if (strcmp(cmd, "HOME") == 0) {
     if (!parseArg(arg, 100, 120000, value)) { snprintf(out, size, "ERR BAD_ARG"); return; }
+    long hint = 0;
+    bool hasHint = arg2 != NULL;
+    if (hasHint && !parseArg(arg2, -MOVE_LIMIT, MOVE_LIMIT, hint)) { snprintf(out, size, "ERR BAD_ARG"); return; }
     if (state == STATE_BUSY) { snprintf(out, size, "ERR BUSY"); return; }
-    beginHome((unsigned long)value);
+    beginHome((unsigned long)value, hasHint, hint);
     snprintf(out, size, "OK");
 
   } else if (strcmp(cmd, "GOTO") == 0 || strcmp(cmd, "MOVE") == 0) {
@@ -501,6 +558,7 @@ void processLine(char *line) {
   char *seqText = strtok(NULL, " ");
   char *cmd     = strtok(NULL, " ");
   char *arg     = strtok(NULL, " ");
+  char *arg2    = strtok(NULL, " ");
   if (addr == NULL || seqText == NULL || cmd == NULL) return;
   if (strcmp(addr, MY_ADDRESS) != 0) return;
   int seq = atoi(seqText);
@@ -513,7 +571,7 @@ void processLine(char *line) {
   }
   char reply[MAX_FRAME];
   int n = snprintf(reply, sizeof reply, "%s %d ", MY_ADDRESS, seq);
-  execute(cmd, arg, reply + n, sizeof reply - n);
+  execute(cmd, arg, arg2, reply + n, sizeof reply - n);
   sendFrame(reply);
   if (!readOnly) {
     haveLast = true;

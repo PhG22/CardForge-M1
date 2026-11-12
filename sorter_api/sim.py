@@ -22,7 +22,7 @@ from .protocol import REPLY_START, REQUEST_START, Frame, FrameError, decode_fram
 log = logging.getLogger(__name__)
 
 FLAP_OPEN_BELOW = 40        # flap angles below this let the card fall
-DUPLICATE_WINDOW_S = 1.0    # see PROTOCOL.md "Retries and duplicates"
+DUPLICATE_WINDOW_S = 2.0    # see PROTOCOL.md "Retries and duplicates" (= the firmware)
 READ_ONLY = {"PING", "STATUS"}
 
 
@@ -98,6 +98,8 @@ class SimTop(_SimDevice):
         self.flap = 90
         self.roller = False
         self.jammed = False                 # fault injection: cards never arrive
+        self.feed_attempt = 0               # RF05: pull attempt of the current / last FEED
+        self._second_attempt_at: float | None = None
         self.dropped = 0                    # cards that fell from the platform
         self._feed_done_at: float | None = None
         self._feed_fail_at: float | None = None
@@ -111,6 +113,8 @@ class SimTop(_SimDevice):
                 self.platform = True
                 self._end_feed()
                 self.state = "IDLE"
+            elif self.feed_attempt == 1 and now >= self._second_attempt_at:
+                self.feed_attempt = 2           # like a1_top.ino: second pull attempt
             elif now >= self._feed_fail_at:
                 self._end_feed()
                 self._fail("FEED_TIMEOUT")
@@ -135,6 +139,7 @@ class SimTop(_SimDevice):
                 f"PLAT={int(self.platform)}",
                 f"FLAP={self.flap}",
                 f"ROLLER={int(self.roller)}",
+                f"ATTEMPT={self.feed_attempt}",
                 *self._error_field(),
             ]
         if command == "ROLLER":
@@ -160,8 +165,11 @@ class SimTop(_SimDevice):
                 self.state = "IDLE"
                 return []
             self.roller = True
+            self.feed_attempt = 1
+            retry_pause = 0.5 * self.world.scale
             self._feed_done_at = now + 0.7 * self.world.scale
-            self._feed_fail_at = now + timeout_ms / 1000
+            self._second_attempt_at = now + timeout_ms / 2000 + retry_pause
+            self._feed_fail_at = now + timeout_ms / 1000 + retry_pause
             return []
         if command == "STOP":
             self._end_feed()

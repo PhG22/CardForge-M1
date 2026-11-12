@@ -6,6 +6,7 @@ venv/
 data/run.db
 data/run.db-*
 data/cards.db.tmp
+data/base_position.json*
 data/tmp/
 relatorios/
 capturas/

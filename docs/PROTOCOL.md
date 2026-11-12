@@ -70,9 +70,10 @@ uint8_t xorChecksum(const char *s, size_t n) {   // s = text between '>' and '*'
    `delay()` while an action is running. `a2_base` makes its step pulses from a
    Timer1 interrupt, so the motor keeps turning smoothly while SoftwareSerial sends a reply.
 4. **Retries and duplicates.** The Pi resends a request with the **same seq**
-   if the reply was lost (timeout 300 ms, up to 2 retries). Keep the last seq,
+   if the reply was lost (timeout 300 ms, up to **3 retransmissions**, RNF10; after the third the
+   link is declared lost: Data-Link Loss). Keep the last seq,
    the last request text and the last reply. If a request arrives with the same
-   seq **and** the same text within **1 s**, send the stored reply again and do
+   seq **and** the same text within **2 s**, send the stored reply again and do
    **not** run the command a second time. PING and STATUS can always just run again.
 5. IR sensors are reported as **1 = object/card detected**, whatever the sensor's
    electrical polarity. Handle inversion and debouncing in the firmware.
@@ -99,10 +100,10 @@ Hardware: 360° servo (feed roller), 180° servo (stopper flap), stack IR, platf
 | Command | Reply | What it does |
 |---|---|---|
 | `PING` | `OK [FW=x.y]` | Liveness check |
-| `STATUS` | `OK STATE=.. STACK=0/1 PLAT=0/1 FLAP=<deg> ROLLER=0/1 [ERR=..]` | Current state and sensors |
+| `STATUS` | `OK STATE=.. STACK=0/1 PLAT=0/1 FLAP=<deg> ROLLER=0/1 ATTEMPT=<0-2> [ERR=..]` | Current state and sensors |
 | `ROLLER STOP` | `OK` | Roller to neutral (no rotation). Cancels a running FEED |
 | `FLAP <0-180>` | `OK` | Move flap servo to angle. Instant command, state unchanged. **80 = closed**, **0 = open (drop)** |
-| `FEED <timeout_ms>` | `OK` | *Action.* Run the roller until **PLAT=1**, then stop it at once → `IDLE`. If PLAT is still 0 after `timeout_ms` → stop the roller, `ERROR` + `ERR=FEED_TIMEOUT`. If PLAT is already 1, finish immediately |
+| `FEED <timeout_ms>` | `OK` | *Action* (RF05). Up to **2 pull attempts** of `timeout_ms / 2` each: run the roller until **PLAT=1**, then stop it at once → `IDLE`. No card at the end of the first attempt → roller stopped 0.5 s, then the second attempt. No card at the end of the second → **Feed Jam**: roller stopped at once, `ERROR` + `ERR=FEED_TIMEOUT`. If PLAT is already 1, finish immediately |
 | `STOP` | `OK` | Stop roller, cancel any action, state `IDLE`. Flap keeps its angle |
 
 | STATUS field | Meaning |
@@ -111,6 +112,7 @@ Hardware: 360° servo (feed roller), 180° servo (stopper flap), stack IR, platf
 | `PLAT` | Platform IR: 1 = a card is on the reading platform |
 | `FLAP` | Last angle commanded to the flap servo |
 | `ROLLER` | 1 = feed roller is turning |
+| `ATTEMPT` | Pull attempt of the current or last FEED: 1 or 2 (0 = no FEED since power-up). Firmware 1.1+ |
 
 Notes:
 * A 360° servo stops at its neutral pulse (≈1500 µs, `writeMicroseconds`), and
@@ -152,7 +154,7 @@ them during a run (RF13).
 |---|---|---|
 | `PING` | `OK [FW=x.y]` | Liveness check |
 | `STATUS` | `OK STATE=.. HOMED=0/1 POS=<0-6> ZERO=0/1 TRAYS=<6 digits> STEPS=<n> DRIFT=<n> [ERR=..]` | Current state and sensors |
-| `HOME <timeout_ms>` | `OK` | *Action.* Find the reflective strip. Home is **tray 3**, so it ends with `HOMED=1 POS=3 STEPS=0`, `IDLE`. If the strip isn't found → `ERROR` + `ERR=HOME_FAILED`. If it takes longer than `timeout_ms` → `ERR=HOME_TIMEOUT` |
+| `HOME <timeout_ms> [steps]` | `OK` | *Action.* Find the reflective strip. Home is **tray 3**, so it ends with `HOMED=1 POS=3 STEPS=0`, `IDLE`. If the strip isn't found → `ERROR` + `ERR=HOME_FAILED`. If it takes longer than `timeout_ms` → `ERR=HOME_TIMEOUT`. RF08 (firmware 1.1): when the position is known (HOMED=1, or `steps` = where the Pi last saw the base), it goes fast to just before the strip and only does the slow final approach; if the strip isn't there it falls back to the full search. Older firmware ignores `steps` |
 | `GOTO <1-6>` | `OK T=<ms>` / `ERR NOT_HOMED` | *Action.* Turn until tray N is under the platform → `POS=N`, `IDLE`. Positions are absolute from home, and the base never wraps through the open gap between trays 6 and 1 |
 | `MOVE <steps>` | `OK T=<ms>` / `ERR NOT_HOMED` | *Action.* Turn to an absolute position, in steps from home (+ = clockwise, −20000..20000). Used for testing and calibration. `POS` = the tray at that exact position, or 0 |
 | `STOP` | `OK` | Stop the stepper now, state `IDLE`. If stopped mid-move, `POS=0` and `STEPS` shows where it stopped. If stopped mid-homing, `HOMED=0` |
@@ -181,7 +183,7 @@ unknown), it polls once per second.
 | `BAD_ARG` | both | Missing / non-numeric / out-of-range argument |
 | `BUSY` | both | Action command received while an action is running |
 | `NOT_HOMED` | A2 | GOTO before a successful HOME |
-| `FEED_TIMEOUT` | A1 (in STATUS `ERR=`) | No card reached the platform in time (jam or empty stack) |
+| `FEED_TIMEOUT` | A1 (in STATUS `ERR=`) | Feed Jam: no card reached the platform after 2 pull attempts (jam or empty stack, RF05) |
 | `HOME_TIMEOUT` | A2 (in STATUS `ERR=`) | Homing took longer than the timeout |
 | `HOME_FAILED` | A2 (in STATUS `ERR=`) | The strip was not found (sensor, or the strip is missing) |
 

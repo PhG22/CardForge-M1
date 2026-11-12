@@ -24,6 +24,8 @@ Environment=MTG_SERIAL_PORT=/dev/ttyUSB0
 Environment=MTG_BAUDRATE=9600
 Environment=MTG_VISION=camera
 Environment=MTG_RUN_DB=/home/pi/CardForge-M1/data/run.db
+# RF08: last base position, for a fast homing at power-on
+Environment=MTG_BASE_STATE_FILE=/home/pi/CardForge-M1/data/base_position.json
 # CardForge server (docs/SERVER.md): runs are saved to the account of the app user who
 # pressed Start and uploaded when they end. Put the token in a file, not here:
 #   /etc/cardforge/sorter.env (mode 600):  MTG_MACHINE_TOKEN=<one of the server's CF_MACHINE_TOKENS>

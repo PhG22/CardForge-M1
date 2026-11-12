@@ -28,6 +28,21 @@ void main() {
       expect(const PtStrings().signIn, 'Entrar');
     });
 
+    test('background notification texts exist in both languages (RF38)', () {
+      for (final strings in <AppStrings>[const EnStrings(), const PtStrings()]) {
+        expect(strings.alertsChannelName, isNotEmpty);
+        expect(strings.alertsChannelDescription, isNotEmpty);
+        expect(strings.watchChannelName, isNotEmpty);
+        expect(strings.watchChannelDescription, isNotEmpty);
+        expect(strings.watchingRunTitle, isNotEmpty);
+        expect(strings.watchingRunText('CardForge-A1B2'), contains('CardForge-A1B2'));
+        expect(strings.watchingRunText(null),
+            contains(strings.yourMachine.toLowerCase()));
+      }
+      expect(const EnStrings().watchingRunTitle,
+          isNot(const PtStrings().watchingRunTitle));
+    });
+
     for (final strings in <AppStrings>[const EnStrings(), const PtStrings()]) {
       test('${strings.runtimeType} has text for every enum value', () {
         for (final type in AlertType.values) {

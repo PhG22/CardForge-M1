@@ -14,8 +14,9 @@ This call prepares the machine and checks the start conditions:
 3. The checks are repeated after homing (someone may have touched the machine).
 
 If the checks pass, the sorting loop starts in the background.
-⚠️ When the checks pass, the call **blocks while the base homes**: about 5–20 s,
-at most 40 s. The app's own routes (`/machines/{id}/start`, end of this page) answer
+⚠️ When the checks pass, the call **blocks while the base homes** (RF08): about 1 s when
+the base is parked at tray 3 (it parks there after every run), up to ~4 s from another
+tray, longer only when the base was turned by hand (full search; at most 40 s). The app's own routes (`/machines/{id}/start`, end of this page) answer
 within 8 s instead.
 
 **200 — run started**
@@ -89,7 +90,7 @@ turns red, the app gets a `fault` event, and the run waits with its id and count
 
 | `error_code` | Cause |
 |---|---|
-| `FEED_TIMEOUT` / `FEED_FAILED` | Feed jam: no card reached the platform |
+| `FEED_TIMEOUT` / `FEED_FAILED` | Feed jam: no card reached the platform after 2 pull attempts (RF05) |
 | `DROP_FAILED` | The card did not fall from the platform |
 | `MOVE_TIMEOUT`, `HOME_TIMEOUT`, `HOME_FAILED`, `NOT_HOMED` | The base did not reach a tray / the zero position |
 
@@ -102,7 +103,7 @@ and was removed by hand is not recorded (it was not sorted).
 **409** `{ "resumed": false, "message": "No paused run to resume." }` ·
 **409** with `problems` (e.g. `PLATFORM_NOT_CLEAR`) — the run stays paused.
 
-A module that stops answering (`MODULE_OFFLINE`, Data-Link Loss) or an invalid reply
+A module that does not answer after 3 retransmissions (`MODULE_OFFLINE`, Data-Link Loss, RNF10) or an invalid reply
 (`PROTOCOL_ERROR`) still ends the run as `failed`: the machine needs a power cycle.
 
 ## Results (RF22), history and CSV export (RF24)
@@ -154,7 +155,7 @@ waits until the move is done, then returns the base status:
 | Call | What it does |
 |---|---|
 | `GET /base/status` | Live status: homed, tray, steps, sensors |
-| `POST /base/home` | Find the strip. The base ends at tray 3, `steps: 0`. Takes up to ~20 s |
+| `POST /base/home` | Find the strip. The base ends at tray 3, `steps: 0`. About 1–4 s when the base is homed already; a full search (position unknown) takes longer |
 | `POST /base/goto/{tray}` | Turn to tray 1–6. Needs homing first (else **409** `NOT_HOMED`) |
 | `POST /base/move` | Turn to any absolute position: `{"steps": 1000}` or `{"degrees": 30}` (+ = clockwise). **400** if neither or both are given, or if outside ±20000 steps |
 
@@ -186,6 +187,20 @@ right after the service starts: with `MTG_HOME_ON_POWER_ON=1`, the default, the 
 When it is `paused` or `failed`, `run.error_code` and `run.message` say why.
 `run.current_tray` is `null` while the run is active (RF23).
 
+`timing` (RNF22, RF02 / RF15) — figures of the current or last run, no card identity:
+```json
+"timing": { "cards": 50, "seconds_per_card": 8.31, "cards_per_min": 7.2,
+            "nominal_cards": 47, "nominal_seconds_per_card": 8.02, "nominal_cards_per_min": 7.5,
+            "slowest_capture_s": 0.62,
+            "last_card": { "card": 50, "feed_s": 1.1, "capture_s": 0.41, "identify_s": 4.4,
+                           "move_s": 1.6, "drop_s": 1.2, "total_s": 8.3 } }
+```
+`nominal_*` = only the cards identified at the first capture (no retry): what RNF22 measures
+(≥ 7 cards/min, ≤ 8.6 s per card). A card's time runs from the start of its feed to the end
+of its drop, so a pause does not count. `capture_s` = the card held still until its photo is
+taken (RF02 / RF15, ≤ 2.0 s; the log warns above it). The end-of-run message adds the cards
+per minute.
+
 ## WS /ws/events — notifications
 
 Connect once and keep the socket open. Each message is one JSON object:
@@ -201,19 +216,23 @@ Connect once and keep the socket open. Each message is one JSON object:
 | `run_resumed` | `/run/resume` succeeded | `run` |
 | `run_finished` | **Run ended. Notify the user** | `run` (with `status` completed / failed / cancelled), `message` |
 
-Example `run_finished` messages: `"Stack is empty: 37 card(s) processed."`,
-`"The feeder could not move a card onto the platform (jam or empty stack)."`,
+Example `run_finished` messages: `"Stack is empty: 37 card(s) processed. 7.4 cards/min (8.1 s per card)."`,
+`"Feed jam: no card reached the platform after 2 pull attempts (jam or empty stack)."`,
 `"The bottom module (A2) stopped responding."`.
+
+With a CardForge server, `fault` and `run_finished` also go to the server for the user who
+started the run (RF38, [SERVER.md](SERVER.md)), so the app can notify them with the app closed.
 
 ## GET /hardware/status
 
 Returns the live STATUS of both modules, for a debug or maintenance screen:
 ```json
 { "top":    { "online": true, "state": "IDLE", "stack_has_card": true, "platform_has_card": false,
-              "flap_angle": 80, "roller_running": false, "error": null },
+              "flap_angle": 80, "roller_running": false, "error": null, "feed_attempt": 1 },
   "bottom": { "online": true, "state": "IDLE", "homed": true, "position": 1, "zero_sensor": true,
               "trays_with_cards": [], "error": null } }
 ```
+`feed_attempt` (a1_top 1.1): the pull attempt of the current or last FEED, 1 or 2 (RF05).
 
 ## GET /health
 

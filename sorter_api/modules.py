@@ -14,6 +14,7 @@ from .bus import RS485Bus
 from .protocol import FrameError, Reply
 
 TRAY_COUNT = 6
+HOME_TRAY = 3          # the tray over the homing strip (a2_base.ino); STEPS=0 there
 MOVE_LIMIT = 20000          # a2_base accepts MOVE -20000 .. 20000
 
 
@@ -65,6 +66,7 @@ class TopStatus:
     flap_angle: int
     roller_running: bool
     error: str | None
+    feed_attempt: int | None = None     # RF05: pull attempt of the current / last FEED (firmware 1.1+)
 
     def to_dict(self) -> dict:
         return {
@@ -74,6 +76,7 @@ class TopStatus:
             "flap_angle": self.flap_angle,
             "roller_running": self.roller_running,
             "error": self.error,
+            "feed_attempt": self.feed_attempt,
         }
 
 
@@ -121,6 +124,7 @@ class TopModule:
             flap_angle=_int(r, "FLAP"),
             roller_running=_flag(r, "ROLLER"),
             error=r.fields.get("ERR"),
+            feed_attempt=_int(r, "ATTEMPT") if "ATTEMPT" in r.fields else None,
         )
 
     def roller_stop(self) -> None:
@@ -173,9 +177,14 @@ class BottomModule:
             drift=_int(r, "DRIFT") if "DRIFT" in r.fields else None,
         )
 
-    def start_home(self, timeout_ms: int) -> None:
-        """Find the reflective strip. The base then sits at the home tray (tray 3)."""
-        self._bus.transact(self.ADDRESS, "HOME", int(timeout_ms))
+    def start_home(self, timeout_ms: int, hint_steps: int | None = None) -> None:
+        """Find the reflective strip. The base then sits at the home tray (tray 3).
+        hint_steps: where the base was last seen (steps from home). With it, a2_base 1.1 goes
+        fast to just before the strip instead of searching (RF08); older firmware ignores it."""
+        if hint_steps is None:
+            self._bus.transact(self.ADDRESS, "HOME", int(timeout_ms))
+        else:
+            self._bus.transact(self.ADDRESS, "HOME", int(timeout_ms), int(hint_steps))
 
     def start_goto(self, tray: int) -> int | None:
         """Returns how long the move will take (ms), if the firmware says (OK T=<ms>)."""

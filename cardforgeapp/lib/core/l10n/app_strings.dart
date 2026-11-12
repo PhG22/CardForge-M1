@@ -239,6 +239,14 @@ abstract class AppStrings {
   String get yourMachine;
   String alertTitle(AlertType type);
   String alertMessage(MachineAlert alert);
+
+  // Notifications with the app in the background (RF38)
+  String get alertsChannelName;
+  String get alertsChannelDescription;
+  String get watchChannelName;
+  String get watchChannelDescription;
+  String get watchingRunTitle;
+  String watchingRunText(String? machineName);
 }
 
 class _AppStringsDelegate extends LocalizationsDelegate<AppStrings> {

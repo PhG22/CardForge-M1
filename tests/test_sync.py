@@ -40,6 +40,9 @@ class FakeServer:
         self.uploads.append(payload)
         return {"run_id": len(self.uploads), "cards_received": len(payload["cards"])}
 
+    def post_event(self, alert):            # RF38 alerts: accepted and ignored here (test_alerts.py)
+        return {"id": 0, "created": True}
+
     def close(self):
         pass
 

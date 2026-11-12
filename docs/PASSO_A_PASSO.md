@@ -70,7 +70,7 @@ python -m cardforge.cv sync
 python -m pytest -q
 ```
 
-**Esperado:** `115 passed` e alguns `skipped`. Os testes usam os Arduinos simulados; `test_integration` e
+**Esperado:** `139 passed` e `36 skipped`. Os testes usam os Arduinos simulados; `test_integration` e
 `test_calibration` também rodam a visão de verdade sobre fotos de `input_cartas/`. Os pulados são os do servidor e
 do banco (PostgreSQL); para rodá-los veja **A8**.
 
@@ -131,8 +131,10 @@ curl -X PUT localhost:8000/sim/state -H "content-type: application/json" -d '{"s
 curl -X POST localhost:8000/run/start
 ```
 
-**Esperado:** evento `fault` com `FEED_TIMEOUT`; `curl localhost:8000/run/status` mostra `"state": "paused"`.
-Destrave e retome:
+**Esperado:** evento `fault` com `FEED_TIMEOUT` depois das **2 tentativas de puxar** (RF05):
+`curl localhost:8000/hardware/status` mostra `"feed_attempt": 2` no `top`, e `curl localhost:8000/run/status`
+mostra `"state": "paused"` e a mensagem "after 2 pull attempts". Com o servidor ligado (A8), o mesmo alerta aparece
+em `GET /notifications` do usuário (RF38). Destrave e retome:
 
 ```bash
 curl -X PUT localhost:8000/sim/state -H "content-type: application/json" -d '{"top_jammed": false}'
@@ -185,8 +187,9 @@ separadas por bin. (Assim, sem servidor, não há cadastro, histórico nem expor
    pip install -r cardforge_server/requirements.txt
    CF_TEST_DATABASE_URL=postgresql://cardforge:cardforge@localhost:5432/postgres python -m pytest -q
    ```
-   **Esperado:** `140 passed` (o teste `test_end_to_end_run_is_saved_to_the_users_account` faz o caminho inteiro:
-   run simulada → `run.db` → envio → PostgreSQL → consultas do app).
+   **Esperado:** `175 passed` (o teste `test_end_to_end_run_is_saved_to_the_users_account` faz o caminho inteiro:
+   run simulada → `run.db` → envio → PostgreSQL → consultas do app; `test_end_to_end_a_jam_reaches_the_apps_notification_feed`
+   faz o do alerta: atolamento → Pi → servidor → a espera do app recebe o alerta, RF38).
 3. **Servidor** (aplica as migrações sozinho; documentação em `http://localhost:8080/docs`):
    ```bash
    export CF_DATABASE_URL=postgresql://cardforge:cardforge@localhost:5432/cardforge
@@ -272,6 +275,9 @@ O último comando cria/atualiza o `data/cards.db` (precisa de internet só agora
    bin 4 D7, bin 5 D9, bin 6 D12 (FC-51, LOW = carta no bin).
 3. Os dois a 9600 baud (igual a `MTG_BAUDRATE`). Os pinos estão no começo de cada `.ino`; mude lá se a fiação
    for diferente.
+4. **Versão 1.1** dos dois (`PING` responde `FW=1.1`): o A1 faz as 2 tentativas de puxar do RF05 e mostra
+   `ATTEMPT=` no STATUS; o A2 usa o perfil rápido (`FAST_PROFILE = true`) e o homing rápido com a posição guardada
+   (RF08). Grave os dois de novo depois de atualizar o repositório.
 
 Para isolar problemas só da base, antes do A2: `a2_homing_test.ino` (homing e repetibilidade) e
 `a2_tray_move_test.ino` (todos os bins + perda de passos). Eles mandam o resultado como texto pelo RS-485:
@@ -336,7 +342,12 @@ curl -X POST <ip-do-pi>:8000/base/home
 curl -X POST <ip-do-pi>:8000/base/goto/1
 ```
 
-Teste os bins de 1 a 6 e depois `base/home` de novo: `drift` entre 0 e ±5 = sem perda de passos.
+Teste os bins de 1 a 6 e depois `base/home` de novo: `drift` entre 0 e ±5 = sem perda de passos. Com o perfil
+rápido (`FAST_PROFILE = true`, padrão no `a2_base.ino` 1.1) repita isso umas 10 vezes; se o `drift` passar de ±5,
+volte a `FAST_PROFILE = false` (mais lento: o RNF22 e o RF08 ficam em risco) ou diminua `ACCEL`.
+
+Tempo do homing (RF08, meta ≤ 5,0 s): `journalctl -u sorter-api | grep "base homed"` mostra cada um ("at power-on
+in N s", "before the run in N s"). Com a base estacionada no bin 3 depois de uma run, o homing fica perto de 1 s.
 
 ### C4. Mecânica completa, sem câmera
 
@@ -423,8 +434,12 @@ há, por foto, a imagem anotada e o texto lido; `resultados.csv` reúne tudo.
 
 ### E3. Tempo por carta na máquina (RNF22)
 
-Faça uma run completa com 50 cartas e veja `started_at` / `stopped_at` em `curl localhost:8000/runs`: a meta é
-≥ 7 cartas/min sem retentativas (≤ 8,6 s por carta).
+Faça uma run completa com 50 cartas. No fim, `curl localhost:8000/run/status` traz `timing`:
+`nominal_cards_per_min` (só as cartas sem retentativa, o que o RNF22 mede; meta ≥ 7, ou seja ≤ 8,6 s por carta),
+`cards_per_min` (todas) e `slowest_capture_s` (RF02/RF15: ≤ 2,0 s). A mensagem do fim da run também diz as cartas
+por minuto. Para ver onde vai o tempo: `journalctl -u sorter-api | grep "card [0-9]*:"` lista, por carta,
+`feed_s`, `capture_s`, `identify_s`, `move_s`, `drop_s` e `total_s`. Os tempos ajustáveis do lado do Pi são
+`MTG_FLAP_SETTLE_S` (0,5) e `MTG_CARD_FALL_S` (0,5).
 
 ---
 
@@ -457,6 +472,10 @@ journalctl -u sorter-api -f
 Com o servidor CardForge (recomendado, [SERVER.md](SERVER.md)): no Pi, `MTG_SERVER_URL` e `MTG_MACHINE_TOKEN`
 no serviço; no `.env` do app, `USE_MOCK=false` e `API_BASE_URL=http://<ip-do-servidor>:8080`. Cada usuário cria a
 sua conta no app; a run fica na conta de quem apertou Start.
+
+Notificações (RF38): na primeira run o app pede permissão de notificações e para ignorar a otimização de bateria;
+aceite as duas. Teste com o app em segundo plano e a tela bloqueada: trave o alimentador (tire as cartas da
+frente do rolo) → chega "Card jam detected" com o horário; Resume e deixe terminar → chega "Sorting finished".
 
 Sem servidor: `API_BASE_URL=http://<ip-do-pi>:8000`, usuário `admin`, senha de `MTG_APP_PASSWORD`. Start/Resume,
 Stop e Cards in folders funcionam; uma run pausada por falha aparece como *stopped* e Start/Resume a retoma.

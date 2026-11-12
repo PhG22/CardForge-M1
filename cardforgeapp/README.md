@@ -187,6 +187,30 @@ linked. Fault alerts say when they happened (`paused at 20:15:03`).
   message in both languages, plus an icon in `alert_style.dart`.
 - In debug builds, **Settings > Developer tools** creates each alert on demand.
 
+### Notifications with the app in the background (RF38)
+
+While a run is running or paused, `MachineController` keeps a **foreground
+service** (`flutter_foreground_task`) watching that run's alerts on the CardForge
+server: `GET /notifications?run_id=<run>&after=<last id>&wait=25` returns as soon
+as the machine reports something. Each alert is shown as an Android notification
+(`flutter_local_notifications`, channel "Machine alerts", high importance) with the
+same title and text as the in-app alert and the time it happened on the machine.
+No Firebase: the machine sends its alerts to the server (`POST /machine/events`)
+and the server keeps them in PostgreSQL.
+
+- `lib/features/notifications/`: `server_alert.dart` (the server's alert and its
+  mapping to `AlertType`), `alert_watcher.dart` (the wait loop, pure Dart),
+  `alert_task.dart` (the service's isolate), `background_alerts.dart` (start/stop
+  from the app).
+- The first run asks for the notification permission (Android 13+) and, once, to
+  ignore battery optimisation, so the service keeps its network with the screen off.
+- While the app is on screen and connected to the machine, the in-app alert is
+  enough and the notification is skipped.
+- The service stops by itself when the run ends (or when the app sees the machine
+  idle while on screen). Simulated backend (`USE_MOCK=true`): no service.
+- Some phones add their own battery saver: set CardForge to "unrestricted" there
+  if notifications arrive late.
+
 ## Cards in folders
 
 The machine has **six folders, numbered 1 to 6**. The screen has a search bar on
@@ -277,6 +301,7 @@ They are read in `lib/core/config/app_config.dart`.
 | `GET /runs?limit=&offset=` | n/a | `200` with `{"runs": [...], "total": N}`, newest first |
 | `GET /runs/{id}` | n/a | `200` with `{"run", "bin_counts", "scan_counts", "cards"}` |
 | `GET /cards/export` | n/a | `200` with `{"rows": [{"quantity", "name", "set_code", "collector_number", "rarity", "color_identity", "type_line", "mana_cost", "folder", "status", "scryfall_id"}], "total_cards": N}`; the app writes the CSV |
+| `GET /notifications?run_id=&after=&wait=` | n/a | `200` with `{"notifications": [{"id", "run_id", "kind", "code", "status", "message", "cards_processed", "time"}], "last_id": N}`; waits up to `wait` s for a new alert (RF38) |
 
 Every route except `/health`, login and sign-up needs `Authorization: Bearer <token>`.
 The machine's `POST /run/start` gets the same header. The server is `cardforge_server`
@@ -306,12 +331,16 @@ before publishing.
 
 ## Android setup
 
-- **`minSdk`:** `flutter_secure_storage` needs at least 23. In
-  `android/app/build.gradle` (or `.kts`) set `minSdk = 23`.
+- **`minSdk` / `compileSdk`:** `android/app/build.gradle.kts` uses at least
+  `minSdk = 24` and `compileSdk = 36` (flutter_local_notifications 22), plus core
+  library desugaring (`desugar_jdk_libs`).
 - **Permissions** (already in `AndroidManifest.xml`): `INTERNET`, and for Bluetooth
   `BLUETOOTH_SCAN` (with `neverForLocation`) and `BLUETOOTH_CONNECT` on Android 12+,
   `BLUETOOTH`, `BLUETOOTH_ADMIN` and `ACCESS_FINE_LOCATION` on Android 11 and older.
-  flutter_blue_plus asks for them at run time.
+  flutter_blue_plus asks for them at run time. For RF38: `POST_NOTIFICATIONS`,
+  `FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_REMOTE_MESSAGING`, `WAKE_LOCK`,
+  `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS`, and the plugin's `ForegroundService`
+  (`foregroundServiceType="remoteMessaging"`).
 - **Plain HTTP:** the machine's API is `http://` on the local network and its IP is
   only known at run time, so `android:usesCleartextTraffic="true"` is set. The
   server API should still use HTTPS.
@@ -439,7 +468,7 @@ Use `pumpApp(tester, initialLocation: '/route')` to open a screen. Options:
 - [x] CSV report (whole collection, share sheet)
 - [ ] Sorting rules
 - [x] Alerts from the machine (WebSocket, while the app is open)
-- [ ] Push notifications when the app is closed
+- [x] Alerts as notifications with the app in the background or the phone locked (RF38)
 - [x] Sign-up
 - [ ] Password recovery
 
@@ -457,6 +486,8 @@ Use `pumpApp(tester, initialLocation: '/route')` to open a screen. Options:
 | `web_socket_channel` | Live events from the machine (`/ws/events`) |
 | `flutter_localizations` | Material text in Portuguese |
 | `path_provider`, `share_plus`, `cross_file` | CSV export: temporary file and the system share sheet |
+| `flutter_foreground_task` | RF38: the background service that waits for a run's alerts on the server |
+| `flutter_local_notifications` | RF38: shows those alerts as Android notifications |
 
 Keep `google_sign_in` on 6.x: version 7 changed the API and needs changes in
 `auth_service.dart`.
