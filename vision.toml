@@ -30,16 +30,16 @@ accept_localized_cards = true        # false = estrito ao design CV-AD-04 (carta
 backend = "picamera2"                # "picamera2" (padrão) ou "rpicam" (chama rpicam-still a cada foto)
 sensor = "imx219"                    # o serviço avisa no log se a câmera detectada for outra
 resolution = [1640, 1232]            # IMX219 2x2 binned, campo inteiro; [3280, 2464] = 8 MP. Exige reiniciar
-exposure_us = 20000                  # gravado pelo botão "Salvar no vision.toml"
-analogue_gain = 2.0                  # gravado pela calibração
-awb_gains = [1.6, 1.5]               # [0, 0] = balanço de branco automático; gravado pela calibração
+exposure_us = 9992  # gravado pelo botão "Salvar no vision.toml"
+analogue_gain = 1.274  # gravado pela calibração
+awb_gains = [1.853, 1.374]  # [0, 0] = balanço de branco automático; gravado pela calibração
 warmup_s = 0.5
-light_level = 60                     # fitas LED, % (precisa do comando LIGHT no A1); gravado pela calibração
+light_level = 60  # fitas LED, % (precisa do comando LIGHT no A1); gravado pela calibração
 
 [crop]                               # onde está a carta na foto
-mode = "fixed"                       # "fixed" = 4 cantos calibrados, sem detecção de bordas; "detect" = detecção a cada foto
-corners = []                         # gravados por "Salvar recorte fixo" em /calibration: [[x, y] x 4], fração do quadro
-margin = 0.0                         # amplia o recorte em volta da carta (0.02 = 2 %)
+mode = "fixed"  # "fixed" = 4 cantos calibrados, sem detecção de bordas; "detect" = detecção a cada foto
+corners = [[0.1989, 0.3743], [0.7373, 0.3495], [0.7569, 0.9447], [0.1914, 0.9547]]  # gravados por "Salvar recorte fixo" em /calibration: [[x, y] x 4], fração do quadro
+margin = 0  # amplia o recorte em volta da carta (0.02 = 2 %)
 
 [face_down]                          # RF39
 min_brown_ratio = 0.75
