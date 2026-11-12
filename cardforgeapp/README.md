@@ -18,15 +18,19 @@ sorting rule defined in the app. CardForge is the control panel for that machine
 | Screen | Route | What it does |
 |---|---|---|
 | Splash | `/splash` | Checks the server (`GET /health`) and decides where to go: Login (no session) or Home (saved session). If the server does not answer it shows an error with **Try again**. |
-| Login | `/login` | Username or email + password, **Remember me** and Google sign-in. |
+| Login | `/login` | Username or email + password, **Remember me** and Google sign-in. **Create account** opens Sign up. |
+| Sign up | `/signup` | Username, email, password (8+ characters) and confirmation. Creates the account on the server (`POST /auth/signup`) and signs in. |
 | Home | `/home` | Shows the linked machine and its connection (tap it for machine control), or a **Link machine** button; the alerts bell with an unread badge and the side menu. |
 | Link machine | `/link-machine` | Wizard: Bluetooth scan, pick a machine, machine password, Wi-Fi details, wait for the machine to join the network and check it answers over Wi-Fi. |
 | Machine control | `/machine` | Start / stop a sorting run (and emergency stop), live progress, why a run can't start, and diagnostics (module sensors, base test moves). Talks to the Raspberry Pi's REST API over Wi-Fi. |
 | Alerts | `/alerts` | Every event reported by the machine, newest first. Tap to mark as read, or mark/clear all. |
-| Cards in folders | `/cards` | Search a card by name and see which folders (1 to 6) it is in; with nothing typed, lists the cards in the folders. Data comes from the server. |
+| Sorting runs | `/runs` | Every finished run of the signed-in user, newest first (date, how it ended, cards and how many were identified). From the server. |
+| Run results | `/runs/:id` | One run (RF22): how it ended, cards per folder, identified / unidentified / face-down counts and every card in sorting order. |
+| Cards in folders | `/cards` | The user's collection: search a card by name and see which folders (1 to 6) it is in; with nothing typed, lists every card. The share button opens CSV report. Data comes from the server. |
+| CSV report | `/export` | Exports the whole collection as one CSV file (RF24, RFC 4180, UTF-8) and opens the system share sheet (save to Files/Drive, email...). |
 | Settings | `/settings` | Language (English or Portuguese) and, in debug builds only, a tool to simulate alerts. |
 
-Side-menu items that do not have a screen yet (CSV report, sorting rules) show a
+The side-menu item that does not have a screen yet (sorting rules) shows a
 "coming soon" message.
 
 ### Navigation flow
@@ -109,9 +113,16 @@ project docs) and keeps the `WS /ws/events` socket open:
   (`?immediate=true`) stops the motors at once.
 - **Live progress** from the WebSocket: cards processed, current folder, the last
   cards sorted.
-- **Alerts on any screen:** run finished, card jam (`FEED_TIMEOUT`), run failed,
-  connection lost during a run. A run that ended while the phone was offline is
-  announced when it reconnects.
+- **Faults pause the run** (feed jam, a card that does not fall, the base not
+  reaching a folder): the screen shows *Paused* with the reason, and **Resume**
+  (`POST /run/resume`, RF26) continues the same run after the base homes again;
+  **Stop** ends it. An alert with the fault type and the time shows on any
+  screen (RF27).
+- **Alerts on any screen:** run finished, card jam, other faults, run failed,
+  connection lost during a run. A run that ended, or paused, while the phone was
+  offline is announced when it reconnects.
+- **Simulated machine** (`USE_MOCK_MACHINE=true`): the first run pauses with a
+  feed jam before card 5, to try the alert and Resume.
 - **Offline:** the app retries on its own (2 s, 5 s, 10 s, 30 s). If the router gave
   the machine a new IP, **Find over Bluetooth** asks the machine for it (no password
   needed) and saves it.
@@ -137,6 +148,12 @@ computer (macOS or Linux) and an Android phone:
 | 2 | App ↔ real REST API, no Bluetooth | Emulator or phone | `python -m sorter_api --simulate` on your computer, listening on `0.0.0.0:8000` | `--dart-define=USE_MOCK_MACHINE=false` |
 | 3 | Real Bluetooth setup, the computer plays the machine | **Real phone** (emulators have no Bluetooth) | level 2 + `python -m cardforge_setup --config ./setup.json run --simulate-wifi` on the computer | `--dart-define=USE_MOCK_BLUETOOTH=false --dart-define=USE_MOCK_MACHINE=false` |
 | 4 | Full setup and control | **Real phone** | `cardforge_setup` + `sorter_api` on the Pi | same as 3 |
+| + | Accounts, run history, collection, CSV | any | the CardForge server (`python -m cardforge_server`, see `docs/SERVER.md` in the Pi repo) and `sorter_api` with `MTG_SERVER_URL` | `--dart-define=USE_MOCK=false --dart-define=API_BASE_URL=http://<server>:8080` |
+
+- With a server, **Start** sends the signed-in user's token to the machine, which
+  saves the run (and its cards) to that account and uploads it when the run ends. A
+  start refused with "Your session expired" means the token is missing or old: sign in
+  again. The run shows up in **Sorting runs** a moment after it ends.
 
 - Level 2 on a real phone instead of the emulator: add
   `--dart-define=MOCK_MACHINE_HOST=<your computer's Wi-Fi IP>`.
@@ -158,8 +175,9 @@ Alerts are events from the machine, shown in two places: a **banner** over
 whatever screen is open (with a **View** button) and the **Alerts** screen
 (opened from the bell or the menu).
 
-Available types: Wi-Fi connected, Wi-Fi lost, sorting finished, card jam, double
-feed, connection lost and machine linked.
+Available types: Wi-Fi connected, Wi-Fi lost, sorting finished, card jam, sorting
+paused (any other fault, with its code), double feed, connection lost and machine
+linked. Fault alerts say when they happened (`paused at 20:15:03`).
 
 - An alert stores its type and data (machine name, card count), not text, so it
   is translated when shown and follows the current language.
@@ -254,7 +272,15 @@ They are read in `lib/core/config/app_config.dart`.
 | `GET /health` | n/a | `200` if the server is up |
 | `POST /auth/login` | `{"identifier": "...", "password": "..."}` | `200` with `{"access_token": "..."}`, or `401` for invalid credentials |
 | `POST /auth/google` | `{"id_token": "..."}` | `200` with `{"access_token": "..."}`; the backend validates the Google token |
+| `POST /auth/signup` | `{"username": "...", "email": "...", "password": "..."}` | `201` with `{"access_token": "..."}`; `409` with `code` `USERNAME_TAKEN` / `EMAIL_TAKEN`; `422` when a field breaks the rules |
 | `GET /cards?query=&limit=&offset=` | n/a | `200` with `{"items": [...], "total": N}` (see [Cards in folders](#cards-in-folders)); `401` if the token is invalid |
+| `GET /runs?limit=&offset=` | n/a | `200` with `{"runs": [...], "total": N}`, newest first |
+| `GET /runs/{id}` | n/a | `200` with `{"run", "bin_counts", "scan_counts", "cards"}` |
+| `GET /cards/export` | n/a | `200` with `{"rows": [{"quantity", "name", "set_code", "collector_number", "rarity", "color_identity", "type_line", "mana_cost", "folder", "status", "scryfall_id"}], "total_cards": N}`; the app writes the CSV |
+
+Every route except `/health`, login and sign-up needs `Authorization: Bearer <token>`.
+The machine's `POST /run/start` gets the same header. The server is `cardforge_server`
+(Pi repo, `docs/SERVER.md`).
 
 The token is kept in the device's secure storage (`flutter_secure_storage`). With
 **Remember me** unchecked, the session lasts only until the app is closed.
@@ -406,13 +432,16 @@ Use `pumpApp(tester, initialLocation: '/route')` to open a screen. Options:
 - [x] Automated tests
 - [x] Real Bluetooth transport (`docs/ble-setup-protocol.md`)
 - [x] Machine control (Start, Stop, emergency stop, progress, diagnostics)
-- [ ] Pause / resume (needs support in `sorter_api`)
+- [x] Resume after a fault, fault alerts with type and time
+- [ ] Pause button (RF35, optional)
 - [x] Cards in folders (search and list from the server)
-- [ ] CSV report
+- [x] Run history and run results (from the server)
+- [x] CSV report (whole collection, share sheet)
 - [ ] Sorting rules
 - [x] Alerts from the machine (WebSocket, while the app is open)
 - [ ] Push notifications when the app is closed
-- [ ] Sign-up and password recovery
+- [x] Sign-up
+- [ ] Password recovery
 
 ## Dependencies
 
@@ -427,6 +456,7 @@ Use `pumpApp(tester, initialLocation: '/route')` to open a screen. Options:
 | `flutter_blue_plus` | Bluetooth Low Energy for the machine setup. Free for personal/educational use (`License.nonprofit`); for-profit use needs a commercial license. It sends a small license ping at build time |
 | `web_socket_channel` | Live events from the machine (`/ws/events`) |
 | `flutter_localizations` | Material text in Portuguese |
+| `path_provider`, `share_plus`, `cross_file` | CSV export: temporary file and the system share sheet |
 
 Keep `google_sign_in` on 6.x: version 7 changed the API and needs changes in
 `auth_service.dart`.

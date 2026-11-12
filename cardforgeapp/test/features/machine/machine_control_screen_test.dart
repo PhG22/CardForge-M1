@@ -116,6 +116,50 @@ void main() {
     expect(find.text('Stopped by you after 5 cards.'), findsOneWidget);
   });
 
+  testWidgets('a paused run shows the fault, Resume and Stop (RF26, RF27)',
+      (tester) async {
+    final api = FakeMachineApi(
+      snapshot: MachineSnapshot(
+        state: ControllerState.paused,
+        run: FakeMachineApi.pausedRun(cards: 3, code: 'DROP_FAILED'),
+      ),
+    );
+    await openControl(tester, api: api);
+
+    expect(find.text('Paused'), findsOneWidget);
+    expect(find.text('A card did not fall from the platform.'), findsOneWidget);
+    expect(find.widgetWithText(FilledButton, 'Resume'), findsOneWidget);
+    expect(find.widgetWithText(OutlinedButton, 'Stop'), findsOneWidget);
+    expect(find.text('Start sorting'), findsNothing);
+
+    await tester.tap(find.widgetWithText(FilledButton, 'Resume'));
+    await tester.pumpAndSettle();
+
+    expect(api.calls, contains('resumeRun'));
+    expect(find.text('Sorting'), findsOneWidget);
+    expect(find.widgetWithText(FilledButton, 'Stop'), findsOneWidget);
+  });
+
+  testWidgets('a fault during a run shows a banner with its type and time',
+      (tester) async {
+    final api = FakeMachineApi(
+      snapshot: MachineSnapshot(
+        state: ControllerState.running,
+        run: FakeMachineApi.runningRun(cards: 2),
+      ),
+    );
+    await openControl(tester, api: api);
+
+    final paused = FakeMachineApi.pausedRun(cards: 2);
+    api.emit(FaultEvent(code: 'FEED_TIMEOUT', time: paused.faultAt, run: paused));
+    await deliver(tester);
+
+    expect(find.text('Card jam detected'), findsOneWidget);
+    expect(find.textContaining(RegExp(r'paused at \d\d:\d\d:\d\d')),
+        findsOneWidget);
+    expect(find.widgetWithText(FilledButton, 'Resume'), findsOneWidget);
+  });
+
   testWidgets('offline: explains and offers to retry or find over Bluetooth',
       (tester) async {
     final api = FakeMachineApi(reachable: false);

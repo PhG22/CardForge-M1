@@ -4,6 +4,7 @@ import '../../features/cards/card_models.dart';
 import '../../features/machine/api/machine_api_models.dart';
 import '../../features/machine/machine_controller.dart';
 import '../../features/machine/machine_models.dart';
+import '../../features/runs/run_models.dart';
 import 'app_strings.dart';
 
 class EnStrings extends AppStrings {
@@ -64,8 +65,6 @@ class EnStrings extends AppStrings {
   @override
   String get passwordRecoverySoon => 'Password recovery is coming soon.';
   @override
-  String get signUpSoon => 'Sign-up is coming soon.';
-  @override
   String get usernameRequired => 'Enter your username or email';
   @override
   String get invalidEmail => 'Invalid email';
@@ -82,7 +81,38 @@ class EnStrings extends AppStrings {
         AuthFailure.googleCancelled => 'Google sign-in was cancelled.',
         AuthFailure.googleTokenMissing =>
           'Could not get a token from Google.',
+        AuthFailure.usernameTaken =>
+          'This username is taken. Choose another one.',
+        AuthFailure.emailTaken =>
+          'There is already an account with this email. Sign in instead.',
+        AuthFailure.invalidSignUp =>
+          'The server did not accept these details. Check them and try again.',
+        AuthFailure.accountDisabled => 'This account is disabled.',
       };
+
+  // Sign-up
+  @override
+  String get signUpSubtitle =>
+      'The cards you sort are saved to your account.';
+  @override
+  String get username => 'Username';
+  @override
+  String get email => 'Email';
+  @override
+  String get confirmPassword => 'Confirm password';
+  @override
+  String get chooseUsername => 'Choose a username';
+  @override
+  String get usernameRules =>
+      "3 to 32 letters, digits, '.', '_' or '-' (no spaces)";
+  @override
+  String get emailRequired => 'Enter your email';
+  @override
+  String get newPasswordTooShort => 'Password must have at least 8 characters';
+  @override
+  String get passwordsDoNotMatch => 'The passwords do not match';
+  @override
+  String get alreadyHaveAccount => 'Already have an account?';
 
   // Home and menu
   @override
@@ -96,6 +126,8 @@ class EnStrings extends AppStrings {
   String get menuMachineControl => 'Machine control';
   @override
   String get menuCardsInFolders => 'Cards in folders';
+  @override
+  String get menuRuns => 'Sorting runs';
   @override
   String get menuCsvReport => 'CSV report';
   @override
@@ -266,6 +298,8 @@ class EnStrings extends AppStrings {
         ControllerState.starting => 'Preparing…',
         ControllerState.running => 'Sorting',
         ControllerState.stopping => 'Stopping…',
+        ControllerState.paused => 'Paused',
+        ControllerState.manual => 'Moving the base…',
         ControllerState.unknown => 'Unknown',
       };
   @override
@@ -280,6 +314,34 @@ class EnStrings extends AppStrings {
       'This takes up to 40 seconds.';
   @override
   String get stopSorting => 'Stop';
+  @override
+  String get resumeSorting => 'Resume';
+  @override
+  String get resumingHint =>
+      'Homing the base again, then sorting continues. '
+      'This takes up to 40 seconds.';
+  @override
+  String get resumeProblemsTitle => 'Cannot resume yet';
+  @override
+  String get pausedHint =>
+      'Fix the problem on the machine, then press Resume. Stop ends the run here.';
+  @override
+  String faultDescription(String? code) => switch (code) {
+        'FEED_TIMEOUT' => 'no card reached the platform (jam or empty stack).',
+        'FEED_FAILED' => 'feeding finished but no card is on the platform.',
+        'DROP_FAILED' => 'a card did not fall from the platform.',
+        'MOVE_TIMEOUT' => 'the base did not reach the folder.',
+        'HOME_TIMEOUT' ||
+        'HOME_FAILED' =>
+          'the base could not find its home position.',
+        'NOT_HOMED' => 'the base lost its position.',
+        null => 'the machine reported a fault.',
+        _ => 'the machine reported $code.',
+      };
+  String _hms(DateTime t) {
+    final local = t.toLocal();
+    return '${_two(local.hour)}:${_two(local.minute)}:${_two(local.second)}';
+  }
   @override
   String get emergencyStop => 'Emergency stop';
   @override
@@ -299,6 +361,14 @@ class EnStrings extends AppStrings {
         'MODULE_OFFLINE' => '${_moduleName(problem.module)} is not answering. '
             'Check its cable and power.',
         'HOME_TIMEOUT' => 'The base could not reach its home position in time.',
+        'HOMING' =>
+          'The base is homing after power-on. Try again in a few seconds.',
+        'SIGN_IN_REQUIRED' =>
+          'Your session expired. Sign in again to start a run.',
+        'SERVER_UNREACHABLE' =>
+          'The machine cannot reach the CardForge server, so the run '
+              'cannot be saved to your account. Check its network.',
+        'SERVER_ERROR' => 'The CardForge server had a problem. Try again.',
         _ => problem.message.isNotEmpty
             ? problem.message
             : 'The machine could not start (${problem.code}).',
@@ -334,6 +404,8 @@ class EnStrings extends AppStrings {
   @override
   String runResult(RunInfo run) => switch (run.status) {
         RunStatus.running => 'Sorting in progress.',
+        RunStatus.paused => 'Paused after ${cardsCount(run.cardsProcessed)}: '
+            '${faultDescription(run.errorCode)}',
         RunStatus.completed => 'Finished: ${cardsCount(run.cardsProcessed)} sorted.',
         RunStatus.cancelled =>
           'Stopped by you after ${cardsCount(run.cardsProcessed)}.',
@@ -454,6 +526,102 @@ class EnStrings extends AppStrings {
   @override
   String get signInAgain => 'Sign in again';
 
+  // Run history and results
+  @override
+  String get runsLoadFailedTitle => 'Could not load your runs';
+  @override
+  String get runsEmptyTitle => 'No runs yet';
+  @override
+  String get runsEmptyHint =>
+      'Runs you start from this account show up here when they finish.';
+  @override
+  String get loadMore => 'Load more';
+  @override
+  String runStatusLabel(RunStatus status) => switch (status) {
+        RunStatus.completed => 'Finished',
+        RunStatus.cancelled => 'Stopped',
+        RunStatus.failed => 'Ended early',
+        RunStatus.running => 'In progress',
+        RunStatus.paused => 'Paused',
+        RunStatus.unknown => 'Run',
+      };
+  @override
+  String dateTime(DateTime time) => '${time.year}-${_two(time.month)}-'
+      '${_two(time.day)} ${_two(time.hour)}:${_two(time.minute)}';
+  String _two(int n) => n.toString().padLeft(2, '0');
+  @override
+  String runCardsSummary(int cards, int identified) =>
+      '${cardsCount(cards)}, $identified identified';
+  @override
+  String get runResultsTitle => 'Run results';
+  @override
+  String get runLoadFailedTitle => 'Could not load this run';
+  @override
+  String runOutcome(RunSummary run) => switch (run.status) {
+        RunStatus.completed when run.errorCode == 'BATCH_LIMIT' =>
+          'Ended at the batch limit: ${cardsCount(run.cardsProcessed)} sorted.',
+        RunStatus.completed =>
+          'Finished with the stack empty: ${cardsCount(run.cardsProcessed)} sorted.',
+        RunStatus.cancelled =>
+          'Stopped by you after ${cardsCount(run.cardsProcessed)}.',
+        RunStatus.failed => switch (run.errorCode) {
+            'MODULE_OFFLINE' => 'Ended early: a module stopped responding.',
+            'INTERRUPTED' =>
+              'Ended early: the machine restarted during the run.',
+            _ => 'Ended early with an error'
+                '${run.errorCode == null ? '' : ' (${run.errorCode})'}.',
+          },
+        RunStatus.running ||
+        RunStatus.paused ||
+        RunStatus.unknown =>
+          run.message ?? '',
+      };
+  @override
+  String get identifiedLabel => 'Identified';
+  @override
+  String get unidentifiedLabel => 'Unidentified';
+  @override
+  String get faceDownLabel => 'Face-down';
+  @override
+  String get cardsPerFolder => 'Cards per folder';
+  @override
+  String get cardsInThisRun => 'Cards in this run';
+  @override
+  String get noCardsInRun => 'No card was sorted in this run.';
+  @override
+  String scanOutcome(ScanOutcome outcome) => switch (outcome) {
+        ScanOutcome.identified => 'Identified',
+        ScanOutcome.unidentified => 'Unidentified card',
+        ScanOutcome.faceDown => 'Face-down card',
+      };
+  @override
+  String runCardDetails(RunCard card) => [
+        if (card.setCode != null)
+          '${card.setCode!.toUpperCase()} ${card.collectorNumber ?? ''}'.trim(),
+        if (card.folder != null) folderLabel(card.folder!),
+      ].join(' · ');
+
+  // CSV export
+  @override
+  String get exportTitle => 'Export your collection';
+  @override
+  String get exportHint =>
+      'Every card you own, from all your runs, in one CSV file: name, set, '
+      'collector number, folder and quantity. It opens in Excel, Google '
+      'Sheets and most collection sites.';
+  @override
+  String get exportCsv => 'Export CSV';
+  @override
+  String get exportNothing =>
+      'Your collection is empty: sort some cards first.';
+  @override
+  String get exportFileFailed => 'Could not create or share the file.';
+  @override
+  String get exportFailedTitle => 'Could not export the collection';
+  @override
+  String exportDone(int cards, String fileName) =>
+      '${cardsCount(cards)} exported to $fileName.';
+
   // Settings
   @override
   String get languageSection => 'Language';
@@ -480,6 +648,7 @@ class EnStrings extends AppStrings {
         AlertType.batchFinished => 'Sorting finished',
         AlertType.runFailed => 'Sorting stopped',
         AlertType.jamDetected => 'Card jam detected',
+        AlertType.machineFault => 'Sorting paused',
         AlertType.doubleFeed => 'Double feed detected',
         AlertType.connectionLost => 'Connection lost',
         AlertType.machineLinked => 'Machine linked',
@@ -494,8 +663,10 @@ class EnStrings extends AppStrings {
         '$name processed ${alert.cardCount ?? 0} cards.',
       AlertType.runFailed =>
         '$name stopped with an error. Open machine control for details.',
-      AlertType.jamDetected =>
-        '$name stopped: no card reached the platform. Clear the jam and start again.',
+      AlertType.jamDetected => '$name paused at ${_hms(alert.createdAt)}: '
+          'no card reached the platform. Clear the jam, then press Resume.',
+      AlertType.machineFault => '$name paused at ${_hms(alert.createdAt)}: '
+          '${faultDescription(alert.faultCode)} Fix it, then press Resume.',
       AlertType.doubleFeed => '$name picked up two cards at once.',
       AlertType.connectionLost =>
         'Lost contact with $name. The app keeps trying to reconnect.',

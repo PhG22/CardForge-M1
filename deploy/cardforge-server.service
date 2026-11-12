@@ -1,0 +1,26 @@
+# systemd unit: the CardForge server (accounts + PostgreSQL + run upload), see docs/SERVER.md.
+#   1. Adjust User, WorkingDirectory and /etc/cardforge/server.env (below).
+#   2. sudo cp deploy/cardforge-server.service /etc/systemd/system/
+#   3. sudo systemctl daemon-reload && sudo systemctl enable --now cardforge-server
+#   4. Logs: journalctl -u cardforge-server -f
+#
+# /etc/cardforge/server.env (mode 600, never in git):
+#   CF_DATABASE_URL=postgresql://cardforge:<password>@localhost:5432/cardforge
+#   CF_TOKEN_SECRET=<python -c "import secrets; print(secrets.token_urlsafe(48))">
+#   CF_MACHINE_TOKENS=<python -m cardforge_server new-machine-token>
+
+[Unit]
+Description=CardForge server (accounts, runs, collection)
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+User=pi
+WorkingDirectory=/home/pi/CardForge-M1
+EnvironmentFile=/etc/cardforge/server.env
+ExecStart=/home/pi/CardForge-M1/.venv/bin/python -m cardforge_server
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

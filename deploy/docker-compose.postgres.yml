@@ -1,0 +1,18 @@
+# PostgreSQL for the CardForge server, for a laptop or VM with Docker:
+#   docker compose -f deploy/docker-compose.postgres.yml up -d
+# Then: CF_DATABASE_URL=postgresql://cardforge:cardforge@localhost:5432/cardforge python -m cardforge_server
+# Change the password for anything beyond the bench.
+services:
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: cardforge
+      POSTGRES_PASSWORD: cardforge
+      POSTGRES_DB: cardforge
+    ports:
+      - "5432:5432"
+    volumes:
+      - cardforge-pg:/var/lib/postgresql/data
+volumes:
+  cardforge-pg:

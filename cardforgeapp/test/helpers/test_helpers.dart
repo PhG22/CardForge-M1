@@ -3,10 +3,13 @@ import 'package:cardforge/core/app_scope.dart';
 import 'package:cardforge/core/services/server_health_service.dart';
 import 'package:cardforge/features/auth/auth_service.dart';
 import 'package:cardforge/features/cards/card_repository.dart';
+import 'package:cardforge/features/cards/collection_export.dart';
 import 'package:cardforge/features/cards/mock_card_repository.dart';
 import 'package:cardforge/features/machine/api/machine_api.dart';
 import 'package:cardforge/features/machine/machine_link_service.dart';
 import 'package:cardforge/features/machine/mock_machine_link_service.dart';
+import 'package:cardforge/features/runs/mock_run_repository.dart';
+import 'package:cardforge/features/runs/run_repository.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -46,6 +49,9 @@ const Map<String, Object> linkedMachinePrefs = {
 /// - [linkService]: the Bluetooth service (a fast simulated one by default).
 /// - [cardRepository]: where the cards come from (a fast simulated one by default).
 /// - [machineApi]: the machine's REST API ([FakeMachineApi] by default).
+/// - [runRepository] / [collectionExport]: run history and CSV export rows
+///   (fast simulated ones by default). [shareCsv] replaces the share sheet
+///   (by default it does nothing).
 Future<AppDependencies> pumpApp(
   WidgetTester tester, {
   String initialLocation = '/splash',
@@ -53,6 +59,9 @@ Future<AppDependencies> pumpApp(
   MachineLinkService? linkService,
   CardRepository? cardRepository,
   MachineApi? machineApi,
+  RunRepository? runRepository,
+  CollectionExportSource? collectionExport,
+  CsvSharer? shareCsv,
   Map<String, Object> preferences = const {},
 }) async {
   tester.view.physicalSize = const Size(1170, 2532);
@@ -67,6 +76,10 @@ Future<AppDependencies> pumpApp(
     linkService: linkService ?? MockMachineLinkService(stepDelay: Duration.zero),
     cardRepository:
         cardRepository ?? MockCardRepository(latency: Duration.zero),
+    runRepository: runRepository ?? MockRunRepository(latency: Duration.zero),
+    collectionExport: collectionExport ??
+        MockCollectionExportSource(latency: Duration.zero),
+    shareCsv: shareCsv ?? (_, __, ___) async {},
     machineApiFor: (_) => api,
   );
 

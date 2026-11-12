@@ -44,9 +44,19 @@ within 8 s instead.
 | 409 | `CARD_DB_MISSING` | `data/cards.db` is missing: run `python -m cardforge.cv sync` |
 | 409 | `CROP_NOT_CALIBRATED` | `vision.toml` `[crop] mode = "fixed"` without corners: save the fixed crop on `/calibration` |
 | 409 | `RUN_ACTIVE` | A run is already starting / running / stopping / paused |
+| 409 | `HOMING` | The base is still homing after the service started (RF08): try again in a few seconds |
 | 409 | `START_CANCELLED` | `/run/stop` was called during the start checks |
 | 503 | `MODULE_OFFLINE` | A1 or A2 did not answer (`module` says which) |
 | 500 | `HOME_TIMEOUT`, `PROTOCOL_ERROR`, … | Hardware fault during preparation |
+| 401 | `SIGN_IN_REQUIRED` | With a CardForge server (`MTG_SERVER_URL`): no `Authorization: Bearer <token>`, or the server says the app user's token is expired/unknown |
+| 503 | `SERVER_UNREACHABLE` | With a CardForge server: the Pi could not reach it to check who is starting the run |
+| 502 | `SERVER_ERROR` | With a CardForge server: it answered with an error |
+
+**Run owner (server mode).** With `MTG_SERVER_URL` set, the app sends its access token
+with `POST /run/start`. The Pi checks it with the server (`GET /auth/me`) before anything
+else; the user becomes the owner of the run and of every card in it (`run.owner` in the
+answer). Only the start needs the server: if the network drops during the run, nothing
+changes (see [SERVER.md](SERVER.md)).
 
 ## POST /run/stop
 
@@ -116,6 +126,15 @@ transaction, right after the drop. Results are only given once the run is over (
                "confidence": 100, "attempts": 1, "scanned_at": "…" }, … ] }
 ```
 
+These are the **machine's** views (every run made on this Pi, any user). The app reads
+the signed-in user's runs, collection and export from the CardForge server instead
+([SERVER.md](SERVER.md)), which receives each finished run from the Pi:
+
+| Call | Answer |
+|---|---|
+| `GET /sync/status` | `{ "enabled", "server_url", "synced", "pending", "failed", "local_only", "last_error" }` — finished runs uploaded, waiting, failing (retried with backoff), or kept on the Pi only (started without a server) |
+| `POST /sync/now` | Retry the uploads right away (e.g. after fixing the network). **409** without a server |
+
 Tray rule (RF20): color identity {W} → 1, {U} → 2, {B} → 3, {R} → 4, {G} → 5;
 colorless, multicolor, unidentified (after 3 captures, RF25/RF29) and face-down (RF39) → 6.
 A run ends by itself after 250 cards (`error_code: "BATCH_LIMIT"`, RNF27).
@@ -161,7 +180,8 @@ or to catch up after the WebSocket was disconnected.
 ```json
 { "state": "running", "run": { "run_id": "…", "status": "running", "cards_processed": 7, "current_tray": 1, … } }
 ```
-`state`: `idle` · `starting` · `running` · `stopping` · `paused`
+`state`: `idle` · `starting` · `running` · `stopping` · `paused` · `manual` (a base test move, or the homing
+right after the service starts: with `MTG_HOME_ON_POWER_ON=1`, the default, the base homes by itself at power-on, RF08)
 `run.status`: `running` · `paused` · `completed` · `failed` · `cancelled`.
 When it is `paused` or `failed`, `run.error_code` and `run.message` say why.
 `run.current_tray` is `null` while the run is active (RF23).
@@ -197,7 +217,8 @@ Returns the live STATUS of both modules, for a debug or maintenance screen:
 
 ## GET /health
 
-Returns `{ "ok": true, "simulate": false, "bottom_enabled": true }`.
+Returns `{ "ok": true, "simulate": false, "bottom_enabled": true, "server": true }`
+(`server`: a CardForge server is configured).
 
 ## Top-only mode (`--top-only` / `MTG_BOTTOM_ENABLED=0`)
 
@@ -215,9 +236,11 @@ notifications.
 
 ## Routes of the mobile app (app_compat.py)
 
-The app (CardForge App, `lib/core/api/api_contract.dart`) talks to `API_BASE_URL`. Until
-the CardForge server exists, the Pi serves those routes itself: build the app with
-`USE_MOCK=false` and `API_BASE_URL=http://<raspberry-ip>:8000`.
+The app talks to `API_BASE_URL` for sign-in and data. With the CardForge server
+([SERVER.md](SERVER.md)) that is the server, and these routes are **not** served by the Pi.
+**Without a server** (`MTG_SERVER_URL` empty), the Pi stands in for it: build the app with
+`USE_MOCK=false` and `API_BASE_URL=http://<raspberry-ip>:8000`. Sign-up, the run history
+and the CSV export need the server.
 
 | Route | Answer |
 |---|---|

@@ -4,6 +4,7 @@ import '../../features/cards/card_models.dart';
 import '../../features/machine/api/machine_api_models.dart';
 import '../../features/machine/machine_controller.dart';
 import '../../features/machine/machine_models.dart';
+import '../../features/runs/run_models.dart';
 import 'app_strings.dart';
 
 class PtStrings extends AppStrings {
@@ -64,8 +65,6 @@ class PtStrings extends AppStrings {
   @override
   String get passwordRecoverySoon => 'Recuperação de senha em breve.';
   @override
-  String get signUpSoon => 'Cadastro em breve.';
-  @override
   String get usernameRequired => 'Informe seu usuário ou e-mail';
   @override
   String get invalidEmail => 'E-mail inválido';
@@ -82,7 +81,38 @@ class PtStrings extends AppStrings {
         AuthFailure.googleCancelled => 'Login com Google cancelado.',
         AuthFailure.googleTokenMissing =>
           'Não foi possível obter o token do Google.',
+        AuthFailure.usernameTaken =>
+          'Este nome de usuário já está em uso. Escolha outro.',
+        AuthFailure.emailTaken =>
+          'Já existe uma conta com este e-mail. Entre com ela.',
+        AuthFailure.invalidSignUp =>
+          'O servidor não aceitou esses dados. Confira e tente de novo.',
+        AuthFailure.accountDisabled => 'Esta conta está desativada.',
       };
+
+  // Sign-up
+  @override
+  String get signUpSubtitle =>
+      'As cartas que você separar ficam salvas na sua conta.';
+  @override
+  String get username => 'Nome de usuário';
+  @override
+  String get email => 'E-mail';
+  @override
+  String get confirmPassword => 'Confirme a senha';
+  @override
+  String get chooseUsername => 'Escolha um nome de usuário';
+  @override
+  String get usernameRules =>
+      "De 3 a 32 letras, números, '.', '_' ou '-' (sem espaços)";
+  @override
+  String get emailRequired => 'Informe seu e-mail';
+  @override
+  String get newPasswordTooShort => 'A senha deve ter ao menos 8 caracteres';
+  @override
+  String get passwordsDoNotMatch => 'As senhas não conferem';
+  @override
+  String get alreadyHaveAccount => 'Já tem uma conta?';
 
   // Home and menu
   @override
@@ -96,6 +126,8 @@ class PtStrings extends AppStrings {
   String get menuMachineControl => 'Controle da máquina';
   @override
   String get menuCardsInFolders => 'Cartas nas pastas';
+  @override
+  String get menuRuns => 'Ordenações';
   @override
   String get menuCsvReport => 'Relatório CSV';
   @override
@@ -265,6 +297,8 @@ class PtStrings extends AppStrings {
         ControllerState.starting => 'Preparando…',
         ControllerState.running => 'Ordenando',
         ControllerState.stopping => 'Parando…',
+        ControllerState.paused => 'Pausada',
+        ControllerState.manual => 'Movendo a base…',
         ControllerState.unknown => 'Desconhecido',
       };
   @override
@@ -279,6 +313,37 @@ class PtStrings extends AppStrings {
       'posição inicial. Isso leva até 40 segundos.';
   @override
   String get stopSorting => 'Parar';
+  @override
+  String get resumeSorting => 'Retomar';
+  @override
+  String get resumingHint =>
+      'Fazendo o homing da base de novo; depois a ordenação continua. '
+      'Leva até 40 segundos.';
+  @override
+  String get resumeProblemsTitle => 'Ainda não dá para retomar';
+  @override
+  String get pausedHint =>
+      'Resolva o problema na máquina e toque em Retomar. Parar encerra a '
+      'ordenação aqui.';
+  @override
+  String faultDescription(String? code) => switch (code) {
+        'FEED_TIMEOUT' =>
+          'nenhuma carta chegou à plataforma (atolamento ou pilha vazia).',
+        'FEED_FAILED' =>
+          'a alimentação terminou, mas não há carta na plataforma.',
+        'DROP_FAILED' => 'uma carta não caiu da plataforma.',
+        'MOVE_TIMEOUT' => 'a base não chegou à pasta.',
+        'HOME_TIMEOUT' ||
+        'HOME_FAILED' =>
+          'a base não encontrou a posição inicial.',
+        'NOT_HOMED' => 'a base perdeu a posição.',
+        null => 'a máquina informou uma falha.',
+        _ => 'a máquina informou $code.',
+      };
+  String _hms(DateTime t) {
+    final local = t.toLocal();
+    return '${_two(local.hour)}:${_two(local.minute)}:${_two(local.second)}';
+  }
   @override
   String get emergencyStop => 'Parada de emergência';
   @override
@@ -298,6 +363,14 @@ class PtStrings extends AppStrings {
         'MODULE_OFFLINE' => '${_moduleName(problem.module)} não está respondendo. '
             'Verifique o cabo e a alimentação.',
         'HOME_TIMEOUT' => 'A base não chegou à posição inicial a tempo.',
+        'HOMING' => 'A base está fazendo o homing depois de ligar. '
+            'Tente de novo em alguns segundos.',
+        'SIGN_IN_REQUIRED' =>
+          'Sua sessão expirou. Entre novamente para iniciar uma ordenação.',
+        'SERVER_UNREACHABLE' =>
+          'A máquina não consegue falar com o servidor CardForge, então a '
+              'ordenação não pode ser salva na sua conta. Verifique a rede dela.',
+        'SERVER_ERROR' => 'O servidor CardForge teve um problema. Tente de novo.',
         _ => problem.message.isNotEmpty
             ? problem.message
             : 'A máquina não conseguiu iniciar (${problem.code}).',
@@ -333,6 +406,9 @@ class PtStrings extends AppStrings {
   @override
   String runResult(RunInfo run) => switch (run.status) {
         RunStatus.running => 'Ordenação em andamento.',
+        RunStatus.paused =>
+          'Pausada depois de ${cardsCount(run.cardsProcessed)}: '
+              '${faultDescription(run.errorCode)}',
         RunStatus.completed => run.cardsProcessed == 1
             ? 'Concluída: 1 carta ordenada.'
             : 'Concluída: ${run.cardsProcessed} cartas ordenadas.',
@@ -456,6 +532,102 @@ class PtStrings extends AppStrings {
   @override
   String get signInAgain => 'Entrar novamente';
 
+  // Run history and results
+  @override
+  String get runsLoadFailedTitle => 'Não foi possível carregar suas ordenações';
+  @override
+  String get runsEmptyTitle => 'Nenhuma ordenação ainda';
+  @override
+  String get runsEmptyHint =>
+      'As ordenações iniciadas nesta conta aparecem aqui quando terminam.';
+  @override
+  String get loadMore => 'Carregar mais';
+  @override
+  String runStatusLabel(RunStatus status) => switch (status) {
+        RunStatus.completed => 'Concluída',
+        RunStatus.cancelled => 'Interrompida',
+        RunStatus.failed => 'Terminou antes',
+        RunStatus.running => 'Em andamento',
+        RunStatus.paused => 'Pausada',
+        RunStatus.unknown => 'Ordenação',
+      };
+  @override
+  String dateTime(DateTime time) => '${_two(time.day)}/${_two(time.month)}/'
+      '${time.year} ${_two(time.hour)}:${_two(time.minute)}';
+  String _two(int n) => n.toString().padLeft(2, '0');
+  @override
+  String runCardsSummary(int cards, int identified) =>
+      '${cardsCount(cards)}, $identified identificadas';
+  @override
+  String get runResultsTitle => 'Resultado da ordenação';
+  @override
+  String get runLoadFailedTitle => 'Não foi possível carregar esta ordenação';
+  @override
+  String runOutcome(RunSummary run) => switch (run.status) {
+        RunStatus.completed when run.errorCode == 'BATCH_LIMIT' =>
+          'Terminou no limite do lote: ${cardsCount(run.cardsProcessed)} separadas.',
+        RunStatus.completed =>
+          'Concluída com a pilha vazia: ${cardsCount(run.cardsProcessed)} separadas.',
+        RunStatus.cancelled =>
+          'Interrompida por você depois de ${cardsCount(run.cardsProcessed)}.',
+        RunStatus.failed => switch (run.errorCode) {
+            'MODULE_OFFLINE' => 'Terminou antes: um módulo parou de responder.',
+            'INTERRUPTED' =>
+              'Terminou antes: a máquina reiniciou durante a ordenação.',
+            _ => 'Terminou antes por um erro'
+                '${run.errorCode == null ? '' : ' (${run.errorCode})'}.',
+          },
+        RunStatus.running ||
+        RunStatus.paused ||
+        RunStatus.unknown =>
+          run.message ?? '',
+      };
+  @override
+  String get identifiedLabel => 'Identificadas';
+  @override
+  String get unidentifiedLabel => 'Não identificadas';
+  @override
+  String get faceDownLabel => 'Viradas';
+  @override
+  String get cardsPerFolder => 'Cartas por pasta';
+  @override
+  String get cardsInThisRun => 'Cartas desta ordenação';
+  @override
+  String get noCardsInRun => 'Nenhuma carta foi separada nesta ordenação.';
+  @override
+  String scanOutcome(ScanOutcome outcome) => switch (outcome) {
+        ScanOutcome.identified => 'Identificada',
+        ScanOutcome.unidentified => 'Carta não identificada',
+        ScanOutcome.faceDown => 'Carta virada',
+      };
+  @override
+  String runCardDetails(RunCard card) => [
+        if (card.setCode != null)
+          '${card.setCode!.toUpperCase()} ${card.collectorNumber ?? ''}'.trim(),
+        if (card.folder != null) folderLabel(card.folder!),
+      ].join(' · ');
+
+  // CSV export
+  @override
+  String get exportTitle => 'Exportar sua coleção';
+  @override
+  String get exportHint =>
+      'Todas as suas cartas, de todas as ordenações, em um arquivo CSV: nome, '
+      'edição, número de coleção, pasta e quantidade. Abre no Excel, no '
+      'Google Planilhas e na maioria dos sites de coleção.';
+  @override
+  String get exportCsv => 'Exportar CSV';
+  @override
+  String get exportNothing =>
+      'Sua coleção está vazia: separe algumas cartas primeiro.';
+  @override
+  String get exportFileFailed => 'Não foi possível criar ou compartilhar o arquivo.';
+  @override
+  String get exportFailedTitle => 'Não foi possível exportar a coleção';
+  @override
+  String exportDone(int cards, String fileName) =>
+      '${cardsCount(cards)} exportadas para $fileName.';
+
   // Settings
   @override
   String get languageSection => 'Idioma';
@@ -482,6 +654,7 @@ class PtStrings extends AppStrings {
         AlertType.batchFinished => 'Ordenação concluída',
         AlertType.runFailed => 'Ordenação interrompida',
         AlertType.jamDetected => 'Atolamento detectado',
+        AlertType.machineFault => 'Ordenação pausada',
         AlertType.doubleFeed => 'Alimentação dupla detectada',
         AlertType.connectionLost => 'Conexão perdida',
         AlertType.machineLinked => 'Máquina vinculada',
@@ -497,9 +670,11 @@ class PtStrings extends AppStrings {
         '$name processou ${alert.cardCount ?? 0} cartas.',
       AlertType.runFailed =>
         '$name parou com um erro. Abra o controle da máquina para ver os detalhes.',
-      AlertType.jamDetected =>
-        '$name parou: nenhuma carta chegou à plataforma. Remova o atolamento '
-            'e inicie de novo.',
+      AlertType.jamDetected => '$name pausou às ${_hms(alert.createdAt)}: '
+          'nenhuma carta chegou à plataforma. Remova o atolamento e toque em '
+          'Retomar.',
+      AlertType.machineFault => '$name pausou às ${_hms(alert.createdAt)}: '
+          '${faultDescription(alert.faultCode)} Resolva e toque em Retomar.',
       AlertType.doubleFeed => '$name puxou duas cartas ao mesmo tempo.',
       AlertType.connectionLost =>
         'Contato com $name perdido. O app continua tentando reconectar.',

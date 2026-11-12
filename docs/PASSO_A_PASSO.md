@@ -70,8 +70,9 @@ python -m cardforge.cv sync
 python -m pytest -q
 ```
 
-**Esperado:** `101 passed`. Os testes usam os Arduinos simulados; `test_integration` e `test_calibration` também rodam
-a visão de verdade sobre fotos de `input_cartas/`.
+**Esperado:** `115 passed` e alguns `skipped`. Os testes usam os Arduinos simulados; `test_integration` e
+`test_calibration` também rodam a visão de verdade sobre fotos de `input_cartas/`. Os pulados são os do servidor e
+do banco (PostgreSQL); para rodá-los veja **A8**.
 
 ### A3. Subir o sistema completo simulado
 
@@ -172,7 +173,39 @@ flutter run --dart-define-from-file=.env
 
 Entre com usuário `admin` e qualquer senha (sem `MTG_APP_PASSWORD`, qualquer senha é aceita). Vincule a máquina
 simulada, abra **Machine control** e use **Start/Resume** e **Stop**; depois **Cards in folders** lista as cartas
-separadas por bin.
+separadas por bin. (Assim, sem servidor, não há cadastro, histórico nem exportação: veja A8.)
+
+### A8. Servidor CardForge + PostgreSQL (contas, histórico, coleção, CSV)
+
+1. **PostgreSQL** (uma vez). Com Docker: `docker compose -f deploy/docker-compose.postgres.yml up -d`. Sem Docker
+   (Linux): `sudo -u postgres psql -c "CREATE ROLE cardforge LOGIN PASSWORD 'cardforge' CREATEDB;"` e
+   `sudo -u postgres createdb -O cardforge cardforge`.
+2. **Dependências e testes do servidor**:
+   ```bash
+   pip install -r cardforge_server/requirements.txt
+   CF_TEST_DATABASE_URL=postgresql://cardforge:cardforge@localhost:5432/postgres python -m pytest -q
+   ```
+   **Esperado:** `140 passed` (o teste `test_end_to_end_run_is_saved_to_the_users_account` faz o caminho inteiro:
+   run simulada → `run.db` → envio → PostgreSQL → consultas do app).
+3. **Servidor** (aplica as migrações sozinho; documentação em `http://localhost:8080/docs`):
+   ```bash
+   export CF_DATABASE_URL=postgresql://cardforge:cardforge@localhost:5432/cardforge
+   export CF_TOKEN_SECRET=troque-isto-por-um-segredo-longo CF_MACHINE_TOKENS=dev-token
+   python -m cardforge_server
+   ```
+4. **Pi simulado ligado ao servidor**, em outro terminal:
+   ```bash
+   MTG_SERVER_URL=http://localhost:8080 MTG_MACHINE_TOKEN=dev-token MTG_VISION=files python -m sorter_api --simulate
+   ```
+5. **App**: no `.env`, `USE_MOCK=false`, `USE_MOCK_MACHINE=false`, `API_BASE_URL=http://<ip-do-pc>:8080` (o
+   servidor, não o Pi) e rode `flutter pub get` antes do `flutter run`. Em **Create account** crie um usuário, vincule
+   a máquina, faça uma run; ao terminar ela aparece em **Sorting runs** (toque para ver o resultado), as cartas em
+   **Cards in folders**, e **CSV report** exporta a coleção.
+6. **Queda do servidor**: pare o servidor no meio de uma run. A run termina normalmente; `GET
+   http://localhost:8000/sync/status` mostra `"failed": 1`. Suba o servidor de novo: em até alguns segundos (ou na
+   hora, com `POST /sync/now`) fica `"synced"` e a run aparece no app, sem cartas duplicadas.
+
+Sem `MTG_SERVER_URL`, o Start do Pi não pede login (como antes) e as runs ficam só no `run.db`.
 
 ---
 
@@ -421,14 +454,18 @@ journalctl -u sorter-api -f
 
 ### F2. App
 
-No `.env` do app: `USE_MOCK=false`, `API_BASE_URL=http://<ip-do-pi>:8000`. Login: usuário `admin`, senha de
-`MTG_APP_PASSWORD`. Start/Resume, Stop e Cards in folders funcionam; uma run pausada por falha aparece como
-*stopped* e Start/Resume a retoma.
+Com o servidor CardForge (recomendado, [SERVER.md](SERVER.md)): no Pi, `MTG_SERVER_URL` e `MTG_MACHINE_TOKEN`
+no serviço; no `.env` do app, `USE_MOCK=false` e `API_BASE_URL=http://<ip-do-servidor>:8080`. Cada usuário cria a
+sua conta no app; a run fica na conta de quem apertou Start.
+
+Sem servidor: `API_BASE_URL=http://<ip-do-pi>:8000`, usuário `admin`, senha de `MTG_APP_PASSWORD`. Start/Resume,
+Stop e Cards in folders funcionam; uma run pausada por falha aparece como *stopped* e Start/Resume a retoma.
 
 ### F3. Depois de cada run
 
-Esvazie os bins (o Start recusa bins com cartas), e consulte os resultados em `/runs/<run_id>` ou exporte
-`/inventory/export.csv`.
+Esvazie os bins (o Start recusa bins com cartas). Os resultados ficam no app (**Sorting runs**, **CSV report**);
+no Pi, `GET /sync/status` diz se a run já foi enviada ao servidor, e `/runs/<run_id>` e `/inventory/export.csv`
+continuam como visão local da máquina.
 
 ---
 

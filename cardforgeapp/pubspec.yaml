@@ -20,6 +20,10 @@ dependencies:
   # BLE for the machine setup. Free for educational use (License.nonprofit).
   flutter_blue_plus: ^2.3.4
   web_socket_channel: ^3.0.3
+  # CSV export (RF24): temporary file + system share sheet.
+  cross_file: ^0.3.4
+  path_provider: ^2.1.4
+  share_plus: ^13.0.0
 
 dev_dependencies:
   flutter_test:

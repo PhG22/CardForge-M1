@@ -14,21 +14,28 @@ List<int> _ints(Object? v) =>
     v is List ? v.whereType<num>().map((n) => n.toInt()).toList() : const [];
 
 /// What the API's controller is doing (`state` in GET /run/status).
-enum ControllerState { idle, starting, running, stopping, unknown }
+///
+/// [paused]: a fault (feed jam, stuck card, base) holds the run until Resume
+/// (POST /run/resume) or Stop. [manual]: the base is moving outside a run (a
+/// test move, or the homing right after the machine is switched on).
+enum ControllerState { idle, starting, running, stopping, paused, manual, unknown }
 
-/// Status of a run (`run.status`).
-enum RunStatus { running, completed, failed, cancelled, unknown }
+/// Status of a run (`run.status`). [paused] = held by a fault, see above.
+enum RunStatus { running, paused, completed, failed, cancelled, unknown }
 
 ControllerState _controllerState(Object? v) => switch (v) {
       'idle' => ControllerState.idle,
       'starting' => ControllerState.starting,
       'running' => ControllerState.running,
       'stopping' => ControllerState.stopping,
+      'paused' => ControllerState.paused,
+      'manual' => ControllerState.manual,
       _ => ControllerState.unknown,
     };
 
 RunStatus _runStatus(Object? v) => switch (v) {
       'running' => RunStatus.running,
+      'paused' => RunStatus.paused,
       'completed' => RunStatus.completed,
       'failed' => RunStatus.failed,
       'cancelled' => RunStatus.cancelled,
@@ -69,6 +76,7 @@ class RunInfo {
     this.currentTray,
     this.errorCode,
     this.message,
+    this.faultAt,
   });
 
   factory RunInfo.fromJson(Map<String, Object?> json) => RunInfo(
@@ -80,6 +88,7 @@ class RunInfo {
         currentTray: _int(json['current_tray']),
         errorCode: _str(json['error_code']),
         message: _str(json['message']),
+        faultAt: _date(json['fault_at']),
       );
 
   final String runId;
@@ -91,11 +100,14 @@ class RunInfo {
   /// Tray of the last card (null in top-only mode or before the first card).
   final int? currentTray;
 
-  /// Why the run failed, e.g. `FEED_TIMEOUT`.
+  /// Why the run failed or is paused, e.g. `FEED_TIMEOUT`.
   final String? errorCode;
 
   /// The API's own message (English).
   final String? message;
+
+  /// When the fault that paused the run happened (machine clock).
+  final DateTime? faultAt;
 
   RunInfo withCard({required int cardsProcessed, int? tray}) => RunInfo(
         runId: runId,
@@ -106,6 +118,7 @@ class RunInfo {
         currentTray: tray ?? currentTray,
         errorCode: errorCode,
         message: message,
+        faultAt: faultAt,
       );
 }
 
@@ -358,6 +371,15 @@ sealed class MachineEvent {
         );
       case 'run_finished' when run != null:
         return RunFinishedEvent(RunInfo.fromJson(run), _str(json['message']));
+      case 'fault':
+        return FaultEvent(
+          code: _str(json['fault']) ?? 'UNKNOWN',
+          time: _date(json['time']),
+          message: _str(json['message']),
+          run: run == null ? null : RunInfo.fromJson(run),
+        );
+      case 'run_resumed' when run != null:
+        return RunResumedEvent(RunInfo.fromJson(run));
       default:
         return UnknownMachineEvent(_str(json['type']));
     }
@@ -398,6 +420,23 @@ class RunFinishedEvent extends MachineEvent {
   const RunFinishedEvent(this.run, this.message);
   final RunInfo run;
   final String? message;
+}
+
+/// A fault paused the run (RF27): the motors are stopped and the run waits
+/// for Resume or Stop. [code] is e.g. `FEED_TIMEOUT`, `DROP_FAILED`,
+/// `MOVE_TIMEOUT`.
+class FaultEvent extends MachineEvent {
+  const FaultEvent({required this.code, this.time, this.message, this.run});
+  final String code;
+  final DateTime? time;
+  final String? message;
+  final RunInfo? run;
+}
+
+/// The paused run continues after Resume.
+class RunResumedEvent extends MachineEvent {
+  const RunResumedEvent(this.run);
+  final RunInfo run;
 }
 
 class UnknownMachineEvent extends MachineEvent {

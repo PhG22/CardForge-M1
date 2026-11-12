@@ -7,6 +7,7 @@ import '../../features/cards/card_models.dart';
 import '../../features/machine/api/machine_api_models.dart';
 import '../../features/machine/machine_controller.dart';
 import '../../features/machine/machine_models.dart';
+import '../../features/runs/run_models.dart';
 import 'strings_en.dart';
 import 'strings_pt.dart';
 
@@ -57,12 +58,23 @@ abstract class AppStrings {
   String get newHere;
   String get createAccount;
   String get passwordRecoverySoon;
-  String get signUpSoon;
   String get usernameRequired;
   String get invalidEmail;
   String get passwordRequired;
   String get passwordTooShort;
   String authError(AuthFailure failure);
+
+  // Sign-up
+  String get signUpSubtitle;
+  String get username;
+  String get email;
+  String get confirmPassword;
+  String get chooseUsername;
+  String get usernameRules;
+  String get emailRequired;
+  String get newPasswordTooShort;
+  String get passwordsDoNotMatch;
+  String get alreadyHaveAccount;
 
   // Home and menu
   String get noMachineTitle;
@@ -70,6 +82,7 @@ abstract class AppStrings {
   String get machineLinkedBody;
   String get menuMachineControl;
   String get menuCardsInFolders;
+  String get menuRuns;
   String get menuCsvReport;
   String get menuSortingRules;
   String get linkMachine;
@@ -128,6 +141,11 @@ abstract class AppStrings {
   String get startSorting;
   String get startingHint;
   String get stopSorting;
+  String get resumeSorting;
+  String get resumingHint;
+  String get resumeProblemsTitle;
+  String get pausedHint;
+  String faultDescription(String? code);
   String get emergencyStop;
   String get startProblemsTitle;
   String startProblem(StartProblem problem);
@@ -178,6 +196,35 @@ abstract class AppStrings {
   String get cardsLoadFailedTitle;
   String cardsFailure(CardsFailure failure);
   String get signInAgain;
+
+  // Run history and results (RF22)
+  String get runsLoadFailedTitle;
+  String get runsEmptyTitle;
+  String get runsEmptyHint;
+  String get loadMore;
+  String runStatusLabel(RunStatus status);
+  String dateTime(DateTime time);
+  String runCardsSummary(int cards, int identified);
+  String get runResultsTitle;
+  String get runLoadFailedTitle;
+  String runOutcome(RunSummary run);
+  String get identifiedLabel;
+  String get unidentifiedLabel;
+  String get faceDownLabel;
+  String get cardsPerFolder;
+  String get cardsInThisRun;
+  String get noCardsInRun;
+  String scanOutcome(ScanOutcome outcome);
+  String runCardDetails(RunCard card);
+
+  // CSV export (RF24)
+  String get exportTitle;
+  String get exportHint;
+  String get exportCsv;
+  String get exportNothing;
+  String get exportFileFailed;
+  String get exportFailedTitle;
+  String exportDone(int cards, String fileName);
 
   // Settings
   String get languageSection;

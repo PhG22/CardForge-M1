@@ -1,0 +1,8 @@
+# CardForge server (python -m cardforge_server). Python 3.11+. Runs anywhere PostgreSQL is reachable
+# (a laptop, a VM, or the Raspberry Pi itself); see docs/SERVER.md.
+fastapi>=0.110
+uvicorn[standard]>=0.27
+psycopg[binary]>=3.1
+psycopg-pool>=3.2
+argon2-cffi>=23.1
+PyJWT>=2.8

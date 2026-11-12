@@ -44,6 +44,7 @@ class Settings:
     card_fall_s: float = 0.5            # after the platform IR clears, before closing the flap
     feed_timeout_s: float = 10.0        # Arduino gives up feeding after this (~33 feed steps)
     home_timeout_s: float = 40.0        # Arduino gives up homing after this (gentle ramp: ~20 s)
+    home_on_power_on: bool = True       # RF08: home the base when the service starts (and again at every Start)
     move_timeout_s: float = 15.0        # Pi gives up waiting for GOTO / MOVE after this
     base_steps_per_turn: int = 12800    # for /base/move with degrees (measured: 4:1 gearing)
     poll_interval_s: float = 0.1        # STATUS polling period while a module is BUSY
@@ -79,7 +80,17 @@ class Settings:
     max_cards_per_run: int = 250        # RNF27: a batch never exceeds one full feed load
     run_db: str = "data/run.db"         # local_run / local_cards (RF19, RNF19)
 
-    # --- app sign-in (POST /auth/login). Empty password = any credentials are accepted.
+    # --- CardForge server (cardforge_server/, docs/SERVER.md): accounts + PostgreSQL.
+    # With server_url set, Start needs the app user's token (checked with the server) and
+    # every finished run is uploaded by the SyncWorker. Empty = runs stay on the Pi only.
+    server_url: str = ""                # e.g. http://192.168.0.10:8080
+    machine_token: str = ""             # one of the server's CF_MACHINE_TOKENS
+    server_timeout_s: float = 5.0
+    sync_interval_s: float = 60.0       # how often to look for runs still to upload
+    sync_retry_max_s: float = 900.0     # longest wait between two failed uploads of a run
+
+    # --- app sign-in on the Pi itself (app_compat.py), only WITHOUT a server.
+    # POST /auth/login: empty password = any credentials are accepted.
     app_username: str = "admin"
     app_password: str = ""
 

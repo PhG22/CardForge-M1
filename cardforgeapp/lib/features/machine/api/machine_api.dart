@@ -5,6 +5,7 @@ import 'package:http/http.dart' as http;
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 import '../../../core/config/app_config.dart';
+import '../../auth/auth_service.dart';
 import '../machine_models.dart';
 import 'machine_api_models.dart';
 
@@ -19,11 +20,18 @@ abstract class MachineApi {
   /// GET /run/status
   Future<MachineSnapshot> runStatus();
 
-  /// POST /run/start. Blocks while the base homes (up to ~40 s). A 409
-  /// carries every [StartProblem] at once.
+  /// POST /run/start with the signed-in user's token, so the machine saves
+  /// the run (and its cards) to that account. Blocks while the base homes (up
+  /// to ~40 s). A refusal carries every [StartProblem] at once.
   Future<RunInfo> startRun();
 
-  /// POST /run/stop (or `?immediate=true`, the emergency stop).
+  /// POST /run/resume: continue a run paused by a fault, once the user fixed
+  /// it. The machine homes the base again first (up to ~40 s). A refusal
+  /// (e.g. a card still on the platform) carries its [StartProblem]s.
+  Future<RunInfo> resumeRun();
+
+  /// POST /run/stop (or `?immediate=true`, the emergency stop). Also ends a
+  /// paused run.
   Future<RunInfo?> stopRun({bool immediate = false});
 
   /// GET /hardware/status
@@ -56,12 +64,17 @@ class HttpMachineApi implements MachineApi {
     this.address, {
     http.Client? client,
     WebSocketChannel Function(Uri uri)? connectSocket,
+    Future<String?> Function()? tokenProvider,
   })  : _client = client ?? http.Client(),
-        _connectSocket = connectSocket ?? WebSocketChannel.connect;
+        _connectSocket = connectSocket ?? WebSocketChannel.connect,
+        _tokenProvider = tokenProvider ?? AuthService.instance.accessToken;
 
   final MachineAddress address;
   final http.Client _client;
   final WebSocketChannel Function(Uri uri) _connectSocket;
+
+  /// The user's server token, sent with POST /run/start.
+  final Future<String?> Function() _tokenProvider;
 
   Uri _uri(String path, [Map<String, String>? query]) =>
       address.baseUri.replace(path: path, queryParameters: query);
@@ -80,6 +93,21 @@ class HttpMachineApi implements MachineApi {
     final json = await _request(
       'POST',
       '/run/start',
+      timeout: AppConfig.machineStartTimeout,
+      token: await _tokenProvider(),
+    );
+    final run = json['run'];
+    if (run is! Map) {
+      throw const MachineApiException(MachineApiFailure.badResponse);
+    }
+    return RunInfo.fromJson(run.cast<String, Object?>());
+  }
+
+  @override
+  Future<RunInfo> resumeRun() async {
+    final json = await _request(
+      'POST',
+      '/run/resume',
       timeout: AppConfig.machineStartTimeout,
     );
     final run = json['run'];
@@ -183,9 +211,11 @@ class HttpMachineApi implements MachineApi {
     String path, {
     Map<String, String>? query,
     Duration? timeout,
+    String? token,
   }) async {
     final request = http.Request(method, _uri(path, query))
       ..headers['Accept'] = 'application/json';
+    if (token != null) request.headers['Authorization'] = 'Bearer $token';
     final http.Response res;
     try {
       res = await http.Response.fromStream(

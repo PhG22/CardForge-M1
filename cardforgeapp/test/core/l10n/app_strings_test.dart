@@ -86,6 +86,9 @@ void main() {
           'START_CANCELLED',
           'MODULE_OFFLINE',
           'HOME_TIMEOUT',
+          'HOMING',
+          'SIGN_IN_REQUIRED',
+          'SERVER_UNREACHABLE',
         ]) {
           final text = strings.startProblem(
               StartProblem(code: code, message: 'raw', trays: const [2, 5]));

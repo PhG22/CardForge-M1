@@ -13,7 +13,7 @@ def fast_settings(**overrides) -> Settings:
     s = Settings(simulate=True, sim_time_scale=0.02, identify_delay_s=0.01, flap_settle_s=0.01,
                  card_fall_s=0.01, poll_interval_s=0.005, base_poll_interval_s=0.005,
                  home_poll_interval_s=0.005, feed_timeout_s=0.5, drop_timeout_s=0.5,
-                 sim_stack_cards=3, reply_timeout=0.1, run_db=":memory:", cleanup_dirs="")
+                 sim_stack_cards=3, reply_timeout=0.1, run_db=":memory:", home_on_power_on=False, cleanup_dirs="")
     for k, v in overrides.items():
         setattr(s, k, v)
     return s
@@ -307,3 +307,44 @@ def test_api_leaves_the_base_alone_while_it_moves():
         cmds = world.bottom.executed
         assert cmds[0] == "GOTO 1"
         assert cmds[1:] == ["STATUS"]        # one check after the reported time, nothing during the move
+
+
+# ---------------------------------------------------------------- RF08: homing at power-on
+
+def test_base_is_homed_when_the_service_starts():
+    with TestClient(create_app(fast_settings(home_on_power_on=True))) as c:
+        deadline = time.monotonic() + 5
+        while not c.get("/sim/state").json()["base_homed"]:
+            assert time.monotonic() < deadline, "the base was not homed at power-on"
+            time.sleep(0.01)
+        wait_until_idle(c)
+        assert c.get("/base/status").json()["base"]["position"] == 3
+        assert c.post("/run/start").status_code == 200          # Start works (and homes again)
+
+
+def test_start_during_power_on_homing_says_so():
+    with TestClient(create_app(fast_settings(home_on_power_on=True, sim_time_scale=0.3))) as c:
+        r = c.post("/run/start")
+        assert r.status_code == 409
+        assert r.json()["problems"][0]["code"] == "HOMING"
+        wait_until_idle(c, timeout=20)
+        assert c.get("/sim/state").json()["base_homed"] is True
+        assert c.post("/run/start").status_code == 200
+
+
+def test_top_only_bench_does_not_home_at_power_on():
+    with TestClient(create_app(fast_settings(home_on_power_on=True, bottom_enabled=False))) as c:
+        assert c.get("/run/status").json()["state"] == "idle"
+        assert c.post("/run/start").status_code == 200
+
+
+def test_service_starts_even_if_the_base_does_not_answer_at_power_on():
+    from sorter_api.sim import SimSerialPort, SimWorld
+
+    world = SimWorld(stack_cards=2, time_scale=0.02)
+    world.set_state(offline_modules=["A2"])
+    settings = fast_settings(home_on_power_on=True)
+    with TestClient(create_app(settings, serial_port=SimSerialPort(world))) as c:
+        wait_until_idle(c)                                        # homing gave up, the API answers
+        r = c.post("/run/start")
+        assert r.status_code == 503 and r.json()["problems"][0]["code"] == "MODULE_OFFLINE"

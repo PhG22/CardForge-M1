@@ -34,8 +34,11 @@ void main() {
 
     expect(inList('Card jam detected'), findsOneWidget);
     expect(
-        inList('CardForge-A1B2 stopped: no card reached the platform. '
-            'Clear the jam and start again.'),
+        find.descendant(
+          of: find.byType(ListView),
+          matching: find.textContaining(
+              'no card reached the platform. Clear the jam, then press Resume.'),
+        ),
         findsOneWidget);
     expect(inList('Machine connected to Wi-Fi'), findsOneWidget);
 

@@ -39,8 +39,8 @@ class SortedCard {
 ///
 /// - Connects as soon as a machine with an address is linked, and keeps the
 ///   WebSocket (`/ws/events`) open, reconnecting when it drops.
-/// - Keeps the run state up to date and raises alerts (run finished, jam,
-///   connection lost) whatever screen is open.
+/// - Keeps the run state up to date and raises alerts (run finished, a fault
+///   that paused the run, connection lost) whatever screen is open (RF27).
 /// - Runs the commands of the Machine control screen.
 class MachineController extends ChangeNotifier {
   MachineController({
@@ -73,6 +73,7 @@ class MachineController extends ChangeNotifier {
   List<SortedCard> recentCards = const [];
 
   bool isStarting = false;
+  bool isResuming = false;
   bool isStopping = false;
   List<StartProblem> startProblems = const [];
   MachineApiException? actionError;
@@ -97,6 +98,7 @@ class MachineController extends ChangeNotifier {
   bool _disposed = false;
   String? _runningRunId; // to notice a run that ended while we were offline
   final Set<String> _alertedRuns = {};
+  final Set<String> _alertedFaults = {}; // "<run id>@<fault time>": one alert per fault
 
   LinkedMachine? get machine => _store.machine;
 
@@ -112,15 +114,39 @@ class MachineController extends ChangeNotifier {
       state == ControllerState.running ||
       state == ControllerState.stopping;
 
-  bool get canStart => isOnline && !isBusy && !isStopping && !isMovingBase;
+  /// A fault holds the run: the motors are stopped until Resume or Stop.
+  bool get isPaused => state == ControllerState.paused;
 
-  /// Stopping is allowed while starting too: the API cancels the start.
-  bool get canStop => isOnline && isBusy && !isStopping;
+  /// The base is moving outside a run (a test move, or the homing right
+  /// after the machine is switched on).
+  bool get isMachineMovingBase => state == ControllerState.manual;
+
+  bool get canStart =>
+      isOnline &&
+      !isBusy &&
+      !isPaused &&
+      !isMachineMovingBase &&
+      !isStopping &&
+      !isMovingBase;
+
+  /// RF26: continue the paused run once the problem is fixed.
+  bool get canResume => isOnline && isPaused && !isResuming && !isStopping;
+
+  /// Stopping is allowed while starting too (the API cancels the start), and
+  /// while paused (it ends the run).
+  bool get canStop =>
+      isOnline && (isBusy || isPaused) && !isStopping && !isResuming;
 
   /// False in top-only mode: no base, no trays.
   bool get bottomEnabled => health?.bottomEnabled ?? true;
 
-  bool get canMoveBase => isOnline && bottomEnabled && !isBusy && !isMovingBase;
+  bool get canMoveBase =>
+      isOnline &&
+      bottomEnabled &&
+      !isBusy &&
+      !isPaused &&
+      !isMachineMovingBase &&
+      !isMovingBase;
 
   /// Starts following the linked machine. Called once by the app.
   void start() {
@@ -194,7 +220,7 @@ class MachineController extends ChangeNotifier {
 
   void _onEventsClosed(int generation) {
     if (generation != _generation || _disposed) return;
-    _goOffline(generation, wasRunning: isBusy);
+    _goOffline(generation, wasRunning: isBusy || isPaused);
   }
 
   void _goOffline(int generation, {required bool wasRunning}) {
@@ -251,6 +277,25 @@ class MachineController extends ChangeNotifier {
         ].take(recentCardsLimit).toList();
       case RunFinishedEvent(:final run):
         _applySnapshot(MachineSnapshot(state: ControllerState.idle, run: run));
+      case final FaultEvent fault:
+        final current = run;
+        final paused = fault.run ??
+            (current == null
+                ? null
+                : RunInfo(
+                    runId: current.runId,
+                    status: RunStatus.paused,
+                    startedAt: current.startedAt,
+                    cardsProcessed: current.cardsProcessed,
+                    errorCode: fault.code,
+                    message: fault.message,
+                    faultAt: fault.time,
+                  ));
+        _applySnapshot(
+            MachineSnapshot(state: ControllerState.paused, run: paused));
+        if (paused == null) _alertFault(null, fault.code, fault.time);
+      case RunResumedEvent(:final run):
+        _applySnapshot(MachineSnapshot(state: ControllerState.running, run: run));
       case UnknownMachineEvent():
         return;
     }
@@ -261,12 +306,30 @@ class MachineController extends ChangeNotifier {
     snapshot = next;
     final run = next.run;
     if (run == null) return;
-    if (run.status == RunStatus.running) {
+    if (run.status == RunStatus.running || run.status == RunStatus.paused) {
       _runningRunId = run.runId;
+      // A pause seen live (fault event) or on reconnect (snapshot): one alert.
+      if (run.status == RunStatus.paused) {
+        _alertFault(run.runId, run.errorCode, run.faultAt);
+      }
     } else if (_runningRunId == run.runId) {
       _runningRunId = null;
       _alertRunEnd(run);
     }
+  }
+
+  /// RF27: alert a fault that paused the run, with its type (the code) and
+  /// time (the alert's). A feed jam has its own alert type.
+  void _alertFault(String? runId, String? code, DateTime? at) {
+    final key = '${runId ?? '?'}@${at?.toIso8601String() ?? code}';
+    if (!_alertedFaults.add(key)) return;
+    final jam = code == 'FEED_TIMEOUT' || code == 'FEED_FAILED';
+    _alerts.add(
+      jam ? AlertType.jamDetected : AlertType.machineFault,
+      machineName: machine?.name,
+      cardCount: run?.cardsProcessed,
+      faultCode: code,
+    );
   }
 
   /// One alert per finished run, even if both the event and a snapshot say so.
@@ -285,7 +348,10 @@ class MachineController extends ChangeNotifier {
           machineName: name,
           cardCount: run.cardsProcessed,
         );
-      case RunStatus.cancelled || RunStatus.running || RunStatus.unknown:
+      case RunStatus.cancelled ||
+            RunStatus.running ||
+            RunStatus.paused ||
+            RunStatus.unknown:
         break; // the user stopped it: no alert needed
     }
   }
@@ -311,6 +377,30 @@ class MachineController extends ChangeNotifier {
       }
     } finally {
       isStarting = false;
+      _notify();
+    }
+  }
+
+  /// RF26: continue a run paused by a fault. The machine homes the base again
+  /// first; a refusal (e.g. a card still on the platform) lists its reasons.
+  Future<void> resumeRun() async {
+    final api = _api;
+    if (api == null || !canResume) return;
+    isResuming = true;
+    startProblems = const [];
+    actionError = null;
+    _notify();
+    try {
+      final run = await api.resumeRun();
+      _applySnapshot(MachineSnapshot(state: ControllerState.running, run: run));
+    } on MachineApiException catch (e) {
+      if (e.problems.isNotEmpty) {
+        startProblems = e.problems;
+      } else {
+        actionError = e;
+      }
+    } finally {
+      isResuming = false;
       _notify();
     }
   }

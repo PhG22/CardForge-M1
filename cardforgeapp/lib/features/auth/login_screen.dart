@@ -10,6 +10,7 @@ import 'auth_service.dart';
 
 /// Screen 2 - Authentication.
 /// Username/email + password, "Remember me" and Google sign-in.
+/// "Create account" opens the sign-up screen.
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
 
@@ -201,9 +202,8 @@ class _LoginScreenState extends State<LoginScreen> {
                       children: [
                         Text(l10n.newHere, style: text.bodyMedium),
                         TextButton(
-                          onPressed: _loading
-                              ? null
-                              : () => _showMessage(l10n.signUpSoon),
+                          onPressed:
+                              _loading ? null : () => context.push('/signup'),
                           child: Text(l10n.createAccount),
                         ),
                       ],

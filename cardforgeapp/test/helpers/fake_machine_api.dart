@@ -24,6 +24,9 @@ class FakeMachineApi implements MachineApi {
   /// When set, startRun waits for it (to test the "Preparing…" state).
   Completer<void>? startGate;
 
+  /// When set, the next resumeRun throws it.
+  MachineApiException? resumeError;
+
   HardwareStatus hardware = const HardwareStatus(
     top: TopModuleStatus(
       online: true,
@@ -80,6 +83,33 @@ class FakeMachineApi implements MachineApi {
     snapshot = MachineSnapshot(state: ControllerState.running, run: run);
     return run;
   }
+
+  @override
+  Future<RunInfo> resumeRun() async {
+    _check('resumeRun');
+    final error = resumeError;
+    if (error != null) {
+      resumeError = null;
+      throw error;
+    }
+    final run = RunInfo(
+      runId: snapshot.run?.runId ?? 'run-1',
+      status: RunStatus.running,
+      cardsProcessed: snapshot.run?.cardsProcessed ?? 0,
+    );
+    snapshot = MachineSnapshot(state: ControllerState.running, run: run);
+    return run;
+  }
+
+  /// A run paused by a fault, as GET /run/status reports it.
+  static RunInfo pausedRun({int cards = 3, String code = 'FEED_TIMEOUT'}) =>
+      RunInfo(
+        runId: 'run-1',
+        status: RunStatus.paused,
+        cardsProcessed: cards,
+        errorCode: code,
+        faultAt: DateTime.utc(2026, 11, 11, 20, 15, 3),
+      );
 
   @override
   Future<RunInfo?> stopRun({bool immediate = false}) async {

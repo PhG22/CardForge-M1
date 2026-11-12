@@ -126,8 +126,9 @@ class _HomeDrawer extends StatelessWidget {
     // (icon, label, route). A null route means "not built yet".
     final items = <(IconData, String, String?)>[
       (Icons.precision_manufacturing_outlined, l10n.menuMachineControl, '/machine'),
+      (Icons.history_rounded, l10n.menuRuns, '/runs'),
       (Icons.folder_copy_outlined, l10n.menuCardsInFolders, '/cards'),
-      (Icons.table_chart_outlined, l10n.menuCsvReport, null),
+      (Icons.table_chart_outlined, l10n.menuCsvReport, '/export'),
       (Icons.rule_folder_outlined, l10n.menuSortingRules, null),
       (Icons.link_rounded, l10n.linkMachine, '/link-machine'),
       (Icons.notifications_outlined, l10n.alerts, '/alerts'),

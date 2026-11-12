@@ -35,6 +35,7 @@ import logging
 import threading
 import time
 import uuid
+from collections.abc import Callable
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -50,7 +51,7 @@ from .modules import BottomModule, ModuleState, TopModule
 from .protocol import FrameError
 from .sorting import OVERFLOW_TRAY
 from .status_led import MemoryLedDriver, StatusLed
-from .store import RunStore, ScanRecord
+from .store import Owner, RunStore, ScanRecord
 
 log = logging.getLogger(__name__)
 
@@ -144,6 +145,7 @@ class RunInfo:
     error_code: str | None = None
     message: str | None = None
     fault_at: str | None = None     # when the run was paused by a fault
+    owner: str | None = None        # username of the app user who started it (server mode)
 
     def to_dict(self) -> dict:
         active = self.status in (RunStatus.RUNNING, RunStatus.PAUSED)
@@ -158,6 +160,7 @@ class RunInfo:
             "error_code": self.error_code,
             "message": self.message,
             "fault_at": self.fault_at,
+            "owner": self.owner,
         }
 
 
@@ -171,7 +174,9 @@ class SorterController:
         settings: Settings,
         store: RunStore | None = None,
         status_led: StatusLed | None = None,
+        on_run_finished: Callable[[], None] | None = None,
     ) -> None:
+        """on_run_finished: called after a finished run is saved in run.db (wakes the SyncWorker)."""
         self.top = top
         self.bottom = bottom
         self.identifier = identifier
@@ -179,6 +184,7 @@ class SorterController:
         self.s = settings
         self.store = store
         self.led = status_led if status_led is not None else StatusLed(MemoryLedDriver())
+        self._on_run_finished = on_run_finished
         self._lock = threading.Lock()
         self._state = ControllerState.IDLE
         self._stop_requested = threading.Event()   # normal stop (also set by an immediate stop)
@@ -187,6 +193,8 @@ class SorterController:
         self._run: RunInfo | None = None           # current or last run
         self._in_progress: Identification | None = None   # identified card not dropped yet
         self._optional_ok = {"LIGHT": True}  # does the A1 firmware support the optional LIGHT command?
+        self._power_on_homing = threading.Event()   # set while the base homes after the service start (RF08)
+        self._homing_thread: threading.Thread | None = None
         if store is not None:
             n = store.recover_interrupted(utc_now())
             if n:
@@ -210,11 +218,15 @@ class SorterController:
         with self._lock:
             return self._state
 
-    def start(self) -> RunInfo:
+    def start(self, owner: Owner | None = None) -> RunInfo:
         """Prepare the modules and check the start conditions; if they pass,
-        launch the sorting loop in the background and return."""
+        launch the sorting loop in the background and return.
+        owner: the app user the run and its cards belong to (None without a server)."""
         with self._lock:
             if self._state is not ControllerState.IDLE:
+                if self._power_on_homing.is_set():
+                    raise StartRefused(409, [Problem(
+                        "HOMING", "The base is homing after power-on. Try again in a few seconds.")])
                 raise StartRefused(409, [Problem(
                     "RUN_ACTIVE", f"Cannot start: the sorter is busy ({self._state.value}).")])
             self._state = ControllerState.STARTING
@@ -229,14 +241,14 @@ class SorterController:
             raise StartRefused(409, problems)
 
         run = RunInfo(run_id=str(uuid.uuid4()), status=RunStatus.RUNNING, started_at=utc_now(),
-                      message="Run started.")
+                      message="Run started.", owner=owner.username if owner else None)
         self.identifier.reset()
         with self._lock:
             if self._stop_requested.is_set():          # stop arrived right after the checks
                 self._state = ControllerState.IDLE
                 raise StartRefused(409, [Problem("START_CANCELLED", "Start was cancelled by a stop request.")])
             if self.store is not None:
-                self.store.create_run(run.run_id, run.started_at)
+                self.store.create_run(run.run_id, run.started_at, owner)
             self._run = run
             self._launch(run)
         self.events.publish({"type": "run_started", "run": run.to_dict()})
@@ -445,18 +457,45 @@ class SorterController:
         return result
 
     def power_on(self) -> None:
-        """Service start: status LED to Idle (RF16), chamber light to its base level."""
+        """Service start: status LED to Idle (RF16), chamber light to its base level, and (RF08)
+        homing of the base in the background, so the service answers at once. Start also homes
+        again before every run."""
         self._led("IDLE")
         try:
             self._light(self.s.light_base_level)
         except (BusError, FrameError) as exc:
             log.warning("modules not reachable at power-on: %s", exc)
+        if self.s.bottom_enabled and self.s.home_on_power_on:
+            self._power_on_homing.set()
+            self._homing_thread = threading.Thread(target=self._home_at_power_on, name="power-on-homing",
+                                                   daemon=True)
+            self._homing_thread.start()
+
+    def _home_at_power_on(self) -> None:
+        started = time.monotonic()
+        try:
+            status = self.base_home()
+            log.info("base homed at power-on in %.1f s (tray %s, drift %s)", time.monotonic() - started,
+                     status.get("position"), status.get("drift"))
+        except ManualRefused as exc:            # a run or a test move got there first: it homes by itself
+            log.info("power-on homing skipped: %s", exc.message)
+        except (BusError, FrameError, HardwareFault) as exc:
+            code, message = _describe_fault(exc)
+            log.warning("base not homed at power-on (%s: %s); Start will home it", code, message)
+        finally:
+            self._power_on_homing.clear()
+
+    @property
+    def homing_at_power_on(self) -> bool:
+        return self._power_on_homing.is_set()
 
     def shutdown(self) -> None:
         try:
             self.stop(immediate=True)
         except NoActiveRun:
             pass
+        if self._homing_thread is not None:
+            self._homing_thread.join(timeout=3.0)
 
     # ------------------------------------------------------- start sequence
 
@@ -817,6 +856,11 @@ class SorterController:
         if self.store is not None:
             self.store.update_run(run.run_id, status=status.value, stopped_at=stopped_at,
                                   error_code=error_code, message=message)
+        if self._on_run_finished is not None:
+            try:
+                self._on_run_finished()
+            except Exception as exc:          # never fail a run because of the upload
+                log.warning("could not schedule the upload of run %s: %s", run.run_id, exc)
         self._cleanup()                       # before IDLE: a new run never overlaps the cleanup
         with self._lock:
             run.status = status

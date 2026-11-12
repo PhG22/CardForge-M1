@@ -9,6 +9,7 @@ IconData alertIcon(AlertType type) => switch (type) {
       AlertType.batchFinished => Icons.task_alt_rounded,
       AlertType.runFailed => Icons.error_outline_rounded,
       AlertType.jamDetected => Icons.report_problem_outlined,
+      AlertType.machineFault => Icons.pause_circle_outline_rounded,
       AlertType.doubleFeed => Icons.layers_outlined,
       AlertType.connectionLost => Icons.link_off_rounded,
       AlertType.machineLinked => Icons.link_rounded,

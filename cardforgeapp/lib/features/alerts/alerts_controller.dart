@@ -26,13 +26,19 @@ class AlertsController extends ChangeNotifier {
   /// Emits every alert as it arrives (the app shows it as a banner).
   Stream<MachineAlert> get onNewAlert => _incoming.stream;
 
-  MachineAlert add(AlertType type, {String? machineName, int? cardCount}) {
+  MachineAlert add(
+    AlertType type, {
+    String? machineName,
+    int? cardCount,
+    String? faultCode,
+  }) {
     final alert = MachineAlert(
       id: _nextId++,
       type: type,
       createdAt: _clock(),
       machineName: machineName,
       cardCount: cardCount,
+      faultCode: faultCode,
     );
     _alerts.insert(0, alert);
     notifyListeners();

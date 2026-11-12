@@ -364,7 +364,9 @@ class _RunPanel extends StatelessWidget {
             ? ControllerState.starting
             : controller.state;
     final active = controller.isBusy;
-    final showCounters = run != null && (active || run.cardsProcessed > 0);
+    final paused = controller.isPaused;
+    final showCounters =
+        run != null && (active || paused || run.cardsProcessed > 0);
 
     return MagicPanel(
       child: Column(
@@ -392,19 +394,28 @@ class _RunPanel extends StatelessWidget {
               ],
             ),
           ],
-          if (controller.isStarting) ...[
+          if (paused) ...[
+            const SizedBox(height: 16),
+            _ProblemsBox(
+              key: const ValueKey('fault-box'),
+              title: _capitalized(l10n.faultDescription(run?.errorCode)),
+              lines: [l10n.pausedHint],
+              bullets: false,
+            ),
+          ],
+          if (controller.isStarting || controller.isResuming) ...[
             const SizedBox(height: 16),
             const LinearProgressIndicator(),
             const SizedBox(height: 8),
             Text(
-              l10n.startingHint,
+              controller.isResuming ? l10n.resumingHint : l10n.startingHint,
               style: text.bodySmall?.copyWith(color: scheme.onSurfaceVariant),
             ),
           ],
           if (controller.startProblems.isNotEmpty) ...[
             const SizedBox(height: 16),
             _ProblemsBox(
-              title: l10n.startProblemsTitle,
+              title: paused ? l10n.resumeProblemsTitle : l10n.startProblemsTitle,
               lines: [
                 for (final problem in controller.startProblems)
                   l10n.startProblem(problem),
@@ -418,7 +429,10 @@ class _RunPanel extends StatelessWidget {
               style: TextStyle(color: scheme.error),
             ),
           ],
-          if (!active && run != null && run.status != RunStatus.running) ...[
+          if (!active &&
+              !paused &&
+              run != null &&
+              run.status != RunStatus.running) ...[
             const SizedBox(height: 16),
             Text(l10n.lastRun, style: text.labelLarge),
             const SizedBox(height: 4),
@@ -428,7 +442,27 @@ class _RunPanel extends StatelessWidget {
             ),
           ],
           const SizedBox(height: 20),
-          if (!active)
+          if (paused) ...[
+            // RF26: Resume after a fault; Stop ends the paused run.
+            FilledButton.icon(
+              onPressed: controller.canResume ? controller.resumeRun : null,
+              icon: controller.isResuming
+                  ? const SizedBox(
+                      width: 20,
+                      height: 20,
+                      child: CircularProgressIndicator(
+                          strokeWidth: 2.5, color: MagicColors.background),
+                    )
+                  : const Icon(Icons.play_arrow_rounded),
+              label: Text(l10n.resumeSorting),
+            ),
+            const SizedBox(height: 12),
+            OutlinedButton.icon(
+              onPressed: controller.canStop ? controller.stopRun : null,
+              icon: const Icon(Icons.stop_rounded),
+              label: Text(l10n.stopSorting),
+            ),
+          ] else if (!active)
             FilledButton.icon(
               onPressed: controller.canStart ? controller.startRun : null,
               icon: const Icon(Icons.play_arrow_rounded),
@@ -488,11 +522,20 @@ class _Counter extends StatelessWidget {
   }
 }
 
+String _capitalized(String text) =>
+    text.isEmpty ? text : text[0].toUpperCase() + text.substring(1);
+
 class _ProblemsBox extends StatelessWidget {
-  const _ProblemsBox({required this.title, required this.lines});
+  const _ProblemsBox({
+    super.key,
+    required this.title,
+    required this.lines,
+    this.bullets = true,
+  });
 
   final String title;
   final List<String> lines;
+  final bool bullets;
 
   @override
   Widget build(BuildContext context) {
@@ -517,7 +560,7 @@ class _ProblemsBox extends StatelessWidget {
           for (final line in lines)
             Padding(
               padding: const EdgeInsets.only(top: 8),
-              child: Text('• $line', style: text.bodyMedium),
+              child: Text(bullets ? '• $line' : line, style: text.bodyMedium),
             ),
         ],
       ),

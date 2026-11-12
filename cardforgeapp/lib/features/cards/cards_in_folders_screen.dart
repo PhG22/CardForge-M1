@@ -64,7 +64,16 @@ class _CardsInFoldersScreenState extends State<CardsInFoldersScreen> {
     return MagicScaffold(
       showOrbs: false,
       showSymbols: true,
-      appBar: AppBar(title: Text(l10n.menuCardsInFolders)),
+      appBar: AppBar(
+        title: Text(l10n.menuCardsInFolders),
+        actions: [
+          IconButton(
+            tooltip: l10n.exportCsv,
+            icon: const Icon(Icons.ios_share_rounded),
+            onPressed: () => context.push('/export'),
+          ),
+        ],
+      ),
       body: Column(
         children: [
           Padding(

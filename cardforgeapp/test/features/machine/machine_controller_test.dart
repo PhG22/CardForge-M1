@@ -250,4 +250,102 @@ void main() {
     expect(store.machine, isNull);
     expect(api.closed, 1);
   });
+
+  // ------------------------------------------------- RF26 / RF27: faults
+
+  test('a fault pauses the run and raises one alert with its type', () async {
+    final controller = await start();
+    api.emit(RunStartedEvent(FakeMachineApi.runningRun(cards: 2)));
+    await pumpEventQueue();
+
+    final paused = FakeMachineApi.pausedRun(cards: 2, code: 'DROP_FAILED');
+    api.emit(FaultEvent(
+        code: 'DROP_FAILED', time: paused.faultAt, run: paused));
+    // The same fault again in a snapshot (e.g. after a reconnect): no new alert.
+    api.emit(SnapshotEvent(
+        MachineSnapshot(state: ControllerState.paused, run: paused)));
+    await pumpEventQueue();
+
+    expect(controller.isPaused, isTrue);
+    expect(controller.isBusy, isFalse);
+    expect(controller.canStart, isFalse);
+    expect(controller.canResume, isTrue);
+    expect(controller.canStop, isTrue);
+    expect(controller.canMoveBase, isFalse);
+    expect(alertTypes(), [AlertType.machineFault]);
+    expect(alerts.alerts.single.faultCode, 'DROP_FAILED');
+    expect(alerts.alerts.single.machineName, 'CardForge-A1B2');
+  });
+
+  test('a feed jam has its own alert', () async {
+    await start();
+    final paused = FakeMachineApi.pausedRun();
+    api.emit(FaultEvent(code: 'FEED_TIMEOUT', time: paused.faultAt, run: paused));
+    await pumpEventQueue();
+
+    expect(alertTypes(), [AlertType.jamDetected]);
+    expect(alerts.alerts.single.faultCode, 'FEED_TIMEOUT');
+  });
+
+  test('a run already paused when the app connects is alerted once', () async {
+    api.snapshot = MachineSnapshot(
+        state: ControllerState.paused, run: FakeMachineApi.pausedRun());
+    final controller = await start();
+
+    expect(controller.isPaused, isTrue);
+    expect(alertTypes(), [AlertType.jamDetected]);
+
+    await controller.reconnect();
+    await pumpEventQueue();
+    expect(alertTypes(), [AlertType.jamDetected]);
+  });
+
+  test('resume continues the same run; a refusal lists its reasons', () async {
+    api.snapshot = MachineSnapshot(
+        state: ControllerState.paused, run: FakeMachineApi.pausedRun(cards: 4));
+    final controller = await start();
+    api.resumeError = const MachineApiException(
+      MachineApiFailure.conflict,
+      statusCode: 409,
+      problems: [StartProblem(code: 'PLATFORM_NOT_CLEAR', message: '')],
+    );
+
+    await controller.resumeRun();
+    expect(controller.startProblems.single.code, 'PLATFORM_NOT_CLEAR');
+    expect(controller.isPaused, isTrue);
+    expect(controller.isResuming, isFalse);
+
+    await controller.resumeRun();
+    expect(api.calls.where((c) => c == 'resumeRun').length, 2);
+    expect(controller.startProblems, isEmpty);
+    expect(controller.state, ControllerState.running);
+    expect(controller.run?.runId, 'run-1');
+    expect(controller.run?.cardsProcessed, 4);
+
+    api.emit(RunResumedEvent(FakeMachineApi.runningRun(cards: 4)));
+    await pumpEventQueue();
+    expect(controller.isBusy, isTrue);
+  });
+
+  test('stop ends a paused run without a second alert', () async {
+    api.snapshot = MachineSnapshot(
+        state: ControllerState.paused, run: FakeMachineApi.pausedRun(cards: 3));
+    final controller = await start();
+
+    await controller.stopRun();
+
+    expect(api.calls, contains('stopRun'));
+    expect(controller.state, ControllerState.idle);
+    expect(controller.run?.status, RunStatus.cancelled);
+    expect(alertTypes(), [AlertType.jamDetected]);
+  });
+
+  test('while the machine homes after power-on, Start waits', () async {
+    api.snapshot = const MachineSnapshot(state: ControllerState.manual);
+    final controller = await start();
+
+    expect(controller.isMachineMovingBase, isTrue);
+    expect(controller.canStart, isFalse);
+    expect(controller.canMoveBase, isFalse);
+  });
 }

@@ -7,6 +7,7 @@ import '../../helpers/test_helpers.dart';
 
 const _menuItems = [
   'Machine control',
+  'Sorting runs',
   'Cards in folders',
   'CSV report',
   'Sorting rules',
@@ -66,11 +67,33 @@ void main() {
     await pumpApp(tester, initialLocation: '/home');
     await openDrawer(tester);
 
-    await tester.tap(inDrawer('CSV report'));
+    await tester.tap(inDrawer('Sorting rules'));
     await tester.pumpAndSettle();
 
     expect(find.byType(Drawer), findsNothing);
-    expect(find.text('CSV report is coming soon.'), findsOneWidget);
+    expect(find.text('Sorting rules is coming soon.'), findsOneWidget);
+  });
+
+  testWidgets('"Sorting runs" in the menu opens the run history',
+      (tester) async {
+    await pumpApp(tester, initialLocation: '/home');
+    await openDrawer(tester);
+
+    await tester.tap(inDrawer('Sorting runs'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('2026-11-10 19:42'), findsOneWidget); // newest mock run
+  });
+
+  testWidgets('"CSV report" in the menu opens the export screen',
+      (tester) async {
+    await pumpApp(tester, initialLocation: '/home');
+    await openDrawer(tester);
+
+    await tester.tap(inDrawer('CSV report'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Export your collection'), findsOneWidget);
   });
 
   testWidgets('"Cards in folders" in the menu opens the cards screen',

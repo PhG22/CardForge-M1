@@ -13,6 +13,18 @@ enum AuthFailure {
   serverError,
   googleCancelled,
   googleTokenMissing,
+
+  /// Sign-up: another account already uses this username.
+  usernameTaken,
+
+  /// Sign-up: another account already uses this email.
+  emailTaken,
+
+  /// Sign-up: the server refused a field (username, email or password rules).
+  invalidSignUp,
+
+  /// The account exists but was disabled on the server.
+  accountDisabled,
 }
 
 class AuthException implements Exception {
@@ -61,6 +73,34 @@ class AuthService {
     }
     final res = await _post('/auth/login', {
       'identifier': identifier,
+      'password': password,
+    });
+    await _saveToken(res, remember);
+  }
+
+  /// With the simulated backend, signing up with this username fails as
+  /// "username taken" (to try the error message).
+  static const String mockTakenUsername = 'taken';
+
+  /// Creates an account on the server (`POST /auth/signup`). On success the
+  /// user is signed in, like after [signInWithPassword].
+  Future<void> signUp({
+    required String username,
+    required String email,
+    required String password,
+    bool remember = true,
+  }) async {
+    if (AppConfig.useMockBackend) {
+      await Future<void>.delayed(const Duration(milliseconds: 800));
+      if (username.trim().toLowerCase() == mockTakenUsername) {
+        throw const AuthException(AuthFailure.usernameTaken);
+      }
+      await _persist('mock-token', remember);
+      return;
+    }
+    final res = await _post('/auth/signup', {
+      'username': username,
+      'email': email,
       'password': password,
     });
     await _saveToken(res, remember);
@@ -124,14 +164,30 @@ class AuthService {
   }
 
   Future<void> _saveToken(http.Response res, bool remember) async {
-    if (res.statusCode == 200) {
+    if (res.statusCode == 200 || res.statusCode == 201) {
       final data = jsonDecode(res.body) as Map<String, dynamic>;
       await _persist(data['access_token'] as String, remember);
       return;
     }
-    if (res.statusCode == 401) {
-      throw const AuthException(AuthFailure.invalidCredentials);
+    throw AuthException(switch (res.statusCode) {
+      401 => AuthFailure.invalidCredentials,
+      403 => AuthFailure.accountDisabled,
+      409 => _errorCode(res) == 'EMAIL_TAKEN'
+          ? AuthFailure.emailTaken
+          : AuthFailure.usernameTaken,
+      400 || 422 => AuthFailure.invalidSignUp,
+      _ => AuthFailure.serverError,
+    });
+  }
+
+  /// The `code` field of an error body, e.g. `EMAIL_TAKEN`.
+  static String? _errorCode(http.Response res) {
+    try {
+      final body = jsonDecode(res.body);
+      if (body is Map && body['code'] is String) return body['code'] as String;
+    } on FormatException {
+      // not JSON
     }
-    throw const AuthException(AuthFailure.serverError);
+    return null;
   }
 }

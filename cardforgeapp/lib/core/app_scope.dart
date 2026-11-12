@@ -3,6 +3,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../features/alerts/alerts_controller.dart';
 import '../features/cards/card_repository.dart';
+import '../features/cards/collection_export.dart';
 import '../features/cards/mock_card_repository.dart';
 import '../features/machine/api/machine_api.dart';
 import '../features/machine/api/mock_machine_api.dart';
@@ -12,6 +13,8 @@ import '../features/machine/machine_link_service.dart';
 import '../features/machine/machine_models.dart';
 import '../features/machine/machine_store.dart';
 import '../features/machine/mock_machine_link_service.dart';
+import '../features/runs/mock_run_repository.dart';
+import '../features/runs/run_repository.dart';
 import 'config/app_config.dart';
 import 'l10n/locale_controller.dart';
 
@@ -27,6 +30,9 @@ class AppDependencies {
     required this.machineStore,
     required this.linkService,
     required this.cardRepository,
+    required this.runRepository,
+    required this.collectionExport,
+    required this.shareCsv,
     required this.machineApiFor,
     required this.machine,
     GlobalKey<ScaffoldMessengerState>? messengerKey,
@@ -36,6 +42,9 @@ class AppDependencies {
     SharedPreferences prefs, {
     MachineLinkService? linkService,
     CardRepository? cardRepository,
+    RunRepository? runRepository,
+    CollectionExportSource? collectionExport,
+    CsvSharer? shareCsv,
     MachineApiFactory? machineApiFor,
     List<Duration>? machineRetryDelays,
   }) {
@@ -55,6 +64,15 @@ class AppDependencies {
           (AppConfig.useMockBackend
               ? MockCardRepository()
               : ApiCardRepository()),
+      runRepository: runRepository ??
+          (AppConfig.useMockBackend
+              ? MockRunRepository()
+              : ApiRunRepository()),
+      collectionExport: collectionExport ??
+          (AppConfig.useMockBackend
+              ? MockCollectionExportSource()
+              : ApiCollectionExportSource()),
+      shareCsv: shareCsv ?? shareCsvFile,
       machineApiFor: apiFor,
       machine: MachineController(
         store: machineStore,
@@ -85,6 +103,15 @@ class AppDependencies {
   final MachineStore machineStore;
   final MachineLinkService linkService;
   final CardRepository cardRepository;
+
+  /// The user's finished runs, from the server.
+  final RunRepository runRepository;
+
+  /// Rows of the collection CSV export, from the server.
+  final CollectionExportSource collectionExport;
+
+  /// Opens the share sheet for an exported file.
+  final CsvSharer shareCsv;
   final MachineApiFactory machineApiFor;
 
   /// Live connection to the linked machine (run state, commands).

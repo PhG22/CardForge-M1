@@ -1,5 +1,6 @@
 import 'card_models.dart';
 import 'card_repository.dart';
+import 'collection_export.dart';
 
 /// Simulated server data, so the screen works without a backend.
 ///
@@ -85,5 +86,32 @@ class MockCardRepository implements CardRepository {
     final end = (offset + limit).clamp(0, matches.length);
     final start = offset.clamp(0, end);
     return CardsPage(items: matches.sublist(start, end), total: matches.length);
+  }
+}
+
+/// Simulated `GET /cards/export`: the same cards as [MockCardRepository], one
+/// row per folder, plus a few cards the machine could not identify.
+class MockCollectionExportSource implements CollectionExportSource {
+  MockCollectionExportSource({this.latency = const Duration(milliseconds: 500)});
+
+  /// Simulated network time. Tests use [Duration.zero].
+  final Duration latency;
+
+  @override
+  Future<List<CollectionRow>> fetchRows() async {
+    if (latency > Duration.zero) await Future<void>.delayed(latency);
+    return [
+      for (var i = 0; i < MockCardRepository._data.length; i++)
+        for (final (folder, quantity) in MockCardRepository._data[i].$2)
+          CollectionRow(
+            quantity: quantity,
+            status: 'identified',
+            name: MockCardRepository._data[i].$1,
+            folder: folder,
+            scryfallId: 'mock-${i + 1}',
+          ),
+      const CollectionRow(quantity: 2, status: 'unidentified', folder: 6),
+      const CollectionRow(quantity: 1, status: 'face_down', folder: 6),
+    ];
   }
 }

@@ -11,9 +11,14 @@
     GET  /stack           does the stack IR see cards?
     GET  /hardware/status live STATUS of A1 and A2 (debugging)
     GET  /health          liveness check
+    GET  /sync/status     upload of finished runs to the CardForge server (sync.py)
+    POST /sync/now        try the uploads now instead of waiting for the next retry
     WS   /ws/events       run_started / card_sorted / attention / fault / run_finished notifications
 
-    + the routes of the mobile app (app_compat.py): /auth/login, /cards, /machines/{id}/...
+    With MTG_SERVER_URL (a CardForge server, docs/SERVER.md): /run/start needs the app
+    user's token (Authorization: Bearer ...), and finished runs are uploaded to the server.
+    Without it, the Pi answers the app's server routes itself (app_compat.py):
+    /auth/login, /cards, /machines/{id}/...
     + camera calibration with the machine assembled (calibration_api.py): /calibration
 
 Run with:  python -m sorter_api            (settings from MTG_* env variables)
@@ -28,7 +33,7 @@ import os
 from contextlib import asynccontextmanager
 from typing import List, Optional
 
-from fastapi import FastAPI, Request, WebSocket
+from fastapi import FastAPI, Header, Request, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
@@ -47,6 +52,7 @@ from .protocol import FrameError
 from .sim import SimSerialPort, SimWorld
 from .status_led import NetworkMonitor, build_status_led
 from .store import RunStore
+from .sync import NotSignedIn, ServerClient, ServerError, ServerUnreachable, SyncWorker
 
 log = logging.getLogger(__name__)
 
@@ -115,8 +121,9 @@ def build_identifier(settings: Settings, vision=None):
 
 
 def create_app(settings: Settings | None = None, serial_port: SerialPort | None = None,
-               vision=None) -> FastAPI:
-    """vision: a cardforge.cv.VisionModule (or test double) to use instead of MTG_VISION."""
+               vision=None, server_client: ServerClient | None = None) -> FastAPI:
+    """vision: a cardforge.cv.VisionModule (or test double) to use instead of MTG_VISION.
+    server_client: the link to the CardForge server to use instead of one made for MTG_SERVER_URL."""
     settings = settings or Settings.from_env()
     if not logging.getLogger().handlers:
         logging.basicConfig(level=settings.log_level.upper(),
@@ -146,26 +153,38 @@ def create_app(settings: Settings | None = None, serial_port: SerialPort | None 
         store = RunStore(settings.run_db)
         identifier, vision_module = await asyncio.to_thread(build_identifier, settings, vision)
         status_led = build_status_led(settings.led, settings.led_pins, settings.simulate)
+        server, worker = server_client, None
+        if server is None and settings.server_url:
+            server = ServerClient(settings.server_url, settings.machine_token, settings.server_timeout_s)
+        if server is not None:
+            if not settings.machine_token and server_client is None:
+                log.warning("MTG_MACHINE_TOKEN is empty: the server will refuse the run uploads")
+            worker = SyncWorker(store, server, settings.sync_interval_s, settings.sync_retry_max_s)
         monitor = None
         if settings.network_monitor == "on" or (settings.network_monitor == "auto" and not settings.simulate
                                                 and NetworkMonitor.available()):
             monitor = NetworkMonitor(status_led)
             monitor.start()
         controller = SorterController(TopModule(bus), BottomModule(bus), identifier, hub, settings, store,
-                                      status_led)
+                                      status_led, on_run_finished=worker.notify if worker else None)
         if isinstance(identifier, VisionIdentifier):
             identifier.set_light = controller.set_chamber_light
         app.state.controller = controller
         app.state.events = hub
         app.state.sim_world = sim_world
         app.state.store = store
+        app.state.server = server
+        app.state.sync_worker = worker
         app.state.status_led = status_led
         # The camera calibration page needs a real VisionModule (camera or photo files).
         app.state.vision_module = vision_module if hasattr(vision_module, "calibration_snapshot") else None
         app.state.crop_samples = []        # card positions measured on the calibration page
-        if not settings.app_password:
+        if server is None and not settings.app_password:
             log.warning("MTG_APP_PASSWORD is empty: the app can sign in with any username and password")
         await asyncio.to_thread(controller.power_on)
+        if worker is not None:
+            worker.start()                 # also uploads runs left over from before a reboot
+            log.info("runs are uploaded to the CardForge server at %s", server.base_url)
         log.info("sorter API ready (%s%s, vision=%s)", "SIMULATED hardware" if settings.simulate
                  else f"{settings.serial_port} @ {settings.baudrate} baud",
                  "" if settings.bottom_enabled else ", TOP MODULE ONLY",
@@ -174,6 +193,10 @@ def create_app(settings: Settings | None = None, serial_port: SerialPort | None 
             yield
         finally:
             await asyncio.to_thread(controller.shutdown)
+            if worker is not None:
+                await asyncio.to_thread(worker.stop)
+            if server is not None and server_client is None:
+                server.close()
             if monitor is not None:
                 monitor.stop()
             status_led.close()
@@ -189,11 +212,28 @@ def create_app(settings: Settings | None = None, serial_port: SerialPort | None 
         return request.app.state.controller
 
     @app.post("/run/start")
-    def start_run(request: Request):
+    def start_run(request: Request, authorization: Optional[str] = Header(None)):
         """Blocks while the base homes (a few seconds), then answers:
-        200 run started, 409 conditions not met / already running, 503 module offline, 500 hardware fault."""
+        200 run started, 409 conditions not met / already running, 503 module offline, 500 hardware fault.
+        With a CardForge server: 401 SIGN_IN_REQUIRED (no or expired app token),
+        503 SERVER_UNREACHABLE / 502 SERVER_ERROR (the run's owner could not be checked)."""
+        owner = None
+        server: ServerClient | None = request.app.state.server
+        if server is not None:
+            token = authorization[7:].strip() if authorization and authorization.lower().startswith("bearer ") else None
+            try:
+                owner = server.whoami(token)
+            except NotSignedIn as exc:
+                return _not_started(401, "SIGN_IN_REQUIRED", str(exc))
+            except ServerUnreachable as exc:
+                log.warning("start refused: %s", exc)
+                return _not_started(503, "SERVER_UNREACHABLE",
+                                    "The machine cannot reach the CardForge server, so the run cannot be saved "
+                                    "to your account. Check the machine's network and try again.")
+            except ServerError as exc:
+                return _not_started(502, "SERVER_ERROR", f"The CardForge server answered with an error: {exc}")
         try:
-            run = controller_of(request).start()
+            run = controller_of(request).start(owner=owner)
         except StartRefused as exc:
             return JSONResponse(status_code=exc.http_status, content={
                 "started": False,
@@ -323,10 +363,31 @@ def create_app(settings: Settings | None = None, serial_port: SerialPort | None 
                                     + (f" (tray {s['position']})." if s['position'] else "."))
 
     @app.get("/health")
-    def health():
-        return {"ok": True, "simulate": settings.simulate, "bottom_enabled": settings.bottom_enabled}
+    def health(request: Request):
+        return {"ok": True, "simulate": settings.simulate, "bottom_enabled": settings.bottom_enabled,
+                "server": request.app.state.server is not None}
 
-    app.include_router(create_app_router(settings))
+    @app.get("/sync/status", tags=["results"])
+    def sync_status(request: Request):
+        """Finished runs: synced (on the server), pending / failed (waiting for an upload),
+        local_only (started without a server: they stay on the Pi)."""
+        server = request.app.state.server
+        return {"enabled": server is not None, "server_url": server.base_url if server else None,
+                **request.app.state.store.sync_status()}
+
+    @app.post("/sync/now", tags=["results"])
+    def sync_now(request: Request):
+        """Upload the finished runs now (also the ones waiting for their next retry)."""
+        worker: SyncWorker | None = request.app.state.sync_worker
+        if worker is None:
+            return JSONResponse(status_code=409, content={"message": "No CardForge server configured (MTG_SERVER_URL)."})
+        request.app.state.store.clear_sync_backoff()
+        worker.notify()
+        return {"message": "Upload started.", **request.app.state.store.sync_status()}
+
+    if not settings.server_url and server_client is None:
+        # No CardForge server: the Pi stands in for the app's server routes (login, cards).
+        app.include_router(create_app_router(settings))
     app.include_router(create_calibration_router(settings))
 
     @app.websocket("/ws/events")
@@ -364,6 +425,11 @@ def create_app(settings: Settings | None = None, serial_port: SerialPort | None 
             return world.describe()
 
     return app
+
+
+def _not_started(status: int, code: str, message: str) -> JSONResponse:
+    return JSONResponse(status_code=status, content={
+        "started": False, "message": message, "problems": [{"code": code, "message": message}]})
 
 
 async def _wait_for_disconnect(websocket: WebSocket) -> None:

@@ -84,17 +84,22 @@ void main() {
       expect(tester.widget<Checkbox>(find.byType(Checkbox)).value, isFalse);
     });
 
-    testWidgets('"Forgot password?" and "Create account" show a notice',
-        (tester) async {
+    testWidgets('"Forgot password?" shows a notice', (tester) async {
       await openLogin(tester);
 
       await tester.tap(find.text('Forgot password?'));
       await tester.pump();
       expect(find.text('Password recovery is coming soon.'), findsOneWidget);
+    });
+
+    testWidgets('"Create account" opens the sign-up screen', (tester) async {
+      await openLogin(tester);
 
       await tester.tap(find.text('Create account'));
-      await tester.pump();
-      expect(find.text('Sign-up is coming soon.'), findsOneWidget);
+      await tester.pumpAndSettle();
+
+      expect(find.text('Confirm password'), findsOneWidget);
+      expect(find.text('Already have an account?'), findsOneWidget);
     });
 
     testWidgets('shows the screen in Portuguese when that language is saved',

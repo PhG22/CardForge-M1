@@ -5,10 +5,14 @@
 * RNF19: WAL journal + synchronous=FULL, so a committed card survives a power cut.
 * Runs that were still running or paused when the Pi lost power are marked
   failed (INTERRUPTED) on the next start.
-* sync_state / sync_attempts are kept for the server SyncWorker (DB-SD-01), which
-  does not exist yet: every run stays "pending".
+* Owner: the user who pressed Start in the app (started_by = PostgreSQL users.id,
+  checked with the server at start). Every card of the run belongs to that user.
+* Sync (DB02 / DB04): once a run is finished, sync.SyncWorker uploads it with its
+  cards to the CardForge server, which stores them in PostgreSQL. sync_state goes
+  pending -> synced, or failed (retried with backoff, next_sync_at). Runs without an
+  owner (no server configured when they ran) stay on the Pi only.
 
-The results (RF22) and the inventory (RF24) are read from here.
+The machine-local results (RF22) and inventory (RF24) are also read from here.
 """
 
 from __future__ import annotations
@@ -21,6 +25,7 @@ import threading
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS local_run (
@@ -34,7 +39,13 @@ CREATE TABLE IF NOT EXISTS local_run (
     error_code       TEXT,
     message          TEXT,
     sync_state       TEXT NOT NULL DEFAULT 'pending',   -- pending | synced | failed
-    sync_attempts    INTEGER NOT NULL DEFAULT 0
+    sync_attempts    INTEGER NOT NULL DEFAULT 0,
+    started_by       INTEGER,                   -- PostgreSQL users.id; NULL = no server: never uploaded
+    owner_name       TEXT,                      -- that user's username (logs, /sync/status)
+    remote_run_id    INTEGER,                   -- PostgreSQL runs.id once synced
+    last_sync_error  TEXT,
+    synced_at        TEXT,
+    next_sync_at     TEXT                       -- after a failed upload: not before this time
 );
 
 CREATE TABLE IF NOT EXISTS local_cards (
@@ -56,6 +67,7 @@ CREATE TABLE IF NOT EXISTS local_cards (
     rarity           TEXT,
     scanned_at       TEXT NOT NULL,
     error_message    TEXT,
+    owner_id         INTEGER,                   -- = local_run.started_by (PostgreSQL users.id)
     UNIQUE (run_uuid, card_number)
 );
 CREATE INDEX IF NOT EXISTS idx_local_cards_name ON local_cards(card_name);
@@ -67,10 +79,34 @@ CREATE TABLE IF NOT EXISTS app_token (
 );
 """
 
+# Columns added after the first version of run.db: added in place to an existing file.
+SCHEMA_VERSION = 2
+ADDED_COLUMNS = {
+    "local_run": {"started_by": "INTEGER", "owner_name": "TEXT", "remote_run_id": "INTEGER",
+                  "last_sync_error": "TEXT", "synced_at": "TEXT", "next_sync_at": "TEXT"},
+    "local_cards": {"owner_id": "INTEGER"},
+}
+# Indexes on those columns: created after the columns exist.
+LATE_INDEXES = """
+CREATE INDEX IF NOT EXISTS idx_local_run_sync ON local_run(sync_state, next_sync_at)
+    WHERE sync_state <> 'synced' AND started_by IS NOT NULL;
+"""
+
 ACTIVE_STATUSES = ("running", "paused")
+FINISHED = "status NOT IN ('running', 'paused')"
+SYNC_CARD_COLUMNS = ("card_number", "scan_status", "bin", "card_identifier", "card_name", "set_code",
+                     "collector_number", "color_identity", "type_line", "mana_cost", "rarity", "match_method",
+                     "confidence", "attempts", "scanned_at", "error_message")
 CARD_COLUMNS = ("card_identifier", "scan_status", "bin", "match_method", "confidence", "attempts",
                 "card_name", "set_code", "collector_number", "color_identity", "type_line", "mana_cost",
                 "rarity", "error_message")
+
+
+@dataclass(frozen=True)
+class Owner:
+    """The signed-in app user who started a run (PostgreSQL users.id)."""
+    user_id: int
+    username: str
 
 
 @dataclass
@@ -104,6 +140,19 @@ class RunStore:
         self._conn.execute("PRAGMA synchronous = FULL")
         self._conn.execute("PRAGMA foreign_keys = ON")
         self._conn.executescript(SCHEMA)
+        self._migrate()
+
+    def _migrate(self) -> None:
+        """Bring a run.db made by an older version up to SCHEMA_VERSION (adds columns, keeps the data)."""
+        if self._conn.execute("PRAGMA user_version").fetchone()[0] >= SCHEMA_VERSION:
+            return
+        for table, columns in ADDED_COLUMNS.items():
+            existing = {r["name"] for r in self._conn.execute(f"PRAGMA table_info({table})")}
+            for name, sql_type in columns.items():
+                if name not in existing:
+                    self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {sql_type}")
+        self._conn.executescript(LATE_INDEXES)
+        self._conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
     def close(self) -> None:
         with self._lock:
@@ -125,10 +174,12 @@ class RunStore:
                 "WHERE status IN ('running', 'paused')", (now,))
             return cur.rowcount
 
-    def create_run(self, run_id: str, started_at: str) -> None:
+    def create_run(self, run_id: str, started_at: str, owner: Owner | None = None) -> None:
         with self._lock:
-            self._conn.execute("INSERT INTO local_run (local_uuid, status, started_at) VALUES (?, 'running', ?)",
-                               (run_id, started_at))
+            self._conn.execute(
+                "INSERT INTO local_run (local_uuid, status, started_at, started_by, owner_name) "
+                "VALUES (?, 'running', ?, ?, ?)",
+                (run_id, started_at, owner.user_id if owner else None, owner.username if owner else None))
 
     def update_run(self, run_id: str, *, status: str, stopped_at: str | None = None,
                    error_code: str | None = None, message: str | None = None) -> None:
@@ -146,9 +197,11 @@ class RunStore:
             self._conn.execute("BEGIN IMMEDIATE")
             try:
                 self._conn.execute(
-                    f"INSERT INTO local_cards (local_uuid, run_uuid, card_number, scanned_at, {', '.join(CARD_COLUMNS)}) "
-                    f"VALUES (?, ?, ?, ?, {', '.join('?' * len(CARD_COLUMNS))})",
-                    (card_uuid, run_id, card_number, scanned_at, *values))
+                    f"INSERT INTO local_cards (local_uuid, run_uuid, card_number, scanned_at, owner_id, "
+                    f"{', '.join(CARD_COLUMNS)}) "
+                    f"VALUES (?, ?, ?, ?, (SELECT started_by FROM local_run WHERE local_uuid = ?), "
+                    f"{', '.join('?' * len(CARD_COLUMNS))})",
+                    (card_uuid, run_id, card_number, scanned_at, run_id, *values))
                 self._conn.execute(
                     "UPDATE local_run SET cards_processed = cards_processed + 1, "
                     "successful_scans = successful_scans + ?, failed_scans = failed_scans + ? WHERE local_uuid = ?",
@@ -231,6 +284,74 @@ class RunStore:
         for r in rows:
             writer.writerow(["" if r[c] is None else r[c] for c in columns])
         return out.getvalue()
+
+    # ------------------------------------------------------ server sync
+
+    def runs_to_sync(self, now: str, limit: int = 20) -> list[str]:
+        """Finished runs with an owner, not uploaded yet, whose retry time has come (oldest first)."""
+        with self._lock:
+            rows = self._conn.execute(
+                f"SELECT local_uuid FROM local_run WHERE {FINISHED} AND sync_state <> 'synced' "
+                "AND started_by IS NOT NULL AND (next_sync_at IS NULL OR next_sync_at <= ?) "
+                "ORDER BY started_at LIMIT ?", (now, limit)).fetchall()
+        return [r[0] for r in rows]
+
+    def sync_payload(self, run_id: str) -> dict | None:
+        """Body of the server's POST /sync/runs: the run and all its cards."""
+        with self._lock:
+            run = self._conn.execute(f"SELECT * FROM local_run WHERE local_uuid = ? AND {FINISHED}",
+                                     (run_id,)).fetchone()
+            if run is None or run["started_by"] is None:
+                return None
+            cards = self._conn.execute(
+                "SELECT * FROM local_cards WHERE run_uuid = ? ORDER BY card_number", (run_id,)).fetchall()
+        return {
+            "run": {k: run[k] for k in ("local_uuid", "started_by", "status", "started_at", "stopped_at",
+                                        "cards_processed", "successful_scans", "failed_scans", "error_code",
+                                        "message")},
+            "cards": [{"local_uuid": c["local_uuid"],
+                       "owner_id": c["owner_id"] if c["owner_id"] is not None else run["started_by"],
+                       **{k: c[k] for k in SYNC_CARD_COLUMNS}} for c in cards],
+        }
+
+    def mark_synced(self, run_id: str, remote_run_id: int, now: str) -> None:
+        with self._lock:
+            self._conn.execute(
+                "UPDATE local_run SET sync_state = 'synced', remote_run_id = ?, synced_at = ?, "
+                "last_sync_error = NULL, next_sync_at = NULL WHERE local_uuid = ?", (remote_run_id, now, run_id))
+
+    def mark_sync_failed(self, run_id: str, error: str, next_attempt: Callable[[int], str]) -> int:
+        """Count one more failed upload; next_attempt(attempts) gives the time of the next try.
+        Returns how many uploads of this run have failed so far."""
+        with self._lock:
+            row = self._conn.execute("SELECT sync_attempts FROM local_run WHERE local_uuid = ?", (run_id,)).fetchone()
+            if row is None:
+                return 0
+            attempts = row[0] + 1
+            self._conn.execute(
+                "UPDATE local_run SET sync_state = 'failed', sync_attempts = ?, last_sync_error = ?, "
+                "next_sync_at = ? WHERE local_uuid = ?", (attempts, error[:500], next_attempt(attempts), run_id))
+        return attempts
+
+    def clear_sync_backoff(self) -> None:
+        """Make every run waiting for a retry due now (POST /sync/now)."""
+        with self._lock:
+            self._conn.execute("UPDATE local_run SET next_sync_at = NULL WHERE sync_state = 'failed'")
+
+    def sync_status(self) -> dict:
+        """How many finished runs are uploaded, waiting, failing, or kept on the Pi only."""
+        with self._lock:
+            counts = {r[0]: r[1] for r in self._conn.execute(
+                f"SELECT CASE WHEN started_by IS NULL THEN 'local_only' ELSE sync_state END, COUNT(*) "
+                f"FROM local_run WHERE {FINISHED} GROUP BY 1")}
+            last = self._conn.execute(
+                "SELECT local_uuid, last_sync_error, next_sync_at, sync_attempts FROM local_run "
+                "WHERE sync_state = 'failed' AND started_by IS NOT NULL ORDER BY started_at DESC LIMIT 1").fetchone()
+        return {
+            "synced": counts.get("synced", 0), "pending": counts.get("pending", 0),
+            "failed": counts.get("failed", 0), "local_only": counts.get("local_only", 0),
+            "last_error": dict(last) if last else None,
+        }
 
     # ------------------------------------------------------- app tokens
 

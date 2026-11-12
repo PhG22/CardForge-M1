@@ -7,19 +7,25 @@ import 'machine_api_models.dart';
 /// machine control screen works with no Raspberry Pi and no computer.
 ///
 /// Every run sorts [stackSize] cards, one every [cardInterval], into trays
-/// 1 to 6, then finishes with "Stack is empty". For the real thing (or the
-/// API's own simulator: `python -m sorter_api --simulate`) use
-/// `USE_MOCK_MACHINE=false`.
+/// 1 to 6, then finishes with "Stack is empty". With [jamAtCard] set, the
+/// first run pauses with a feed jam before that card, to try the fault alert
+/// and Resume. For the real thing (or the API's own simulator:
+/// `python -m sorter_api --simulate`) use `USE_MOCK_MACHINE=false`.
 class MockMachineApi implements MachineApi {
   MockMachineApi({
     this.stackSize = 12,
     this.cardInterval = const Duration(milliseconds: 1500),
     this.latency = const Duration(milliseconds: 300),
+    this.jamAtCard = 5,
   });
 
   final int stackSize;
   final Duration cardInterval;
   final Duration latency;
+
+  /// The first run pauses with `FEED_TIMEOUT` before this card (null = never).
+  final int? jamAtCard;
+  bool _jammed = false;
 
   final StreamController<MachineEvent> _events =
       StreamController<MachineEvent>.broadcast();
@@ -78,6 +84,27 @@ class MockMachineApi implements MachineApi {
     final run = _run;
     if (run == null || _state != ControllerState.running) return;
     final number = run.cardsProcessed + 1;
+    if (!_jammed && number == jamAtCard) {
+      _jammed = true;
+      _timer?.cancel();
+      const message = 'The feeder could not move a card onto the platform. '
+          'Fix it, then press Resume.';
+      final now = DateTime.now().toUtc();
+      final paused = RunInfo(
+        runId: run.runId,
+        status: RunStatus.paused,
+        startedAt: run.startedAt,
+        cardsProcessed: run.cardsProcessed,
+        errorCode: 'FEED_TIMEOUT',
+        message: message,
+        faultAt: now,
+      );
+      _run = paused;
+      _state = ControllerState.paused;
+      _events.add(FaultEvent(
+          code: 'FEED_TIMEOUT', time: now, message: message, run: paused));
+      return;
+    }
     final tray = (number - 1) % 6 + 1;
     _run = run.withCard(cardsProcessed: number, tray: tray);
     _events
@@ -107,8 +134,36 @@ class MockMachineApi implements MachineApi {
   }
 
   @override
+  Future<RunInfo> resumeRun() async {
+    final run = _run;
+    if (_state != ControllerState.paused || run == null) {
+      throw const MachineApiException(
+        MachineApiFailure.conflict,
+        statusCode: 409,
+        message: 'No paused run to resume.',
+      );
+    }
+    _state = ControllerState.starting;
+    await _wait(4); // homing the base again
+    final resumed = RunInfo(
+      runId: run.runId,
+      status: RunStatus.running,
+      startedAt: run.startedAt,
+      cardsProcessed: run.cardsProcessed,
+      currentTray: run.currentTray,
+      message: 'Run resumed.',
+    );
+    _run = resumed;
+    _state = ControllerState.running;
+    _events.add(RunResumedEvent(resumed));
+    _timer = Timer.periodic(cardInterval, (_) => _sortNextCard());
+    return resumed;
+  }
+
+  @override
   Future<RunInfo?> stopRun({bool immediate = false}) async {
-    if (_state != ControllerState.running) {
+    if (_state != ControllerState.running &&
+        _state != ControllerState.paused) {
       throw const MachineApiException(
         MachineApiFailure.conflict,
         statusCode: 409,
