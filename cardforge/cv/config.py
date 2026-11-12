@@ -10,19 +10,44 @@ except ModuleNotFoundError:  # pragma: no cover
     tomllib = None
 
 
+# Valores por sensor, antes do que o vision.toml define em [camera.profiles.<sensor>].
+# Resolução cheia nos dois: com a carta ocupando ~2/3 do quadro em 1640x1232, a linha de edição/número
+# do rodapé ficou com ~8 px de altura e ilegível para o OCR (nitidez 33 contra 289 nas fotos da PoC).
+SENSOR_PROFILES: dict[str, dict] = {
+    "imx219": {"resolution": (3280, 2464)},      # Camera Module v2, 8 MP
+    "ov5647": {"resolution": (2592, 1944)},      # Camera Module v1, 5 MP
+}
+PROFILE_KEYS = ("resolution", "exposure_us", "analogue_gain", "awb_gains")
+
+
 @dataclass
 class CameraConfig:
     backend: str = "picamera2"                   # "picamera2" (padrão) ou "rpicam" (chama rpicam-still)
-    sensor: str = "imx219"                       # Camera Module v2; avisa no log se a câmera detectada for outra
-    # IMX219: 1640x1232 = 2x2 binned, campo de visão inteiro, rápido. 3280x2464 = resolução máxima (8 MP),
-    # só se a carta ocupar pouco do quadro (o pipeline retifica a carta para 630x880 de qualquer forma).
-    resolution: tuple[int, int] = (1640, 1232)
+    # "auto" = usa o perfil do sensor detectado (imx219, ov5647...). Um nome fixo = avisa no log se a
+    # câmera conectada for outra (o perfil usado continua sendo o do sensor detectado).
+    sensor: str = "auto"
+    # Os 4 valores abaixo são os efetivos: vêm do perfil do sensor detectado ([camera.profiles.<sensor>]);
+    # os escritos direto em [camera] só valem quando o sensor não é conhecido (ex.: fotos de arquivo).
+    resolution: tuple[int, int] = (3280, 2464)
     exposure_us: int = 20000                     # exposição fixa — a câmara fica numa câmara escura (RNF08)
     analogue_gain: float = 2.0
     awb_gains: tuple[float, float] = (1.6, 1.5)  # ganhos (vermelho, azul) fixos; 0 => AWB automático
     warmup_s: float = 0.5
     light_level: int = 60                        # fitas LED da câmara, % (nível base; RNF09 soma degraus)
     tmp_dir: str = "data/tmp"                    # arquivos temporários (backend rpicam); limpo ao fim de cada run
+    profiles: dict = field(default_factory=dict) # [camera.profiles.<sensor>]: resolution, exposure_us, ...
+
+    def apply_profile(self, sensor: str) -> None:
+        """Valores do sensor: padrões do código <- SENSOR_PROFILES <- [camera.profiles.<sensor>]."""
+        defaults = CameraConfig()
+        values = {k: getattr(defaults, k) for k in PROFILE_KEYS}
+        values.update(SENSOR_PROFILES.get(sensor, {}))
+        values.update(self.profiles.get(sensor, {}))
+        for key, value in values.items():
+            if key not in PROFILE_KEYS:
+                raise ValueError(f"vision.toml [camera.profiles.{sensor}]: unknown option '{key}'")
+            setattr(self, key, tuple(value) if isinstance(getattr(defaults, key), tuple) else
+                    type(getattr(defaults, key))(value))
 
 
 @dataclass
@@ -41,7 +66,12 @@ class CropConfig:
     * "detect": detecção de bordas a cada foto (fotos de outras fontes, como as da prova de conceito).
     """
     mode: str = "detect"                         # o vision.toml da máquina usa "fixed"
-    corners: list = field(default_factory=list)  # [[x, y] x 4] em fração do quadro (0–1): TL, TR, BR, BL
+    # [[x, y] x 4] em fração do quadro (0–1), na ORDEM DA CARTA: canto superior esquerdo da carta (lado do
+    # título), superior direito, inferior direito, inferior esquerdo — vale para a carta deitada ou girada.
+    corners: list = field(default_factory=list)
+    # Recorte por câmera ([crop.corners_by_sensor] imx219 = [...]): cada módulo enquadra a carta de um jeito.
+    # Quando o sensor detectado tem entrada aqui, ela substitui `corners`.
+    corners_by_sensor: dict = field(default_factory=dict)
     margin: float = 0.0                          # amplia o recorte em volta da carta (0.02 = 2 %)
 
 
@@ -106,7 +136,9 @@ def _apply(obj, data: dict, where: str) -> None:
         if key not in known:
             raise ValueError(f"{where}: unknown option '{key}'")
         current = getattr(obj, key)
-        if isinstance(value, dict):
+        if isinstance(current, dict):            # tabelas livres: perfis e recortes por sensor
+            setattr(obj, key, {str(k): (dict(v) if isinstance(v, dict) else v) for k, v in value.items()})
+        elif isinstance(value, dict):
             _apply(current, value, f"{where}.{key}")
         elif isinstance(current, tuple):
             setattr(obj, key, tuple(value))

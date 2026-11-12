@@ -106,6 +106,14 @@ def frame_metrics(image: np.ndarray, cfg: VisionConfig) -> tuple[dict, np.ndarra
     return m, overlay
 
 
+def card_view_metrics(card: np.ndarray) -> dict:
+    """Medidas da carta já retificada (630 x 880): brilho e nitidez do rodapé, onde ficam edição e número."""
+    info = RoiCatalog.rois_for(CardLayout.STANDARD).info.crop(card)
+    return {"brightness": round(float(cv2.cvtColor(card, cv2.COLOR_BGR2GRAY).mean()), 1),
+            "sharpness": round(sharpness(card), 1), "info_sharpness": round(sharpness(info), 1),
+            "info_min": MIN_INFO_SHARPNESS}
+
+
 def _advice(m: dict, cfg: VisionConfig) -> list[str]:
     tips, c = [], m["card"]
     lo, hi = TARGET_BRIGHTNESS
@@ -186,3 +194,25 @@ def save_section(path: str | Path, section: str, values: dict) -> None:
         lines.insert(insert_at, f"{key} = {_toml_value(value)}")
         insert_at += 1
     p.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def aggregate_crop_samples(samples: list, frame_size: tuple[int, int]) -> dict:
+    """
+    Média das posições medidas para o recorte fixo, descartando as discrepantes (a detecção às vezes pega só a
+    caixa de texto ou a moldura interna). Cada amostra: 4 cantos na ordem da carta, em fração do quadro.
+    Descarta quem se afasta da mediana mais que max(5 % do lado maior da carta, 3 x o desvio típico).
+    Devolve mean, spread_px (entre as usadas), used e rejected (índices) e o limite usado.
+    """
+    h, w = frame_size
+    pts = np.array(samples, dtype=np.float64).reshape(-1, 4, 2) * np.array([w, h])
+    median = np.median(pts, axis=0)
+    dev = np.linalg.norm(pts - median, axis=2).max(axis=1)              # px, pior canto de cada amostra
+    long_edge = max(np.linalg.norm(median[1] - median[0]), np.linalg.norm(median[2] - median[1]))
+    limit = max(0.05 * long_edge, 3.0 * float(np.median(dev))) if len(pts) >= 3 else float("inf")
+    used = [i for i, d in enumerate(dev) if d <= limit] or list(range(len(pts)))
+    mean = pts[used].mean(axis=0)
+    spread = float(np.linalg.norm(pts[used] - mean, axis=2).max()) if len(used) > 1 else 0.0
+    return {"mean": [[round(float(x) / w, 5), round(float(y) / h, 5)] for x, y in mean],
+            "spread_px": round(spread, 1), "used": used,
+            "rejected": [i for i in range(len(pts)) if i not in used],
+            "limit_px": None if limit == float("inf") else round(limit, 1)}

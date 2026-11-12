@@ -13,7 +13,9 @@
     POST /calibration/crop/sample      measure where the card on the platform is (border detection, calibration only);
                                        the picture is kept in calibragem_recorte/ (original, annotated, medicoes.csv)
     DELETE /calibration/crop/samples   forget the measurements
-    POST /calibration/crop/save        the average position becomes the fixed crop (vision.toml [crop])
+    POST /calibration/crop/save        the average position (outliers left out) becomes the fixed crop
+    POST /calibration/crop/preview     the card cut with corners marked by hand, before saving them
+    POST /calibration/crop/manual      save corners marked by hand as the fixed crop
     POST /calibration/feed             feed one card onto the platform (A1)
     POST /calibration/drop             drop it into the overflow tray 6 (A2 + A1)
 
@@ -51,6 +53,12 @@ class CameraSettings(BaseModel):
     analogue_gain: Optional[float] = Field(None, ge=1.0, le=64.0)   # clamped to the sensor's own range
     awb_gains: Optional[List[float]] = Field(None, min_length=2, max_length=2)
     light_level: Optional[int] = Field(None, ge=0, le=100)
+
+
+class CropCorners(BaseModel):
+    corners: List[List[float]] = Field(..., description="4 x [x, y], fractions of the picture, card order: "
+                                                       "card's top-left (title side), top-right, bottom-right, "
+                                                       "bottom-left")
 
 
 class Refused(Exception):
@@ -208,20 +216,30 @@ def create_calibration_router(settings) -> APIRouter:
         return CropCaptureLog(project_path(settings.crop_captures_dir, root))
 
     def crop_summary(request: Request, size=None) -> dict:
-        import numpy as np
+        from cardforge.cv.calibration import aggregate_crop_samples
 
         vision = request.app.state.vision_module
-        samples = request.app.state.crop_samples
+        samples = request.app.state.crop_samples                        # [{"corners", "picture"}]
         out = {"mode": vision.cfg.crop.mode, "calibrated": len(vision.cfg.crop.corners) == 4,
-               "corners": vision.cfg.crop.corners, "samples": len(samples)}
+               "corners": vision.cfg.crop.corners, "sensor": vision.sensor or "desconhecido",
+               "samples": len(samples)}
         if samples:
-            pts = np.array(samples, dtype=np.float64)                        # (n, 4, 2), fractions
-            mean = pts.mean(axis=0)
-            h, w = size or vision.cfg.camera.resolution[::-1]
-            spread = np.abs(pts - mean) * np.array([w, h])                   # px at the camera resolution
-            out.update(mean=[[round(float(x), 5), round(float(y), 5)] for x, y in mean],
-                       spread_px=round(float(np.linalg.norm(spread, axis=2).max()), 1))
+            h, w = size or request.app.state.crop_frame_size or vision.cfg.camera.resolution[::-1]
+            agg = aggregate_crop_samples([s["corners"] for s in samples], (h, w))
+            out.update(mean=agg["mean"], spread_px=agg["spread_px"], limit_px=agg["limit_px"],
+                       used=len(agg["used"]), rejected=[samples[i]["picture"] for i in agg["rejected"]])
         return out
+
+    def parse_corners(body: "CropCorners") -> list:
+        pts = [[float(x), float(y)] for x, y in body.corners]
+        if len(pts) != 4 or any(not (0 <= v <= 1) for p in pts for v in p):
+            raise Refused(400, "BAD_CORNERS", "Give 4 corners [x, y] as fractions of the picture (0 to 1).")
+        import cv2
+        import numpy as np
+        poly = np.array(pts, dtype=np.float32)
+        if not cv2.isContourConvex(poly.reshape(-1, 1, 2)) or cv2.contourArea(poly) < 0.02:
+            raise Refused(400, "BAD_CORNERS", "The 4 corners must form a card-shaped area, in order around it.")
+        return pts
 
     @router.get("/crop")
     def crop_status(request: Request):
@@ -240,10 +258,12 @@ def create_calibration_router(settings) -> APIRouter:
             # Every picture is kept (also the failed ones) to debug the crop later.
             saved = crop_log(request).save_sample(image, corners, quad.strategy.value if quad else None,
                                                   quad.corners if quad else None)
+            request.app.state.crop_frame_size = image.shape[:2]
             if corners is None:
                 raise Refused(409, "NO_CARD", "The card border was not found in this picture: check the light "
-                                              f"and that a card is on the platform. Picture saved as {saved}.")
-            request.app.state.crop_samples.append(corners)
+                                              f"and that a card is on the platform. Picture saved as {saved}. "
+                                              "You can also mark the corners by hand.")
+            request.app.state.crop_samples.append({"corners": corners, "picture": saved})
             return {"ok": True, "crop": crop_summary(request, image.shape[:2]), "picture": saved,
                     "message": f"Card position measured ({len(request.app.state.crop_samples)} so far), "
                                f"picture saved as {saved}."}
@@ -267,8 +287,42 @@ def create_calibration_router(settings) -> APIRouter:
                 raise Refused(409, "NO_SAMPLES", "Measure the position of at least one card first.")
             path = vision.save_crop(summary["mean"])
             crop_log(request).save_result(summary, path)
+            dropped = f" {len(summary['rejected'])} measurement(s) left out as outliers." if summary["rejected"] else ""
             return {"ok": True, "crop": crop_summary(request),
-                    "message": f"Fixed crop saved in {path}: cards are no longer searched for in the picture."}
+                    "message": f"Fixed crop saved in {path}: cards are no longer searched for in the picture.{dropped}"}
+        return handle(run)
+
+    # ---- fixed crop by hand: the user marks the 4 corners on the picture
+
+    @router.post("/crop/preview")
+    def crop_preview(body: CropCorners, request: Request):
+        """The card on the platform cut with these corners (card order), as the identification would see it."""
+        def run():
+            from cardforge.cv.calibration import card_view_metrics
+            from cardforge.cv.config import CropConfig
+            from cardforge.cv.detection import fixed_quad
+
+            vision = vision_of(request)
+            corners = parse_corners(body)
+            with still_card(vision):
+                frame = vision.camera.capture()
+            quad = fixed_quad(CropConfig(mode="fixed", corners=corners, margin=vision.cfg.crop.margin),
+                              frame.image.shape)
+            card = vision.recognizer.rectifier.rectify(frame.image, quad).image
+            return {"ok": True, "metrics": card_view_metrics(card),
+                    "image": "data:image/jpeg;base64," + base64.b64encode(jpeg(card, 630)).decode()}
+        return handle(run)
+
+    @router.post("/crop/manual")
+    def crop_manual(body: CropCorners, request: Request):
+        """Save corners marked by hand as the fixed crop (no border detection needed)."""
+        def run():
+            vision = vision_of(request)
+            corners = parse_corners(body)
+            path = vision.save_crop(corners)
+            crop_log(request).save_result({"manual": True, "corners": corners, "sensor": vision.sensor}, path)
+            return {"ok": True, "crop": crop_summary(request),
+                    "message": f"Corners saved in {path} as the fixed crop."}
         return handle(run)
 
     @router.post("/feed")

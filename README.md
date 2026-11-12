@@ -136,11 +136,17 @@ ssh -L 8000:localhost:8000 raspad@<ip-do-pi>
 
 Procedimento sugerido:
 
-0. **Recorte fixo** (uma vez, e de novo se a câmera ou a plataforma mudarem de lugar): **Alimentar 1 carta** →
-   **Medir posição desta carta** → **Descartar carta (bin 6)**, com 4 ou 5 cartas; **Salvar recorte fixo**. A média
-   das posições vira o recorte usado em todas as fotos, sem detecção de bordas. A página mostra a *variação entre as
-   cartas* (até ~15 px é tranquilo) e, a cada captura, o *desvio* da carta atual em relação ao recorte (verde =
-   borda detectada agora, laranja = recorte salvo). Sem recorte salvo, o Start é recusado com `CROP_NOT_CALIBRATED`.
+0. **Recorte fixo** (uma vez por câmera, e de novo se a câmera ou a plataforma mudarem de lugar). Duas formas:
+   * **Automática**: **Alimentar 1 carta** → **Medir posição desta carta** → **Descartar carta (bin 6)**, com 4 ou 5
+     cartas; **Salvar recorte fixo**. Medições discrepantes (a detecção às vezes pega só a caixa de texto) ficam
+     fora da média e a página diz quais foram.
+   * **Manual** (seção *Marcar os cantos à mão*): **Carregar foto** e toque nos 4 cantos da borda **externa** da
+     carta — 1 = canto superior esquerdo da carta (início do título), 2, 3, 4 = canto inferior esquerdo (lado da
+     edição e número). Arraste para ajustar (com lupa), **Pré-visualizar recorte** para ver a carta em pé com o
+     rodapé inteiro, **Salvar estes cantos**. Use quando a detecção errar: nesta máquina a borda preta da carta
+     se confunde com o suporte preto do flap e a detecção acha a moldura interna, cortando o rodapé.
+   Os cantos ficam na **ordem da carta** e por câmera (`[crop.corners_by_sensor]`): a carta deitada na câmara sai
+   em pé sem girar. Sem recorte salvo para a câmera conectada, o Start é recusado com `CROP_NOT_CALIBRATED`.
 1. **Cartão branco**: coloque um cartão branco liso do tamanho de uma carta no topo da pilha e toque em
    **Alimentar 1 carta** (o alimentador o leva até a plataforma, o flap o segura).
 2. **Autocalibrar (exposição + branco)**: a câmera ajusta exposição e balanço de branco sozinha com o cartão
@@ -153,19 +159,26 @@ Procedimento sugerido:
 4. **Identificar a carta** mostra a leitura completa (OCR, edição, número, carta encontrada) com a imagem anotada.
 5. **Luz ambiente × escuro (RNF08)**: **Marcar referência**, acenda/apague a luz da sala, **Capturar**: a
    variação deve ficar em até 10 %.
-6. **Salvar no vision.toml** grava exposição, ganho, branco e luz na seção `[camera]` (valem após reiniciar).
+6. **Salvar no vision.toml** grava exposição, ganho e branco no perfil da câmera conectada
+   (`[camera.profiles.imx219]` ou `[camera.profiles.ov5647]`) e a luz em `[camera]` (valem após reiniciar).
 
 As medidas e orientações da página também indicam se a carta ocupa uma área do quadro compatível com
 `max_area_ratio` / `min_area_ratio` do `vision.toml`. As referências (brilho 60–180, nitidez ≥ 70) vieram das
 fotos da prova de conceito; refine-as com o benchmark das fotos feitas na câmara (`python -m cardforge.cv batch`).
 
-**Câmera: Pi Camera Module v2 (IMX219).** No Raspberry Pi OS Bookworm ela é detectada sozinha
-(`camera_auto_detect=1` em `/boot/firmware/config.txt`). Se esse arquivo ainda tiver `dtoverlay=ov5647`, da câmera
-anterior, troque por `dtoverlay=imx219` (ou apague a linha e deixe a detecção automática). `rpicam-hello --list-cameras`
-(com o serviço parado) deve listar `imx219`. O serviço avisa no log se a câmera encontrada não for a do `vision.toml`,
-e a página de calibração mostra o sensor detectado e usa os limites dele (ganho analógico da IMX219: 1 a ~10,7).
-A resolução padrão é **1640×1232** (modo 2×2 do sensor, campo de visão inteiro); `[3280, 2464]` (8 MP) só vale a
-pena se a carta ocupar pouco do quadro.
+**Câmeras: IMX219 (Camera Module v2) ou OV5647 (Camera Module v1).** Com `[camera] sensor = "auto"`, o serviço
+detecta qual está conectada ao abrir a câmera e usa o **perfil** dela: resolução, exposição, ganho e branco de
+`[camera.profiles.<sensor>]`, limites do sensor (ganho da IMX219: 1 a ~10,7) e o recorte fixo de
+`[crop.corners_by_sensor]`. Trocar de câmera não exige mexer em nada; a câmera nova só precisa ser calibrada uma vez
+(recorte + autocalibração). Deixe `camera_auto_detect=1` em `/boot/firmware/config.txt` (sem `dtoverlay=imx219` ou
+`dtoverlay=ov5647` fixo); `rpicam-hello --list-cameras` (com o serviço parado) mostra qual está ligada, e a página de
+calibração mostra o sensor detectado.
+
+**Resolução cheia nos dois** (IMX219 3280×2464, OV5647 2592×1944). As fotos de `calibragem_recorte/` (12/11, a
+1640×1232) mostraram por quê: a carta ocupava ~1100 px e o rodapé com edição e número ficou com ~8 px de altura
+e nitidez 33 (as fotos da prova de conceito, lidas bem, têm 289; a referência da página é 70). O OCR não lê esse
+rodapé, e sem edição e número as cartas em português não são identificadas. Depois de mudar para resolução cheia,
+confira o foco da lente com a página (nitidez do texto pequeno ≥ 70) e rode a autocalibração de novo.
 
 **Biblioteca da câmera.** O código usa o **Picamera2** (pacote `python3-picamera2`), a biblioteca Python oficial da
 Raspberry Pi, que roda sobre a pilha libcamera — a mesma das ferramentas `rpicam-*`. Ele não chama os antigos

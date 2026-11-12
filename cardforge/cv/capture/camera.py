@@ -22,6 +22,7 @@ log = logging.getLogger(__name__)
 # Limites usados quando a câmera não informa os seus (backend rpicam, fotos): (mín, máx).
 SENSOR_LIMITS = {
     "imx219": {"exposure_us": (100, 1_000_000), "analogue_gain": (1.0, 10.666)},   # Camera Module v2
+    "ov5647": {"exposure_us": (100, 1_000_000), "analogue_gain": (1.0, 16.0)},     # Camera Module v1
 }
 DEFAULT_LIMITS = {"exposure_us": (100, 1_000_000), "analogue_gain": (1.0, 16.0)}
 
@@ -51,11 +52,30 @@ class _Tunable:
     _detected_limits: Optional[dict] = None
 
     def limits(self) -> dict:
-        return self._detected_limits or SENSOR_LIMITS.get(self.cfg.sensor, DEFAULT_LIMITS)
+        return self._detected_limits or SENSOR_LIMITS.get(self.sensor or "", DEFAULT_LIMITS)
+
+    @property
+    def sensor(self) -> Optional[str]:
+        """Sensor em uso: o detectado, ou o fixado no vision.toml (None = desconhecido)."""
+        if self.detected_sensor:
+            return self.detected_sensor
+        return None if self.cfg.sensor in ("", "auto") else self.cfg.sensor.lower()
+
+    def _use_sensor(self, model: Optional[str]) -> None:
+        """Guarda o modelo detectado e aplica o perfil dele (resolução, exposição, ganho, branco)."""
+        self.detected_sensor = model.lower() if model else None
+        expected = self.cfg.sensor.lower()
+        if self.detected_sensor and expected not in ("", "auto") and self.detected_sensor != expected:
+            log.warning("vision.toml expects sensor %s but the camera reports %s: check the camera cable and "
+                        "camera_auto_detect / dtoverlay in /boot/firmware/config.txt",
+                        expected, self.detected_sensor)
+        if self.sensor:
+            self.cfg.apply_profile(self.sensor)
+            log.info("camera: %s, profile %s", self.sensor, list(self.cfg.resolution))
 
     def settings(self) -> dict:
         c = self.cfg
-        return {"backend": self.backend, "sensor": self.detected_sensor or c.sensor,
+        return {"backend": self.backend, "sensor": self.sensor or "desconhecido",
                 "resolution": list(c.resolution), "exposure_us": int(c.exposure_us),
                 "analogue_gain": round(float(c.analogue_gain), 3),
                 "awb_gains": [round(float(g), 3) for g in c.awb_gains],
@@ -80,10 +100,10 @@ class _Tunable:
 
 class CameraService(_Tunable):
     """
-    Pi Camera Module v2 (IMX219) via Picamera2 — a biblioteca Python oficial da Raspberry Pi, sobre a
-    pilha libcamera (a mesma das ferramentas rpicam-*). O sensor é detectado sozinho e o libcamera usa o
-    arquivo de ajuste dele (imx219.json). Exposição e balanço de branco fixos para que o brilho dependa
-    só das fitas LED da câmara (RNF08) e dos degraus de luz do controle (RNF09).
+    Câmera CSI via Picamera2 — a biblioteca Python oficial da Raspberry Pi, sobre a pilha libcamera (a mesma
+    das ferramentas rpicam-*). O sensor é detectado ao abrir a câmera (Camera Module v2 = imx219, v1 = ov5647)
+    e o perfil dele é aplicado; o libcamera usa o arquivo de ajuste do sensor. Exposição e balanço de branco
+    fixos para que o brilho dependa só das fitas LED da câmara (RNF08) e dos degraus de luz (RNF09).
     """
 
     backend = "picamera2"
@@ -96,11 +116,7 @@ class CameraService(_Tunable):
         from picamera2 import Picamera2  # só existe no Raspberry Pi (apt: python3-picamera2)
 
         cam = Picamera2()
-        self.detected_sensor = str(cam.camera_properties.get("Model", "")) or None
-        if self.detected_sensor and self.cfg.sensor and self.detected_sensor.lower() != self.cfg.sensor.lower():
-            log.warning("vision.toml expects sensor %s but the camera reports %s: check the camera cable and "
-                        "camera_auto_detect / dtoverlay in /boot/firmware/config.txt",
-                        self.cfg.sensor, self.detected_sensor)
+        self._use_sensor(str(cam.camera_properties.get("Model", "")) or None)
         controls = cam.camera_controls        # nome -> (mín, máx, padrão), informado pelo sensor
         if "ExposureTime" in controls and "AnalogueGain" in controls:
             exp, gain = controls["ExposureTime"], controls["AnalogueGain"]
@@ -172,6 +188,20 @@ class RpicamCameraService(_Tunable):
     def configure(self) -> None:
         if self._run is subprocess.run and shutil.which(self.COMMAND) is None:
             raise RuntimeError(f"{self.COMMAND} not found: sudo apt install rpicam-apps")
+        self._use_sensor(self.list_cameras())
+
+    def list_cameras(self) -> Optional[str]:
+        """Modelo da primeira câmera, por `rpicam-hello --list-cameras` (ex.: "0 : imx219 [3280x2464 ...]")."""
+        import re
+
+        try:
+            out = self._run(["rpicam-hello", "--list-cameras"], capture_output=True, timeout=15, check=False)
+        except (OSError, subprocess.SubprocessError) as exc:
+            log.warning("could not list the cameras: %s", exc)
+            return None
+        text = (out.stdout or b"").decode("utf-8", "replace") + (out.stderr or b"").decode("utf-8", "replace")
+        match = re.search(r"^\s*\d+\s*:\s*([A-Za-z0-9_]+)", text, re.M)
+        return match.group(1) if match else None
 
     def command(self, output: str, auto: bool = False) -> list[str]:
         w, h = self.cfg.resolution
@@ -227,6 +257,10 @@ class FileCameraService(_Tunable):
         d = CameraConfig()
         self._reference = (d.exposure_us * d.analogue_gain, d.awb_gains)
         self.hold = False                   # True = repete a última imagem (carta parada na câmara)
+
+    @property
+    def sensor(self):
+        return None                              # fotos de arquivo: nenhuma câmera conectada
 
     def configure(self) -> None:
         pass

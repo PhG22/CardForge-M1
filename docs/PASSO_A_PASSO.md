@@ -217,14 +217,14 @@ Sem `MTG_SERVER_URL`, o Start do Pi não pede login (como antes) e as runs ficam
 ### B1. Sistema
 
 1. Raspberry Pi OS **64-bit** (Bookworm ou mais novo). O onnxruntime não existe para 32 bits.
-2. Câmera: a Camera Module v2 (IMX219) é detectada sozinha. Em `/boot/firmware/config.txt` deve haver
-   `camera_auto_detect=1`; se houver `dtoverlay=ov5647` (câmera antiga), apague a linha ou troque por
-   `dtoverlay=imx219`. Reinicie.
+2. Câmera: IMX219 (Camera Module v2) ou OV5647 (Camera Module v1) — o serviço detecta qual está ligada e usa o
+   perfil dela. Em `/boot/firmware/config.txt` deixe `camera_auto_detect=1` e nenhum `dtoverlay=imx219` /
+   `dtoverlay=ov5647` fixo, para poder trocar de módulo sem editar o arquivo. Reinicie.
 3. Confira a câmera (com o serviço ainda não instalado):
    ```bash
    rpicam-hello --list-cameras
    ```
-   **Esperado:** uma linha com `imx219`.
+   **Esperado:** uma linha com `imx219` ou `ov5647`.
 4. Barramento: com o conversor **USB-RS485**, confira que ele aparece:
    ```bash
    ls /dev/ttyUSB*
@@ -383,10 +383,15 @@ e abra `http://<ip-do-pi>:8000/calibration` no celular ou notebook. Sem acesso �
 ssh -L 8000:localhost:8000 raspad@<ip-do-pi>
 ```
 
-1. **Recorte fixo**: ponha cartas comuns na pilha; **Alimentar 1 carta** → **Medir posição desta carta** →
-   **Descartar carta (bin 6)**, repetindo com 4 ou 5 cartas; depois **Salvar recorte fixo**. Daí em diante a
-   identificação não procura a borda da carta: usa estes cantos. A *variação entre as cartas* deve ficar em até
-   ~15 px; se passar disso, a carta não para sempre no mesmo lugar (confira o flap) ou use `[crop] margin`.
+1. **Recorte fixo** (um por câmera): ponha cartas comuns na pilha; **Alimentar 1 carta** → **Medir posição desta
+   carta** → **Descartar carta (bin 6)**, repetindo com 4 ou 5 cartas; depois **Salvar recorte fixo**. Medições
+   discrepantes ficam fora da média (a página lista as descartadas). A *variação entre as cartas* deve ficar em até
+   ~30 px; se passar disso, a carta não para sempre no mesmo lugar (confira o flap) ou use `[crop] margin`.
+   **Se a borda detectada (verde) não for a borda externa da carta** — por exemplo cortando o rodapé com edição e
+   número, como acontece quando a borda preta da carta encosta no suporte preto —, use **Marcar os cantos à mão**:
+   **Carregar foto**, toque nos 4 cantos da borda externa (1 = início do título, ..., 4 = lado da edição),
+   **Pré-visualizar recorte** (a carta deve aparecer em pé e inteira; senão **Girar 90°** ou ajuste os pontos) e
+   **Salvar estes cantos**. A pré-visualização também mostra a nitidez do rodapé, que deve passar de 70.
    Sem esse passo, o Start é recusado com `CROP_NOT_CALIBRATED`.
    Cada medição guarda a foto em `calibragem_recorte/` na pasta do projeto: a original em resolução cheia,
    uma cópia com a borda detectada desenhada (`_anotada`), e uma linha em `medicoes.csv` com os cantos. Fotos em

@@ -50,7 +50,8 @@ def test_rpicam_backend_builds_the_rpicam_still_command():
             out = cv2.imencode(".png", np.zeros((4, 4, 3), np.uint8))[1].tobytes()
         return subprocess.CompletedProcess(cmd, 0, stdout=out, stderr=b"")
 
-    cam = RpicamCameraService(CameraConfig(exposure_us=15000, analogue_gain=2.5, awb_gains=(1.6, 1.5)), runner)
+    cam = RpicamCameraService(CameraConfig(sensor="imx219", resolution=(1640, 1232), exposure_us=15000,
+                                           analogue_gain=2.5, awb_gains=(1.6, 1.5)), runner)
     assert cam.capture().image.shape == (4, 4, 3)
     cmd = calls[0]
     assert cmd[0] == "rpicam-still" and "--immediate" in cmd
@@ -215,8 +216,8 @@ def test_picamera2_uses_the_imx219_limits(monkeypatch, caplog):
     cam = CameraService(CameraConfig(warmup_s=0))
     cam.configure()
     s = cam.settings()
-    assert s["sensor"] == "imx219" and s["resolution"] == [1640, 1232]
-    assert cam.camera.config["main"] == {"size": (1640, 1232), "format": "RGB888"}
+    assert s["sensor"] == "imx219" and s["resolution"] == [3280, 2464]
+    assert cam.camera.config["main"] == {"size": (3280, 2464), "format": "RGB888"}     # IMX219 profile: 8 MP
     assert s["limits"] == {"exposure_us": [75, 1_000_000], "analogue_gain": [1.0, 10.666667]}
     assert cam.camera.controls[0] == {"AeEnable": False, "ExposureTime": 20000, "AnalogueGain": 2.0,
                                       "AwbEnable": False, "ColourGains": (1.6, 1.5)}
@@ -230,5 +231,5 @@ def test_picamera2_uses_the_imx219_limits(monkeypatch, caplog):
 def test_picamera2_warns_when_another_camera_is_plugged(monkeypatch, caplog):
     from cardforge.cv.capture import CameraService
     fake_picamera2(monkeypatch, "ov5647")
-    CameraService(CameraConfig(warmup_s=0)).configure()
+    CameraService(CameraConfig(sensor="imx219", warmup_s=0)).configure()
     assert "expects sensor imx219 but the camera reports ov5647" in caplog.text

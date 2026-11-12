@@ -195,6 +195,7 @@ def create_app(settings: Settings | None = None, serial_port: SerialPort | None 
         # The camera calibration page needs a real VisionModule (camera or photo files).
         app.state.vision_module = vision_module if hasattr(vision_module, "calibration_snapshot") else None
         app.state.crop_samples = []        # card positions measured on the calibration page
+        app.state.crop_frame_size = None
         if server is None and not settings.app_password:
             log.warning("MTG_APP_PASSWORD is empty: the app can sign in with any username and password")
         await asyncio.to_thread(controller.power_on)

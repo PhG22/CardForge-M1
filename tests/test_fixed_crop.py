@@ -21,13 +21,13 @@ needs_photos = pytest.mark.skipif(not (ROOT / "data/cards.db").exists() or not F
 
 
 def test_fixed_quad_scales_the_saved_corners_to_the_frame():
-    crop = CropConfig(mode="fixed", corners=[[0.25, 0.2], [0.75, 0.2], [0.75, 0.8], [0.25, 0.8]])
+    crop = CropConfig(mode="fixed", corners=[[0.25, 0.2], [0.5, 0.2], [0.5, 0.8], [0.25, 0.8]])  # card order
     quad = fixed_quad(crop, (1232, 1640))
     assert quad.strategy is ContourStrategy.FIXED
-    assert np.allclose(quad.corners, [[410, 246.4], [1230, 246.4], [1230, 985.6], [410, 985.6]])
+    assert np.allclose(quad.corners, [[410, 246.4], [820, 246.4], [820, 985.6], [410, 985.6]])
     assert normalized_corners(quad, (1232, 1640)) == crop.corners
     wider = fixed_quad(CropConfig(mode="fixed", corners=crop.corners, margin=0.1), (1232, 1640))
-    assert np.allclose(wider.corners[0], [369, 209.44])                    # 10 % larger around the centre
+    assert np.allclose(wider.corners[0], [389.5, 209.44])                  # 10 % larger around the centre
     assert fixed_quad(CropConfig(mode="fixed"), (1232, 1640)) is None      # not calibrated
 
 
@@ -141,3 +141,54 @@ def test_a_picture_without_a_card_border_is_kept_too(tmp_path):
         r = c.post("/calibration/crop/sample")
         assert r.status_code == 409 and "_sem_borda.jpg" in r.json()["message"]
     assert len(list(captures.glob("*_sem_borda.jpg"))) == 1
+
+
+def test_a_card_lying_sideways_comes_out_upright():
+    """The card in the reading chamber lies rotated 90° clockwise (title on the right edge)."""
+    from cardforge.cv.detection import CardQuad, PerspectiveRectifier, to_card_order
+    card = np.full((880, 630, 3), 200, np.uint8)
+    card[20:90, 30:600] = (0, 0, 255)                                   # red title bar at the top
+    lying = cv2.rotate(card, cv2.ROTATE_90_CLOCKWISE)                   # 630 x 880 -> 880 wide, 630 tall
+    frame = np.zeros((1232, 1640, 3), np.uint8)
+    frame[300:930, 400:1280] = lying
+    image_order = np.float32([[400, 300], [1279, 300], [1279, 929], [400, 929]])
+    corners = to_card_order(image_order)
+    assert np.allclose(corners[0], [1279, 300])                         # card top-left = picture top-right
+    out = PerspectiveRectifier(VisionConfig()).rectify(frame, CardQuad(corners, 0, ContourStrategy.FIXED)).image
+    assert out.shape == (880, 630, 3) and out[50, 300, 2] > 200 and out[800, 300, 2] < 220
+
+
+def test_outlier_measurements_are_left_out():
+    from cardforge.cv.calibration import aggregate_crop_samples
+    good = [[[0.80 + d, 0.34], [0.83, 0.94 + d], [0.19, 0.955], [0.19 + d, 0.37]] for d in (0, 0.005, -0.004, 0.003)]
+    text_box_only = [[0.45, 0.37], [0.46, 0.94], [0.19, 0.95], [0.20, 0.38]]
+    agg = aggregate_crop_samples(good + [text_box_only], (1232, 1640))
+    assert agg["rejected"] == [4] and agg["used"] == [0, 1, 2, 3] and agg["spread_px"] < 15
+    assert abs(agg["mean"][0][0] - 0.801) < 0.003
+
+
+@needs_photos
+def test_corners_marked_by_hand(tmp_path):
+    images = tmp_path / "imgs"
+    images.mkdir()
+    shutil.copy(FOREST, images / "0.jpg")
+    toml = tmp_path / "vision.toml"
+    toml.write_text((ROOT / "vision.toml").read_text(encoding="utf-8").replace(
+        'db_path = "data/cards.db"', f'db_path = "{(ROOT / "data/cards.db").as_posix()}"'), encoding="utf-8")
+    image = cv2.imread(str(FOREST))
+    corners = normalized_corners(CardDetector(VisionConfig()).detect(image), image.shape)
+    settings = fast_settings(vision="files", vision_images=str(images), vision_config=str(toml),
+                             crop_captures_dir=str(tmp_path / "cap"))
+    with TestClient(create_app(settings)) as c:
+        c.post("/calibration/feed")
+        crossed = [corners[0], corners[2], corners[1], corners[3]]
+        assert c.post("/calibration/crop/preview", json={"corners": crossed}).json()["code"] == "BAD_CORNERS"
+        assert c.post("/calibration/crop/manual", json={"corners": corners[:3]}).status_code == 400
+        preview = c.post("/calibration/crop/preview", json={"corners": corners}).json()
+        assert preview["image"].startswith("data:image/jpeg") and preview["metrics"]["info_sharpness"] > 0
+        saved = c.post("/calibration/crop/manual", json={"corners": corners}).json()
+        assert saved["crop"]["calibrated"]
+        ident = c.post("/calibration/identify").json()["result"]
+        assert ident["card"]["name"] == "Forest" and ident["debug"]["strategy"] == "FIXED"
+    assert np.allclose(VisionConfig.load(toml).crop.corners, corners, atol=1e-4)
+    assert list((tmp_path / "cap").glob("recorte_salvo_*.json"))

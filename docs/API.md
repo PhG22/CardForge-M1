@@ -312,7 +312,9 @@ routes; all answer **409** `RUN_ACTIVE` during a run and **409** `VISION_OFF` wi
 | `GET /calibration/crop` | Fixed crop: `mode`, saved `corners`, measured `samples`, their `mean` and `spread_px` |
 | `POST /calibration/crop/sample` | Find the card on the platform by border detection (calibration only) and keep its corners. The picture is saved in `calibragem_recorte/` (original, `_anotada`, `medicoes.csv`; `_sem_borda` when not found) and its name comes back in `picture` |
 | `DELETE /calibration/crop/samples` | Forget the measurements |
-| `POST /calibration/crop/save` | The average position becomes the fixed crop, live and in `vision.toml` `[crop]` |
+| `POST /calibration/crop/save` | The average position (outliers left out: `rejected` lists their pictures) becomes the fixed crop of the connected camera, live and in `vision.toml` |
+| `POST /calibration/crop/preview` | `{"corners": [[x, y] x 4]}` (fractions of the picture, card order: title-side top-left first): the card cut with them + `metrics` (`info_sharpness`, ...) |
+| `POST /calibration/crop/manual` | Same body: save corners marked by hand as the fixed crop. **400** `BAD_CORNERS` if they are not 4 points around a card-shaped area |
 
 With the fixed crop the identification never searches for the card border: it warps the picture with the
 saved corners (`strategy: "FIXED"` in the result). `MTG_VISION=files` (photos from elsewhere) always uses

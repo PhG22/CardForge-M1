@@ -18,7 +18,7 @@ cardforge/
     result.py                #   IdentificationResult, IdentificationStatus
     config.py                #   VisionConfig (lido de vision.toml)
     capture/                 #   CameraService (Picamera2, Camera v2 IMX219), RpicamCameraService (rpicam-still), FileCameraService
-    calibration.py           #   métricas de calibração e gravação do [camera] no vision.toml
+    calibration.py           #   métricas de calibração, média robusta do recorte e gravação no vision.toml
     detection/               #   fixed.py (recorte fixo calibrado) · ContourCandidateGenerator, QuadrilateralFinder,
                              #   CardDetector (detecção de bordas: só calibração e fotos de outras fontes), PerspectiveRectifier
     ocr/                     #   OcrEngine, OrientationResolver, FaceDownDetector, LayoutClassifier, RoiCatalog, FieldExtractor

@@ -35,6 +35,10 @@
   #msg { min-height:1.4em; color:var(--muted); margin-top:8px; }
   .muted { color:var(--muted); font-size:13px; }
   #idimg { max-width:220px; width:40%; border-radius:6px; float:right; margin-left:10px; }
+  #corner-canvas { width:100%; display:block; border-radius:6px; background:#000; touch-action:none; cursor:crosshair; }
+  .preview-pair { display:flex; gap:12px; align-items:flex-start; margin-top:10px; flex-wrap:wrap; }
+  #manual-preview { width:180px; border-radius:6px; display:none; }
+  ol.steps { margin:6px 0; padding-left:20px; } ol.steps li { margin:2px 0; }
 </style>
 </head>
 <body>
@@ -60,6 +64,34 @@
       <h2>Teste de identificação</h2>
       <div id="idres" class="muted">Coloque uma carta na plataforma (Alimentar 1 carta) e teste a leitura completa.</div>
       <div class="row"><button id="b-identify">Identificar a carta</button></div>
+    </section>
+    <section>
+      <h2>Marcar os cantos à mão</h2>
+      <p class="muted">Use quando a detecção automática erra a borda (ex.: borda preta da carta sobre o suporte preto).
+        Com uma carta na plataforma, <b>Carregar foto</b> e toque nos 4 cantos da borda <b>externa</b> da carta, nesta ordem:</p>
+      <ol class="steps muted">
+        <li>canto superior esquerdo da carta — onde começa o <b>título</b>;</li>
+        <li>canto superior direito (lado do custo de mana);</li>
+        <li>canto inferior direito;</li>
+        <li>canto inferior esquerdo — lado da <b>edição e número</b>.</li>
+      </ol>
+      <p class="muted">Arraste um ponto para ajustá-lo (a lupa mostra o detalhe). Se a carta retificada sair deitada ou de cabeça para baixo, use <b>Girar 90°</b>.</p>
+      <canvas id="corner-canvas" width="960" height="720"></canvas>
+      <div class="row">
+        <button id="b-man-load">Carregar foto</button>
+        <button id="b-man-saved">Partir do recorte salvo</button>
+        <button id="b-man-mean">Partir da média medida</button>
+        <button id="b-man-rotate">Girar 90°</button>
+        <button id="b-man-clear">Limpar pontos</button>
+      </div>
+      <div class="row">
+        <button id="b-man-preview">Pré-visualizar recorte</button>
+        <button class="primary" id="b-man-save">Salvar estes cantos</button>
+      </div>
+      <div class="preview-pair">
+        <img id="manual-preview" alt="Carta recortada com os cantos marcados">
+        <table id="manual-metrics" style="max-width:300px"></table>
+      </div>
     </section>
   </div>
   <div>
@@ -214,12 +246,17 @@ $('b-auto').onclick = e => guarded(e.target, async () => {
 $('b-save').onclick = e => guarded(e.target, async () => { const d = await call('POST', '/calibration/save'); msg(d.message, 'ok'); });
 $('b-ref').onclick = e => guarded(e.target, async () => { const d = await call('POST', '/calibration/reference'); msg(d.message, 'ok'); });
 
+let lastCrop = null;
 function showCrop(c) {
-  const rows = [['Modo', c.mode === 'fixed' ? 'recorte fixo' : 'detecção de bordas'],
+  lastCrop = c;
+  const rows = [['Câmera', c.sensor],
+                ['Modo', c.mode === 'fixed' ? 'recorte fixo' : 'detecção de bordas'],
                 ['Calibrado', c.calibrated ? '<span class="ok">sim</span>' : '<span class="warn">não</span>'],
                 ['Medições nesta sessão', String(c.samples)]];
+  if (c.used !== undefined)
+    rows.push(['Usadas na média', String(c.used) + (c.rejected.length ? ` — <span class="warn">${c.rejected.length} descartada(s): ${c.rejected.join(', ')}</span>` : '')]);
   if (c.spread_px !== undefined)
-    rows.push(['Variação entre as cartas', `<span class="${c.spread_px <= 15 ? 'ok' : 'warn'}">${c.spread_px.toFixed(0)} px</span>`]);
+    rows.push(['Variação entre as cartas', `<span class="${c.spread_px <= 30 ? 'ok' : 'warn'}">${c.spread_px.toFixed(0)} px</span>`]);
   $('crop').innerHTML = rows.map(r => `<tr><td>${r[0]}</td><td>${r[1]}</td></tr>`).join('');
 }
 $('b-crop-sample').onclick = e => guarded(e.target, async () => {
@@ -245,6 +282,97 @@ $('b-identify').onclick = e => guarded(e.target, async () => {
     (c ? `${c.name} — ${c.set_code} ${c.collector_number} · cor ${c.color_identity || 'incolor'}<br>` : '') +
     `<span class="muted">OCR: “${r.ocr.name}” · “${r.ocr.info_raw}”</span>`;
 });
+
+// ---------------------------------------------------------------- manual corners
+const cv = $('corner-canvas'), cx = cv.getContext('2d');
+const photo = new Image();
+let pts = [], dragging = -1, pointer = null;
+const LABELS = ['1 título', '2', '3', '4 edição'];
+
+function canvasPoint(ev) {
+  const r = cv.getBoundingClientRect();
+  return [(ev.clientX - r.left) / r.width, (ev.clientY - r.top) / r.height];   // fractions of the picture
+}
+function drawCorners() {
+  cx.clearRect(0, 0, cv.width, cv.height);
+  if (photo.complete && photo.naturalWidth) cx.drawImage(photo, 0, 0, cv.width, cv.height);
+  else { cx.fillStyle = '#9aa0a8'; cx.font = '20px system-ui'; cx.fillText('Carregue uma foto da carta na plataforma', 20, 40); }
+  const P = pts.map(([x, y]) => [x * cv.width, y * cv.height]);
+  if (P.length > 1) {
+    cx.strokeStyle = '#ffa31a'; cx.lineWidth = 3; cx.beginPath();
+    P.forEach(([x, y], i) => i ? cx.lineTo(x, y) : cx.moveTo(x, y));
+    if (P.length === 4) cx.closePath();
+    cx.stroke();
+  }
+  if (P.length >= 2) {                                   // the card's top edge (title side) in green
+    cx.strokeStyle = '#4cc38a'; cx.lineWidth = 5; cx.beginPath(); cx.moveTo(...P[0]); cx.lineTo(...P[1]); cx.stroke();
+  }
+  P.forEach(([x, y], i) => {
+    cx.fillStyle = i === 0 ? '#4cc38a' : '#ffa31a';
+    cx.beginPath(); cx.arc(x, y, 9, 0, 2 * Math.PI); cx.fill();
+    cx.fillStyle = '#000'; cx.font = 'bold 13px system-ui'; cx.fillText(String(i + 1), x - 4, y + 5);
+    cx.fillStyle = '#fff'; cx.font = '15px system-ui'; cx.fillText(LABELS[i], x + 12, y - 10);
+  });
+  if (dragging >= 0 && pointer && photo.naturalWidth) {  // loupe: 3x around the point being dragged
+    const [nx, ny] = pointer, R = 80, Z = 3;
+    const sx = nx * photo.naturalWidth, sy = ny * photo.naturalHeight;
+    const srcR = R / Z * photo.naturalWidth / cv.width;
+    const lx = nx < 0.5 ? cv.width - R - 10 : R + 10, ly = R + 10;
+    cx.save(); cx.beginPath(); cx.arc(lx, ly, R, 0, 2 * Math.PI); cx.clip();
+    cx.drawImage(photo, sx - srcR, sy - srcR, 2 * srcR, 2 * srcR, lx - R, ly - R, 2 * R, 2 * R);
+    cx.strokeStyle = '#ff3b3b'; cx.lineWidth = 1;
+    cx.beginPath(); cx.moveTo(lx - R, ly); cx.lineTo(lx + R, ly); cx.moveTo(lx, ly - R); cx.lineTo(lx, ly + R); cx.stroke();
+    cx.restore();
+    cx.strokeStyle = '#fff'; cx.lineWidth = 2; cx.beginPath(); cx.arc(lx, ly, R, 0, 2 * Math.PI); cx.stroke();
+  }
+}
+cv.addEventListener('pointerdown', ev => {
+  const p = canvasPoint(ev), r = cv.getBoundingClientRect();
+  const near = pts.findIndex(([x, y]) => Math.hypot((x - p[0]) * r.width, (y - p[1]) * r.height) < 22);
+  if (near >= 0) dragging = near;
+  else if (pts.length < 4) { pts.push(p); dragging = pts.length - 1; }
+  pointer = p; cv.setPointerCapture(ev.pointerId); drawCorners();
+});
+cv.addEventListener('pointermove', ev => {
+  if (dragging < 0) return;
+  const p = canvasPoint(ev);
+  pts[dragging] = [Math.min(1, Math.max(0, p[0])), Math.min(1, Math.max(0, p[1]))];
+  pointer = pts[dragging]; drawCorners();
+});
+cv.addEventListener('pointerup', () => { dragging = -1; pointer = null; drawCorners(); });
+
+async function loadPhoto() {
+  const blob = await fetch('/calibration/frame.jpg?overlay=0&width=1600').then(r => {
+    if (!r.ok) return r.json().then(d => { throw new Error(d.message || `HTTP ${r.status}`); });
+    return r.blob();
+  });
+  await new Promise(res => { photo.onload = res; photo.src = URL.createObjectURL(blob); });
+  cv.height = Math.round(cv.width * photo.naturalHeight / photo.naturalWidth);
+  drawCorners();
+}
+function needFour() { if (pts.length !== 4) throw new Error('Marque os 4 cantos primeiro.'); }
+$('b-man-load').onclick = e => guarded(e.target, async () => { await loadPhoto(); msg('Foto carregada: toque nos 4 cantos da carta.'); });
+$('b-man-saved').onclick = () => { if (lastCrop && lastCrop.corners.length === 4) { pts = lastCrop.corners.map(p => [...p]); drawCorners(); } else msg('Ainda não há recorte salvo para esta câmera.', 'warn'); };
+$('b-man-mean').onclick = () => { if (lastCrop && lastCrop.mean) { pts = lastCrop.mean.map(p => [...p]); drawCorners(); } else msg('Meça a posição de alguma carta primeiro.', 'warn'); };
+$('b-man-rotate').onclick = () => { if (pts.length === 4) { pts = [pts[3], pts[0], pts[1], pts[2]]; drawCorners(); } };
+$('b-man-clear').onclick = () => { pts = []; drawCorners(); $('manual-preview').style.display = 'none'; };
+$('b-man-preview').onclick = e => guarded(e.target, async () => {
+  needFour();
+  const d = await call('POST', '/calibration/crop/preview', { corners: pts });
+  $('manual-preview').src = d.image; $('manual-preview').style.display = 'block';
+  const m = d.metrics, ok = m.info_sharpness >= m.info_min;
+  $('manual-metrics').innerHTML =
+    `<tr><td>Brilho da carta</td><td>${m.brightness.toFixed(0)}</td></tr>` +
+    `<tr><td>Nitidez da carta</td><td>${m.sharpness.toFixed(0)}</td></tr>` +
+    `<tr><td>Nitidez do rodapé (edição/número)</td><td class="${ok ? 'ok' : 'warn'}">${m.info_sharpness.toFixed(0)} (mín. ${m.info_min})</td></tr>`;
+  msg('Confira: título em cima, rodapé com edição e número embaixo, carta inteira. Senão ajuste os pontos ou gire.');
+});
+$('b-man-save').onclick = e => guarded(e.target, async () => {
+  needFour();
+  const d = await call('POST', '/calibration/crop/manual', { corners: pts });
+  showCrop(d.crop); msg(d.message, 'ok'); await snapshot();
+});
+drawCorners();
 
 refreshState(); setInterval(refreshState, 5000);
 call('GET', '/calibration/settings').then(d => showSettings(d.settings)).catch(e => msg(e.message, 'bad'));

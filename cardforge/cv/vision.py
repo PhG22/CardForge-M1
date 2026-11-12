@@ -51,6 +51,21 @@ class VisionModule:
             self._open_database()
             if open_camera:
                 self.camera.configure()
+                self._use_sensor_crop()
+
+    @property
+    def sensor(self):
+        """Sensor da câmera (imx219, ov5647...) ou None se desconhecido (ex.: fotos de arquivo)."""
+        return getattr(self.camera, "sensor", None)
+
+    def _use_sensor_crop(self) -> None:
+        """Cada câmera enquadra a carta de um jeito: usa o recorte calibrado para o sensor conectado."""
+        corners = self.cfg.crop.corners_by_sensor.get(self.sensor or "")
+        if corners:
+            self.cfg.crop.corners = [list(map(float, c)) for c in corners]
+        elif self.sensor and self.cfg.crop.mode == "fixed" and self.cfg.crop.corners_by_sensor:
+            log.warning("no fixed crop calibrated for the %s camera yet", self.sensor)
+            self.cfg.crop.corners = []
 
     def _open_database(self) -> None:
         if self.ocr is None:
@@ -156,22 +171,31 @@ class VisionModule:
         path = path or getattr(self.cfg, "source_path", None) or "vision.toml"
         with self._lock:
             self.cfg.crop.mode = "fixed"
-            self.cfg.crop.corners = [[float(x), float(y)] for x, y in corners]
-            save_section(path, "crop", {"mode": "fixed", "corners": self.cfg.crop.corners,
-                                        "margin": float(self.cfg.crop.margin)})
+            self.cfg.crop.corners = [[round(float(x), 5), round(float(y), 5)] for x, y in corners]
+            if self.sensor:                          # um recorte por câmera
+                self.cfg.crop.corners_by_sensor[self.sensor] = self.cfg.crop.corners
+                save_section(path, "crop", {"mode": "fixed", "margin": float(self.cfg.crop.margin)})
+                save_section(path, "crop.corners_by_sensor", {self.sensor: self.cfg.crop.corners})
+            else:
+                save_section(path, "crop", {"mode": "fixed", "corners": self.cfg.crop.corners,
+                                            "margin": float(self.cfg.crop.margin)})
         return str(path)
 
     def save_camera_settings(self, path=None) -> str:
-        """Grava exposição, ganho, branco e luz na seção [camera] do vision.toml."""
+        """Grava exposição, ganho e branco no perfil do sensor ([camera.profiles.<sensor>]) e a luz em [camera]."""
         from .calibration import save_section
 
         path = path or getattr(self.cfg, "source_path", None) or "vision.toml"
         with self._lock:
             c = self.cfg.camera
-            save_section(path, "camera", {"exposure_us": int(c.exposure_us),
-                                          "analogue_gain": round(float(c.analogue_gain), 3),
-                                          "awb_gains": [round(float(g), 3) for g in c.awb_gains],
-                                          "light_level": int(c.light_level)})
+            values = {"exposure_us": int(c.exposure_us), "analogue_gain": round(float(c.analogue_gain), 3),
+                      "awb_gains": [round(float(g), 3) for g in c.awb_gains]}
+            if self.sensor:
+                c.profiles.setdefault(self.sensor, {}).update(values)
+                save_section(path, f"camera.profiles.{self.sensor}", values)
+                save_section(path, "camera", {"light_level": int(c.light_level)})
+            else:
+                save_section(path, "camera", {**values, "light_level": int(c.light_level)})
         return str(path)
 
     def close(self) -> None:
