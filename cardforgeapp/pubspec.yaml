@@ -23,7 +23,7 @@ dependencies:
   # CSV export (RF24): temporary file + system share sheet.
   cross_file: ^0.3.4
   path_provider: ^2.1.4
-  share_plus: ^13.0.0
+  share_plus: ^12.0.2
   # RF38: alerts as notifications while the app is in the background or the
   # phone is locked. A foreground service watches the run's alerts on the
   # CardForge server (no Firebase) and shows them as local notifications.

@@ -551,10 +551,12 @@ class SorterController:
         return result
 
     def power_on(self) -> None:
-        """Service start: status LED to Idle (RF16), chamber light to its base level, and (RF08)
-        homing of the base in the background, so the service answers at once. Start also homes
-        again before every run."""
-        self._led("IDLE")
+        """Service start: chamber light to its base level and (RF08) homing of the base in the
+        background, so the service answers at once. Start also homes again before every run.
+        The status LED stays STARTING (white) until the power-on homing is over, then shows Idle
+        (RF16, Appendix B: "power-on, homing complete") or, while there is no Wi-Fi, Setup /
+        No Network (RF41)."""
+        self._led("IDLE")                          # shown once the LED leaves STARTING
         try:
             self._light(self.s.light_base_level)
         except (BusError, FrameError) as exc:
@@ -564,6 +566,8 @@ class SorterController:
             self._homing_thread = threading.Thread(target=self._home_at_power_on, name="power-on-homing",
                                                    daemon=True)
             self._homing_thread.start()
+        else:
+            self.led.ready()
 
     def _home_at_power_on(self) -> None:
         started = time.monotonic()
@@ -581,6 +585,7 @@ class SorterController:
             log.warning("base not homed at power-on (%s: %s); Start will home it", code, message)
         finally:
             self._power_on_homing.clear()
+            self.led.ready()                   # homed or not: Start homes again and reports any fault
 
     @property
     def homing_at_power_on(self) -> bool:

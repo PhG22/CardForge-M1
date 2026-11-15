@@ -143,6 +143,18 @@ def create_app(settings: Settings | None = None, serial_port: SerialPort | None 
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        # First thing: the status LED shows STARTING (white) while the rest loads (camera, card
+        # database, modules, power-on homing). The Pi firmware already lit it white at power-on
+        # (config.txt), so the LED never looks "ready" before the machine is.
+        status_led = build_status_led(settings.led, settings.led_pins, settings.simulate)
+        try:
+            async with _machine(app, status_led):
+                yield
+        finally:
+            status_led.close()
+
+    @asynccontextmanager
+    async def _machine(app: FastAPI, status_led):
         sim_world = None
         port = serial_port
         if port is None and settings.simulate:
@@ -164,7 +176,6 @@ def create_app(settings: Settings | None = None, serial_port: SerialPort | None 
         hub.bind_loop(asyncio.get_running_loop())
         store = RunStore(settings.run_db)
         identifier, vision_module = await asyncio.to_thread(build_identifier, settings, vision)
-        status_led = build_status_led(settings.led, settings.led_pins, settings.simulate)
         server, worker, alerts = server_client, None, None
         if server is None and settings.server_url:
             server = ServerClient(settings.server_url, settings.machine_token, settings.server_timeout_s)
@@ -179,6 +190,7 @@ def create_app(settings: Settings | None = None, serial_port: SerialPort | None 
         if settings.network_monitor == "on" or (settings.network_monitor == "auto" and not settings.simulate
                                                 and NetworkMonitor.available()):
             monitor = NetworkMonitor(status_led)
+            await asyncio.to_thread(monitor.check_once)   # known before the LED leaves STARTING
             monitor.start()
         controller = SorterController(TopModule(bus), BottomModule(bus), identifier, hub, settings, store,
                                       status_led, on_run_finished=worker.notify if worker else None)
@@ -220,7 +232,6 @@ def create_app(settings: Settings | None = None, serial_port: SerialPort | None 
                 server.close()
             if monitor is not None:
                 monitor.stop()
-            status_led.close()
             bus.close()
             if vision_module is not None and vision is None:
                 vision_module.close()

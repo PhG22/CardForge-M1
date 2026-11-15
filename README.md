@@ -226,7 +226,8 @@ seguindo o Apêndice B dos requisitos:
 
 | Estado | LED | Quando |
 |---|---|---|
-| Idle | verde fixo | ligado e pronto, run terminada |
+| Starting | branco fixo | do momento em que o Pi é ligado até o serviço estar no ar e a base homed (RF08). Acrescentado ao Apêndice B: os requisitos não definem um estado de inicialização |
+| Idle | verde fixo | ligado e pronto (Wi-Fi conectado, homing feito), run terminada |
 | Running | verde piscando 1 Hz | run em andamento |
 | Feed Jam | vermelho fixo | run pausada por falha (atolamento, carta presa, base); também módulo sem resposta |
 | Startup Blocked | amarelo fixo | Start recusado (bin com carta, pilha vazia...), até o próximo comando |
@@ -235,6 +236,19 @@ seguindo o Apêndice B dos requisitos:
 | Emergency Stop / Double-Feed / Paused – Connection Lost | vermelho 4 Hz / vermelho 2 Hz / amarelo 1 Hz | implementados, mas não acontecem: o botão de emergência corta a energia do Pi (desvio do RF16, abaixo), RF06 não foi construído (RF37 = N/A), a identificação é offline (RF30 = N/A) |
 
 Os estados de rede (azul) só aparecem com a máquina parada; o estado da máquina tem prioridade.
+
+Sequência ao ligar: **branco** (o Pi está iniciando) → **azul fixo** (pronto para parear pelo app e configurar
+o Wi-Fi) · **azul piscando** (Wi-Fi configurado mas fora de alcance) · **verde** (Wi-Fi conectado, pronto para Start).
+Depois da configuração pelo Bluetooth o LED passa de azul para verde em até ~2 s, sem reiniciar.
+
+Para o branco aparecer já no primeiro segundo, antes do Linux subir, acrescente em `/boot/firmware/config.txt`
+(`/boot/config.txt` antes do Bookworm) e reinicie:
+
+```
+gpio=17,22,27=op,dh
+```
+
+Sem essa linha o LED fica apagado até o serviço `sorter-api` iniciar (~10–30 s) e só então fica branco.
 
 ## Sem hardware (PC)
 

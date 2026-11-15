@@ -314,9 +314,11 @@ sensor solto lê "vazio"). Com uma carta em algum bin, `curl -X POST <ip-do-pi>:
 
 ### C1b. LED de status
 
-Ao subir o serviço o LED fica **verde fixo**. Confira os outros estados: Start com um bin ocupado → **amarelo fixo**;
+Ao subir o serviço o LED fica **branco fixo** (iniciando: carregando a visão e fazendo o homing da base) e depois
+**verde fixo** (pronto), **azul fixo** (nenhum Wi-Fi configurado: pareie pelo app) ou **azul piscando** (Wi-Fi
+configurado, fora de alcance). Confira os outros estados: Start com um bin ocupado → **amarelo fixo**;
 uma run → **verde piscando**; trave o alimentador durante uma run → **vermelho fixo** (Resume volta ao verde
-piscando). Desconecte o Wi-Fi com a máquina parada (`sudo nmcli radio wifi off`) → **azul piscando** em até 5 s
+piscando). Desconecte o Wi-Fi com a máquina parada (`sudo nmcli radio wifi off`) → **azul piscando** em até 2 s
 (`sudo nmcli radio wifi on` para voltar). LED apagado ou cor trocada: confira a fiação (COM no pino 9, vermelho 11,
 azul 13, verde 15) ou ajuste `MTG_LED_PINS` (ordem R,G,B).
 
@@ -477,6 +479,9 @@ sudo systemctl daemon-reload
 ```bash
 sudo systemctl enable --now sorter-api
 ```
+
+LED branco desde o primeiro segundo do boot (antes do serviço subir): acrescente `gpio=17,22,27=op,dh` ao
+`/boot/firmware/config.txt` e reinicie (`sudo reboot`). Ligue o Pi e confira: branco → verde / azul.
 
 Logs ao vivo:
 

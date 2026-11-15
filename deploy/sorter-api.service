@@ -7,10 +7,20 @@
 # Before the first start: build the card database once (needs internet):
 #   .venv/bin/python -m cardforge.cv sync
 
+# Status LED at power-on (RF16 / RF41, Appendix B "Starting" = solid white): add this line to
+# /boot/firmware/config.txt (/boot/config.txt before Bookworm) so the Pi firmware lights the LED
+# white in the first second, before Linux boots:
+#   gpio=17,22,27=op,dh
+# This service keeps it white until it is up and the base is homed, then shows green (ready),
+# solid blue (no Wi-Fi yet: pair over Bluetooth) or blinking blue (Wi-Fi not connected).
+
 [Unit]
 Description=CardForge-M1 sorter (main loop + API)
-After=network-online.target
-Wants=network-online.target
+# Do NOT wait for network-online.target: while the saved Wi-Fi is out of reach it holds this
+# service for up to a minute, and the LED would stay white instead of blinking blue. Nothing at start needs
+# the network (the server is only asked at Start; uploads retry by themselves).
+After=network.target NetworkManager.service cardforge-setup.service
+Wants=cardforge-setup.service
 
 [Service]
 User=raspad

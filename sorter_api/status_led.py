@@ -5,8 +5,11 @@ Wiring (common cathode):  COM -> pin 9 (GND), RED -> pin 11 (GPIO 17),
 Settings: MTG_LED_PINS = "17,22,27" (BCM numbers, in R,G,B order), MTG_LED = auto | gpio | off.
 
     Mode              Pattern                  When
-    OFF               off                      service stopped
-    IDLE              solid green              ready, no run
+    OFF               off                      no power / service stopped
+    STARTING          solid white              power-on until the machine is ready: set by the Pi firmware
+                                               (config.txt "gpio=17,22,27=op,dh") before Linux boots, then
+                                               by this service while it loads and homes the base (RF08)
+    IDLE              solid green              ready, no run (Wi-Fi connected, homing done)
     RUNNING           green, 1 Hz              run in progress
     FEED_JAM          solid red                run paused by a fault (jam, stuck card, base...);
                                                also module offline (Appendix C: Data-Link Loss)
@@ -17,8 +20,10 @@ Settings: MTG_LED_PINS = "17,22,27" (BCM numbers, in R,G,B order), MTG_LED = aut
     SETUP             solid blue               no Wi-Fi configured yet (Bluetooth setup, RF40)
     NO_NETWORK        blue, 1 Hz               Wi-Fi configured but not connected
 
-The machine state (set by the run controller) wins over the network state, which only
-shows while the machine is idle.
+Priority: STARTING (until ready() is called, once the service is up and the power-on homing
+is over) > machine state (set by the run controller) > network state, which only shows while
+the machine is idle. So after power-on the LED goes white -> blue (no Wi-Fi yet: pair over
+Bluetooth) or blinking blue (Wi-Fi configured, not connected) or green (ready to start).
 """
 
 from __future__ import annotations
@@ -32,11 +37,13 @@ from typing import Callable, Optional
 log = logging.getLogger(__name__)
 
 GREEN, RED, BLUE, OFF_COLOR = (0, 1, 0), (1, 0, 0), (0, 0, 1), (0, 0, 0)
+WHITE = (1, 1, 1)
 YELLOW = (1, 0.55, 0)           # red + less green: pure R+G looks orange-green on most RGB LEDs
 
 # mode -> (color, blink frequency in Hz or None for solid)
 PATTERNS: dict[str, tuple[tuple[float, float, float], Optional[float]]] = {
     "OFF": (OFF_COLOR, None),
+    "STARTING": (WHITE, None),
     "IDLE": (GREEN, None),
     "RUNNING": (GREEN, 1.0),
     "FEED_JAM": (RED, None),
@@ -94,6 +101,7 @@ class StatusLed:
         self._lock = threading.Lock()
         self._activity = "IDLE"              # set by the run controller
         self._network = NET_OK               # set by NetworkMonitor
+        self._starting = True                # until ready(): the machine is still booting
         self.mode: Optional[str] = None      # what the LED shows now
         self.history: list[str] = []         # every mode shown (diagnostics, tests)
         self._refresh()
@@ -111,9 +119,22 @@ class StatusLed:
             self._network = state
             self._refresh()
 
+    def ready(self) -> None:
+        """The service is up and the power-on homing is over: leave STARTING (white) for the
+        machine / network state (green, blue or blinking blue)."""
+        with self._lock:
+            self._starting = False
+            self._refresh()
+
+    @property
+    def starting(self) -> bool:
+        return self._starting
+
     def _refresh(self) -> None:
         mode = self._activity
-        if mode == "IDLE" and self._network != NET_OK:
+        if self._starting:
+            mode = "STARTING"
+        elif mode == "IDLE" and self._network != NET_OK:
             mode = "SETUP" if self._network == NET_SETUP else "NO_NETWORK"
         if mode == self.mode:
             return
@@ -158,7 +179,8 @@ def nmcli_network_state(run: Callable = subprocess.run) -> str:
     devices = run(["nmcli", "-t", "-f", "TYPE,STATE", "device"], capture_output=True, text=True, timeout=5).stdout
     for line in devices.splitlines():
         kind, _, state = line.partition(":")
-        if kind in ("wifi", "ethernet") and state.startswith("connected") and "externally" not in state:
+        # "connected (externally)" = brought up outside NetworkManager: still connected
+        if kind in ("wifi", "ethernet") and state.startswith("connected"):
             return NET_OK
     saved = run(["nmcli", "-t", "-f", "TYPE", "connection", "show"], capture_output=True, text=True, timeout=5).stdout
     has_wifi = any(t.strip() in ("802-11-wireless", "wifi") for t in saved.splitlines())
@@ -168,7 +190,7 @@ def nmcli_network_state(run: Callable = subprocess.run) -> str:
 class NetworkMonitor:
     """Polls the network state every `interval_s` and shows it on the LED while the machine is idle."""
 
-    def __init__(self, led: StatusLed, interval_s: float = 5.0, probe: Callable[[], str] = nmcli_network_state):
+    def __init__(self, led: StatusLed, interval_s: float = 2.0, probe: Callable[[], str] = nmcli_network_state):
         self.led = led
         self.interval_s = interval_s
         self.probe = probe

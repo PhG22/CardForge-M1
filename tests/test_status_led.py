@@ -8,14 +8,20 @@ import types
 from fastapi.testclient import TestClient
 
 from sorter_api.api import create_app
-from sorter_api.status_led import (BLUE, GREEN, NET_DOWN, NET_OK, NET_SETUP, RED, YELLOW, MemoryLedDriver,
+from sorter_api.status_led import (BLUE, GREEN, NET_DOWN, NET_OK, NET_SETUP, RED, WHITE, YELLOW, MemoryLedDriver,
                                    NetworkMonitor, StatusLed, build_status_led, nmcli_network_state)
 from test_integration import LOW, ScriptedVision, fast_settings, wait_state
 
 
+def ready_led(driver=None) -> StatusLed:
+    led = StatusLed(driver or MemoryLedDriver())
+    led.ready()
+    return led
+
+
 def test_patterns_follow_appendix_b():
     driver = MemoryLedDriver()
-    led = StatusLed(driver)
+    led = ready_led(driver)
     expected = {"IDLE": (GREEN, None), "RUNNING": (GREEN, 1.0), "FEED_JAM": (RED, None),
                 "EMERGENCY_STOP": (RED, 4.0), "DOUBLE_FEED": (RED, 2.0), "STARTUP_BLOCKED": (YELLOW, None),
                 "PAUSED_CONN": (YELLOW, 1.0), "SETUP": (BLUE, None), "NO_NETWORK": (BLUE, 1.0)}
@@ -24,8 +30,24 @@ def test_patterns_follow_appendix_b():
         assert (driver.color, driver.blink_hz) == (color, hz), mode
 
 
+def test_starting_until_ready():
+    """Power-on: white (Starting) whatever the machine and network say, until the service is up."""
+    driver = MemoryLedDriver()
+    led = StatusLed(driver)
+    assert led.mode == "STARTING" and (driver.color, driver.blink_hz) == (WHITE, None)
+    led.set("IDLE")
+    led.set_network(NET_SETUP)
+    assert led.mode == "STARTING" and led.history == ["STARTING"]      # no green/blue flash while booting
+    led.ready()
+    assert led.mode == "SETUP"                                           # ready to pair over Bluetooth
+    led.set_network(NET_DOWN)
+    assert led.mode == "NO_NETWORK"
+    led.set_network(NET_OK)
+    assert led.mode == "IDLE" and led.history == ["STARTING", "SETUP", "NO_NETWORK", "IDLE"]
+
+
 def test_network_state_shows_only_while_idle():
-    led = StatusLed(MemoryLedDriver())
+    led = ready_led()
     led.set_network(NET_SETUP)
     assert led.mode == "SETUP"
     led.set("RUNNING")                       # the machine state wins
@@ -61,7 +83,9 @@ def test_gpio_driver_uses_the_wired_pins(monkeypatch):
     led = build_status_led("gpio", "17,22,27", simulate=False)
     rgb = FakeRGBLED.instances[-1]
     assert rgb.pins == (17, 22, 27) and rgb.active_high is True and rgb.pwm is True   # common cathode
-    assert rgb.color == GREEN                                                         # IDLE at start
+    assert rgb.color == WHITE                                                         # STARTING at start
+    led.ready()
+    assert rgb.color == GREEN                                                         # then IDLE
     led.set("RUNNING")
     assert rgb.blinking == (0.5, 0.5, GREEN, (0, 0, 0), True)                         # 1 Hz
     led.set("EMERGENCY_STOP")
@@ -88,10 +112,12 @@ def test_network_state_from_nmcli():
     assert nmcli_network_state(nmcli(lo + "ethernet:connected\nwifi:disconnected\n", "")) == NET_OK
     assert nmcli_network_state(nmcli(lo + "wifi:disconnected\n", "loopback\n")) == NET_SETUP
     assert nmcli_network_state(nmcli(lo + "wifi:connecting\n", "802-11-wireless\nloopback\n")) == NET_DOWN
+    # Wi-Fi brought up outside NetworkManager is still a connection (no false blue)
+    assert nmcli_network_state(nmcli(lo + "wifi:connected (externally)\n", "loopback\n")) == NET_OK
 
 
 def test_monitor_does_not_show_a_problem_it_could_not_check():
-    led = StatusLed(MemoryLedDriver())
+    led = ready_led()
 
     def broken():
         raise FileNotFoundError("nmcli")
@@ -99,6 +125,46 @@ def test_monitor_does_not_show_a_problem_it_could_not_check():
 
 
 # ------------------------------------------------------------------ driven by the main loop
+
+def test_boot_shows_setup_when_no_wifi_is_configured(monkeypatch):
+    """RF41: once the service is up, an unconfigured machine shows solid blue (pair me), never green first;
+    after the Bluetooth setup connects the Wi-Fi it turns green."""
+    import sorter_api.api as api_module
+    state = {"net": NET_SETUP}
+
+    class FakeMonitor(NetworkMonitor):
+        def __init__(self, led):
+            super().__init__(led, interval_s=0.02, probe=lambda: state["net"])
+    monkeypatch.setattr(api_module, "NetworkMonitor", FakeMonitor)
+    with TestClient(create_app(fast_settings(network_monitor="on"), vision=ScriptedVision([]))) as c:
+        led = c.app.state.status_led
+        assert led.history == ["STARTING", "SETUP"]
+        state["net"] = NET_OK                          # the app sent the Wi-Fi over Bluetooth
+        deadline = time.monotonic() + 2
+        while led.mode != "IDLE" and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert led.history == ["STARTING", "SETUP", "IDLE"]
+
+
+def test_starting_lasts_until_the_power_on_homing_is_over():
+    """Appendix B Idle = "power-on, homing complete": white while the base homes, then green."""
+    with TestClient(create_app(fast_settings(home_on_power_on=True, sim_time_scale=0.3),
+                               vision=ScriptedVision([]))) as c:
+        led = c.app.state.status_led
+        assert c.app.state.controller.homing_at_power_on and led.mode == "STARTING"
+        deadline = time.monotonic() + 20
+        while c.app.state.controller.homing_at_power_on and time.monotonic() < deadline:
+            time.sleep(0.02)
+        time.sleep(0.05)
+        assert led.mode == "IDLE" and led.history == ["STARTING", "IDLE"]
+
+
+def test_service_stop_turns_the_led_off():
+    with TestClient(create_app(fast_settings(), vision=ScriptedVision([]))) as c:
+        driver = c.app.state.status_led.driver
+        assert c.app.state.status_led.mode == "IDLE"
+    assert driver.color == (0, 0, 0)
+
 
 def test_led_follows_the_run():
     vision = ScriptedVision([LOW] * 9)
