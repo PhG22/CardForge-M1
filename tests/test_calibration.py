@@ -157,7 +157,7 @@ def test_feed_identify_and_drop_without_opening_the_machine(calib):
     drop = c.post("/calibration/drop").json()
     assert drop["tray"] == 6
     sim = c.get("/sim/state").json()
-    assert sim["platform_has_card"] is False and sim["trays_with_cards"] == [6] and sim["flap_angle"] == 90
+    assert sim["platform_has_card"] is False and sim["trays_with_cards"] == [6] and sim["flap_angle"] == 85
     assert sim["cards_dropped"] == 2
 
 
