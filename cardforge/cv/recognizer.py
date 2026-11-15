@@ -18,7 +18,7 @@ from .result import IdentificationResult, IdentificationStatus
 class CardRecognizer:
     """
     Pipeline de reconhecimento de UMA captura (CV-SD-01): borda + retificação → orientação →
-    verso? → layout → OCR dos campos → set/número → match local. Nenhuma chamada de rede (RNF15).
+    verso? → layout → OCR dos campos → set/número → match local → (não identificada) verso?. Nenhuma chamada de rede (RNF15).
     """
 
     def __init__(self, cfg: VisionConfig, ocr: OcrEngine, repo: CardRepository,
@@ -62,6 +62,7 @@ class CardRecognizer:
         card = orient.card
         debug.update(orient.debug, rotated180=card.rotated180, title_score=orient.title_score)
         if self.face_down.is_face_down(orient):
+            debug["face_down_check"] = "no_title"
             return done(IdentificationResult(IdentificationStatus.FACE_DOWN, rectified=card.image, debug=debug))
 
         # 3. Atalho: nome e info ficam no mesmo lugar em todos os layouts. Se a leitura com as ROIs padrão
@@ -85,6 +86,16 @@ class CardRecognizer:
             fields = orient.fields if layout is CardLayout.STANDARD and orient.fields is not None else                 self.extractor.extract(card.image, RoiCatalog.rois_for(layout))
             attempt = self._identify(fields, layout)
         debug["name_score"] = attempt.debug_name_score
+
+        # 5. Não identificada: antes de pedir outra captura, confere se é o verso (RF39). Só cor, sem OCR
+        #    (alguns ms). O teste do passo 2 exige título vazio nas duas orientações, e o OCR às vezes lê
+        #    ruído no "Deckmaster" do verso: sem isto a carta virada passava pelas 3 capturas (RF29).
+        if not attempt.identified:
+            ratio = self.face_down.brown_ratio(card.image)
+            debug["brown_ratio"] = round(ratio, 3)
+            if ratio >= self.cfg.face_down.min_brown_ratio:
+                debug["face_down_check"] = "after_identify"
+                return done(IdentificationResult(IdentificationStatus.FACE_DOWN, rectified=card.image, debug=debug))
         return done(attempt.to_result(card.image, debug))
 
     def _identify(self, fields: ExtractedFields, layout: CardLayout) -> "_Attempt":
