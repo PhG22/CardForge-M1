@@ -125,13 +125,74 @@ def test_results_are_hidden_while_the_run_is_active():
         assert c.get(f"/runs/{run_id}").status_code == 200
 
 
+# ------------------------------------------------------------------ RNF27: at most 250 cards per run
+
 def test_batch_ends_at_the_card_limit():
+    # cards left on the stack when the limit is reached: the run stops (BATCH_LIMIT)
     vision = ScriptedVision([identified(card("Plains", "W"))] * 10)
     with TestClient(create_app(fast_settings(sim_stack_cards=5, max_cards_per_run=2), vision=vision)) as c:
         assert c.post("/run/start").status_code == 200
         run = wait_state(c, "idle")["run"]
         assert run["status"] == "completed" and run["cards_processed"] == 2 and run["error_code"] == "BATCH_LIMIT"
+        assert "Batch limit reached" in run["message"]
         assert c.get("/sim/state").json()["stack_cards"] == 3
+        assert len(c.get(f"/runs/{run['run_id']}").json()["cards"]) == 2
+
+
+def test_stack_of_exactly_the_limit_is_concluded_not_a_batch_limit():
+    vision = ScriptedVision([identified(card("Plains", "W"))] * 10)
+    with TestClient(create_app(fast_settings(sim_stack_cards=3, max_cards_per_run=3), vision=vision)) as c:
+        assert c.post("/run/start").status_code == 200
+        run = wait_state(c, "idle")["run"]
+        assert run["status"] == "completed" and run["cards_processed"] == 3 and run["error_code"] is None
+        assert run["message"].startswith("Stack is empty")
+        assert c.get("/sim/state").json()["stack_cards"] == 0
+
+
+def test_stack_below_the_limit_runs_until_empty():
+    vision = ScriptedVision([identified(card("Plains", "W"))] * 10)
+    with TestClient(create_app(fast_settings(sim_stack_cards=3, max_cards_per_run=5), vision=vision)) as c:
+        assert c.post("/run/start").status_code == 200
+        run = wait_state(c, "idle")["run"]
+        assert run["status"] == "completed" and run["cards_processed"] == 3 and run["error_code"] is None
+        assert run["message"].startswith("Stack is empty")
+
+
+def test_unidentified_cards_count_toward_the_limit():
+    # every processed card counts, not only the identified ones
+    with TestClient(create_app(fast_settings(sim_stack_cards=4, max_cards_per_run=2),
+                               vision=ScriptedVision([]))) as c:          # always LOW -> unidentified
+        assert c.post("/run/start").status_code == 200
+        run = wait_state(c, "idle")["run"]
+        assert run["cards_processed"] == 2 and run["error_code"] == "BATCH_LIMIT"
+        assert c.get(f"/runs/{run['run_id']}").json()["scan_counts"]["unidentified"] == 2
+        assert c.get("/sim/state").json()["stack_cards"] == 2
+
+
+def test_limit_counts_the_cards_sorted_before_a_pause():
+    # a jam after the first card pauses the run; after resume the same run stops at the limit
+    vision = ScriptedVision([identified(card("Plains", "W"))] * 10, delay_s=0.2)
+    with TestClient(create_app(fast_settings(sim_stack_cards=5, max_cards_per_run=3), vision=vision)) as c:
+        with c.websocket_connect("/ws/events") as ws:
+            ws.receive_json()
+            c.post("/run/start")
+            events_until(ws, "card_sorted")
+            c.put("/sim/state", json={"top_jammed": True})
+            paused = events_until(ws, "fault")[-1]["run"]
+            assert 1 <= paused["cards_processed"] < 3
+            c.put("/sim/state", json={"top_jammed": False})
+            assert c.post("/run/resume").status_code == 200
+            done = events_until(ws)[-1]["run"]
+        assert done["run_id"] == paused["run_id"]
+        assert done["cards_processed"] == 3 and done["error_code"] == "BATCH_LIMIT"
+        assert c.get("/sim/state").json()["stack_cards"] == 2
+
+
+def test_limit_setting_is_capped_at_250():
+    with TestClient(create_app(fast_settings(max_cards_per_run=1000), vision=ScriptedVision([]))) as c:
+        assert c.app.state.controller._card_limit() == 250
+    with TestClient(create_app(fast_settings(max_cards_per_run=10), vision=ScriptedVision([]))) as c:
+        assert c.app.state.controller._card_limit() == 10
 
 
 def test_stop_during_identification_still_sorts_the_identified_card():

@@ -15,6 +15,9 @@ def _env(name: str, default, cast):
     return cast(raw)
 
 
+MAX_CARDS_PER_RUN = 250    # RNF27: a run never processes more cards than one full feed load (RNF02)
+
+
 @dataclass
 class Settings:
     # --- HTTP server
@@ -80,7 +83,7 @@ class Settings:
     cleanup_dirs: str = "data/tmp,capturas,relatorios"  # emptied at the end of every run ("" = no cleanup)
 
     # --- runs
-    max_cards_per_run: int = 250        # RNF27: a batch never exceeds one full feed load
+    max_cards_per_run: int = MAX_CARDS_PER_RUN   # RNF27; lower only for bench tests, never above 250
     run_db: str = "data/run.db"         # local_run / local_cards (RF19, RNF19)
 
     # --- CardForge server (cardforge_server/, docs/SERVER.md): accounts + PostgreSQL.

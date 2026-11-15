@@ -9,7 +9,8 @@ One card (FW-SD-02):  feed (A1) -> identify (camera + vision, up to 3 captures)
                       -> tray from the color identity -> base to the tray (A2)
                       -> drop (A1 flap) -> one record in run.db -> progress event
 
-A run ends when the stack is empty or 250 cards were processed (completed), when
+A run ends when the stack is empty (completed), when 250 cards were processed and
+cards are still on the stack (completed, error_code BATCH_LIMIT, RNF27), when
 the user stops it (cancelled), or on a fault that needs a power cycle (failed:
 a module stopped answering = Data-Link Loss). Mechanical faults (feed jam, a card
 that does not fall, the base not reaching a tray) PAUSE the run instead (RNF23):
@@ -46,7 +47,7 @@ from enum import Enum
 from pathlib import Path
 
 from .bus import BusError, ModuleError, ModuleNotResponding
-from .config import Settings
+from .config import MAX_CARDS_PER_RUN, Settings
 from .events import EventHub
 from .housekeeping import PROJECT_ROOT, cleanup_after_run
 from .identifier import FACE_DOWN, IDENTIFIED, CardIdentifier, Identification
@@ -131,10 +132,6 @@ class HardwareFault(Exception):
         self.code = code
         self.message = message
         super().__init__(message)
-
-
-class RunLimitReached(Exception):
-    """RNF27: the batch reached its maximum number of cards."""
 
 
 CAPTURE_ROUTINE_LIMIT_S = 2.0     # RF02 / RF15: card held still for the photo, at most 2.0 s
@@ -729,10 +726,14 @@ class SorterController:
                     if self._stop_requested.is_set():
                         stopped = True
                         break
-                    if run.cards_processed >= self.s.max_cards_per_run:
-                        limit = True
-                        break
+                    # Stack first: a stack of exactly 250 cards ends as "stack empty"
+                    # (concluded), not as a batch limit with "remaining cards".
                     if not self.top.status().stack_has_card:
+                        break
+                    # RNF27: every card that left the platform counts (identified,
+                    # unidentified, face-down), also across a pause and resume.
+                    if run.cards_processed >= self._card_limit():
+                        limit = True
                         break
                     self._sort_one_card(run)
             except StopRequested:
@@ -784,6 +785,16 @@ class SorterController:
             log.exception("run loop crashed")
             self._safe_stop_modules()
             self._finish(run, RunStatus.FAILED, "INTERNAL_ERROR", "Unexpected error in the sorter software.")
+
+    def _card_limit(self) -> int:
+        """RNF27: cards per run. A lower setting is kept (bench tests); a higher one is
+        capped at MAX_CARDS_PER_RUN, the feed compartment's capacity (RNF02)."""
+        limit = self.s.max_cards_per_run
+        if limit > MAX_CARDS_PER_RUN or limit < 1:
+            log.warning("max_cards_per_run=%s is outside 1..%d: using %d (RNF27)",
+                        limit, MAX_CARDS_PER_RUN, MAX_CARDS_PER_RUN)
+            return MAX_CARDS_PER_RUN
+        return limit
 
     def _sort_one_card(self, run: RunInfo) -> None:
         s = self.s

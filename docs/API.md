@@ -138,7 +138,11 @@ the signed-in user's runs, collection and export from the CardForge server inste
 
 Tray rule (RF20): color identity {W} → 1, {U} → 2, {B} → 3, {R} → 4, {G} → 5;
 colorless, multicolor, unidentified (after 3 captures, RF25/RF29) and face-down (RF39) → 6.
-A run ends by itself after 250 cards (`error_code: "BATCH_LIMIT"`, RNF27).
+RNF27: every card that leaves the platform counts (identified, unidentified, face-down, also across a
+pause). When the stack empties with 250 cards or fewer, the run is `completed` with no `error_code`
+("Stack is empty"). When 250 cards are done and cards are still on the stack, the run stops by itself:
+`completed` with `error_code: "BATCH_LIMIT"`. `MTG_MAX_CARDS_PER_RUN` can lower the limit (bench tests),
+never raise it above 250.
 
 ## Base test endpoints (bottom module A2)
 
