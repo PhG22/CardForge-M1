@@ -172,6 +172,94 @@ void main() {
     expect(alerts.alerts.first.cardCount, 9);
   });
 
+  group('last run check (RNF19)', () {
+    test('an interrupted last run is reported until a new run starts',
+        () async {
+      api.snapshot = FakeMachineApi.interruptedSnapshot(cards: 2);
+      final controller = await start();
+
+      expect(controller.unfinishedLastRun?.reason, 'INTERRUPTED');
+      expect(controller.unfinishedLastRun?.cardsSaved, 2);
+      expect(controller.canStart, isTrue); // a new run is the suggestion
+      expect(alertTypes(), isEmpty); // the app did not see it end: no alert
+
+      await controller.startRun();
+      expect(controller.unfinishedLastRun, isNull);
+      expect(controller.lastRunCheck, isNull);
+    });
+
+    test('a correct last run, or none, shows nothing', () async {
+      api.snapshot = const MachineSnapshot(
+        state: ControllerState.idle,
+        lastRunCheck: LastRunCheck(ok: true),
+      );
+      final controller = await start();
+      expect(controller.lastRunCheck?.ok, isTrue);
+      expect(controller.unfinishedLastRun, isNull);
+    });
+
+    test('hidden while offline and while a run is active', () async {
+      api.snapshot = FakeMachineApi.interruptedSnapshot();
+      final controller = await start();
+      expect(controller.unfinishedLastRun, isNotNull);
+
+      api.emit(RunStartedEvent(FakeMachineApi.runningRun()));
+      await pumpEventQueue();
+      expect(controller.unfinishedLastRun, isNull);
+
+      api.emit(SnapshotEvent(FakeMachineApi.interruptedSnapshot()));
+      await pumpEventQueue();
+      expect(controller.unfinishedLastRun, isNotNull);
+      api.reachable = false;
+      await api.dropEvents();
+      await pumpEventQueue();
+      expect(controller.unfinishedLastRun, isNull);
+    });
+
+    test('a failure seen live comes with its check in run_finished', () async {
+      final controller = await start();
+      api.emit(RunStartedEvent(FakeMachineApi.runningRun(cards: 4)));
+      await pumpEventQueue();
+
+      const failed = RunInfo(
+        runId: 'run-1',
+        status: RunStatus.failed,
+        cardsProcessed: 4,
+        errorCode: 'MODULE_OFFLINE',
+      );
+      api.emit(const RunFinishedEvent(
+        failed,
+        'The bottom module (A2) stopped responding.',
+        lastRunCheck: LastRunCheck(
+            ok: false, reason: 'MODULE_OFFLINE', finished: false, run: failed),
+      ));
+      await pumpEventQueue();
+
+      expect(controller.unfinishedLastRun?.reason, 'MODULE_OFFLINE');
+      expect(alertTypes(), [AlertType.runFailed]);
+      expect(alerts.alerts.single.faultCode, 'MODULE_OFFLINE');
+    });
+
+    test('a power cut during a watched run alerts once on reconnect',
+        () async {
+      final controller = await start();
+      api.emit(RunStartedEvent(FakeMachineApi.runningRun(cards: 2)));
+      await pumpEventQueue();
+
+      api.reachable = false; // the machine loses power
+      await api.dropEvents();
+      await pumpEventQueue();
+      api.snapshot = FakeMachineApi.interruptedSnapshot(cards: 2);
+      api.reachable = true; // ... and comes back
+      await controller.reconnect();
+      await pumpEventQueue();
+
+      expect(alertTypes(), [AlertType.runFailed, AlertType.connectionLost]);
+      expect(alerts.alerts.first.faultCode, 'INTERRUPTED');
+      expect(controller.unfinishedLastRun?.reason, 'INTERRUPTED');
+    });
+  });
+
   test('an unreachable machine is offline until it answers', () async {
     api.reachable = false;
     final controller = await start();

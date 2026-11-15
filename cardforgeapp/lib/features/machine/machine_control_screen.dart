@@ -367,6 +367,8 @@ class _RunPanel extends StatelessWidget {
     final paused = controller.isPaused;
     final showCounters =
         run != null && (active || paused || run.cardsProcessed > 0);
+    // RNF19: the last run did not finish correctly: say so, suggest a new run.
+    final unfinished = controller.unfinishedLastRun;
 
     return MagicPanel(
       child: Column(
@@ -429,7 +431,20 @@ class _RunPanel extends StatelessWidget {
               style: TextStyle(color: scheme.error),
             ),
           ],
-          if (!active &&
+          if (unfinished != null) ...[
+            const SizedBox(height: 16),
+            _ProblemsBox(
+              key: const ValueKey('unfinished-run-box'),
+              title: l10n.unfinishedRunTitle,
+              lines: [
+                l10n.unfinishedRunBody(unfinished),
+                l10n.unfinishedRunSuggestion(unfinished),
+              ],
+              bullets: false,
+              color: MagicColors.gold,
+              icon: Icons.history_toggle_off_rounded,
+            ),
+          ] else if (!active &&
               !paused &&
               run != null &&
               run.status != RunStatus.running) ...[
@@ -465,8 +480,11 @@ class _RunPanel extends StatelessWidget {
           ] else if (!active)
             FilledButton.icon(
               onPressed: controller.canStart ? controller.startRun : null,
-              icon: const Icon(Icons.play_arrow_rounded),
-              label: Text(l10n.startSorting),
+              icon: Icon(unfinished != null
+                  ? Icons.restart_alt_rounded
+                  : Icons.play_arrow_rounded),
+              label: Text(
+                  unfinished != null ? l10n.startNewRun : l10n.startSorting),
             )
           else ...[
             FilledButton.icon(
@@ -531,11 +549,15 @@ class _ProblemsBox extends StatelessWidget {
     required this.title,
     required this.lines,
     this.bullets = true,
+    this.color = MagicColors.danger,
+    this.icon = Icons.report_problem_outlined,
   });
 
   final String title;
   final List<String> lines;
   final bool bullets;
+  final Color color;
+  final IconData icon;
 
   @override
   Widget build(BuildContext context) {
@@ -544,15 +566,14 @@ class _ProblemsBox extends StatelessWidget {
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: MagicColors.danger),
+        border: Border.all(color: color),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
             children: [
-              const Icon(Icons.report_problem_outlined,
-                  color: MagicColors.danger, size: 20),
+              Icon(icon, color: color, size: 20),
               const SizedBox(width: 8),
               Expanded(child: Text(title, style: text.titleSmall)),
             ],

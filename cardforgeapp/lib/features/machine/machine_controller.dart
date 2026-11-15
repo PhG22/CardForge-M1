@@ -78,6 +78,10 @@ class MachineController extends ChangeNotifier {
   MachineSnapshot? snapshot;
   List<SortedCard> recentCards = const [];
 
+  /// RNF19: the machine's check of its last finished run (see
+  /// [unfinishedLastRun]). Null before the first run and once a new one starts.
+  LastRunCheck? lastRunCheck;
+
   bool isStarting = false;
   bool isResuming = false;
   bool isStopping = false;
@@ -136,6 +140,18 @@ class MachineController extends ChangeNotifier {
       !isStopping &&
       !isMovingBase;
 
+  /// RNF19: the last run did not finish correctly (the machine lost power or
+  /// restarted during it, a module stopped responding, or its saved records
+  /// are incomplete). The app explains it and suggests a new run, until one
+  /// starts. Null when there is nothing to report or a run is active.
+  LastRunCheck? get unfinishedLastRun {
+    final check = lastRunCheck;
+    if (check == null || check.ok || !isOnline || isBusy || isPaused) {
+      return null;
+    }
+    return check;
+  }
+
   /// RF26: continue the paused run once the problem is fixed.
   bool get canResume => isOnline && isPaused && !isResuming && !isStopping;
 
@@ -170,6 +186,7 @@ class MachineController extends ChangeNotifier {
     _disconnect();
     _address = address;
     hardware = null;
+    lastRunCheck = null;
     if (current == null) {
       connection = MachineConnection.none;
       health = null;
@@ -206,6 +223,7 @@ class MachineController extends ChangeNotifier {
       if (generation != _generation) return;
       health = h;
       _applySnapshot(s);
+      lastRunCheck = s.lastRunCheck;
     } on MachineApiException {
       if (generation == _generation) _goOffline(generation, wasRunning: false);
       return;
@@ -264,8 +282,10 @@ class MachineController extends ChangeNotifier {
     switch (event) {
       case SnapshotEvent(:final snapshot):
         _applySnapshot(snapshot);
+        lastRunCheck = snapshot.lastRunCheck;
       case RunStartedEvent(:final run):
         recentCards = const [];
+        lastRunCheck = null; // a new run supersedes the warning
         _applySnapshot(
             MachineSnapshot(state: ControllerState.running, run: run));
       case final CardSortedEvent card:
@@ -282,8 +302,9 @@ class MachineController extends ChangeNotifier {
               number: card.cardNumber, tray: card.tray, cleared: card.cleared),
           ...recentCards,
         ].take(recentCardsLimit).toList();
-      case RunFinishedEvent(:final run):
+      case RunFinishedEvent(:final run, lastRunCheck: final check):
         _applySnapshot(MachineSnapshot(state: ControllerState.idle, run: run));
+        if (check != null) lastRunCheck = check;
       case final FaultEvent fault:
         final current = run;
         final paused = fault.run ??
@@ -362,6 +383,7 @@ class MachineController extends ChangeNotifier {
               : AlertType.runFailed,
           machineName: name,
           cardCount: run.cardsProcessed,
+          faultCode: run.errorCode, // e.g. INTERRUPTED: power cut or restart
         );
       case RunStatus.cancelled ||
             RunStatus.running ||
@@ -383,6 +405,7 @@ class MachineController extends ChangeNotifier {
     try {
       final run = await api.startRun();
       recentCards = const [];
+      lastRunCheck = null;
       _applySnapshot(MachineSnapshot(state: ControllerState.running, run: run));
     } on MachineApiException catch (e) {
       if (e.problems.isNotEmpty) {

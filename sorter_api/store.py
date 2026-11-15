@@ -5,6 +5,9 @@
 * RNF19: WAL journal + synchronous=FULL, so a committed card survives a power cut.
 * Runs that were still running or paused when the Pi lost power are marked
   failed (INTERRUPTED) on the next start.
+* RNF19 last-run check: run.db passes SQLite's quick_check when it is opened, and
+  last_run_check() says whether the most recent run ended correctly and whether its
+  saved cards still match its counters. The app shows it and suggests a new run.
 * Owner: the user who pressed Start in the app (started_by = PostgreSQL users.id,
   checked with the server at start). Every card of the run belongs to that user.
 * Sync (DB02 / DB04): once a run is finished, sync.SyncWorker uploads it with its
@@ -19,6 +22,7 @@ from __future__ import annotations
 
 import csv
 import io
+import logging
 import secrets
 import sqlite3
 import threading
@@ -26,6 +30,8 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
+
+log = logging.getLogger(__name__)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS local_run (
@@ -139,8 +145,20 @@ class RunStore:
         self._conn.execute("PRAGMA journal_mode = WAL")
         self._conn.execute("PRAGMA synchronous = FULL")
         self._conn.execute("PRAGMA foreign_keys = ON")
+        # RNF19: checked before the schema is touched, so a damaged file is reported as it was found.
+        self.integrity_error: str | None = self._quick_check()
+        if self.integrity_error is not None:
+            log.error("run.db failed its integrity check: %s", self.integrity_error)
         self._conn.executescript(SCHEMA)
         self._migrate()
+
+    def _quick_check(self) -> str | None:
+        """Is run.db intact after the last shutdown? None = yes, otherwise SQLite's complaint."""
+        try:
+            rows = [r[0] for r in self._conn.execute("PRAGMA quick_check").fetchall()]
+        except sqlite3.DatabaseError as exc:
+            return str(exc)
+        return None if rows == ["ok"] else "; ".join(rows[:5])
 
     def _migrate(self) -> None:
         """Bring a run.db made by an older version up to SCHEMA_VERSION (adds columns, keeps the data)."""
@@ -222,6 +240,68 @@ class RunStore:
             rows = self._conn.execute("SELECT * FROM local_run ORDER BY started_at DESC LIMIT ? OFFSET ?",
                                       (limit, offset)).fetchall()
         return [_run_dict(r) for r in rows]
+
+    def last_run(self) -> dict | None:
+        """The most recent run (any status), or None before the first run."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM local_run ORDER BY started_at DESC, rowid DESC LIMIT 1").fetchone()
+        return _run_dict(row) if row else None
+
+    def last_run_check(self) -> dict | None:
+        """RNF19: did the most recent run end correctly, and is what it saved still whole?
+
+        None before the first run, and while the most recent run is still running or
+        paused (that is the current run, which the app follows live). Otherwise:
+
+        * finished:    it ended by itself (stack empty, batch limit) or by a Stop, not by a
+                       failure or an interruption (power cut, crash, restart)
+        * records_ok:  its saved cards match its counters and are numbered 1..n, no gaps
+        * database_ok: run.db passed SQLite's quick_check when the service started
+        * ok:          all three. When not, `reason` and `message` say why, and the app
+                       suggests a new run.
+        """
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM local_run ORDER BY started_at DESC, rowid DESC LIMIT 1").fetchone()
+            if row is None or row["status"] in ACTIVE_STATUSES:
+                return None
+            saved = self._conn.execute(
+                "SELECT COUNT(*) AS n, COALESCE(SUM(scan_status = 'identified'), 0) AS identified, "
+                "COALESCE(MAX(card_number), 0) AS last FROM local_cards WHERE run_uuid = ?",
+                (row["local_uuid"],)).fetchone()
+        n, identified = saved["n"], saved["identified"]
+        finished = row["status"] in ("completed", "cancelled")
+        records_ok = (n == row["cards_processed"] and identified == row["successful_scans"]
+                      and n - identified == row["failed_scans"] and saved["last"] == n)
+        database_ok = self.integrity_error is None
+        cards = f"{n} card(s)"
+        if not finished:
+            reason = row["error_code"] or "FAILED"
+            cause = ("the machine lost power or restarted during it" if reason == "INTERRUPTED"
+                     else (row["message"] or reason).rstrip("."))
+            message = (f"The last run did not finish correctly: {cause}. The {cards} sorted before that "
+                       "are saved. Empty the trays, put the remaining cards back on the stack and start "
+                       "a new run.")
+        elif not records_ok:
+            reason = "RECORDS_MISMATCH"
+            message = (f"The last run's records are incomplete: it counted {row['cards_processed']} card(s) "
+                       f"but {n} are saved. Empty the trays and sort those cards again in a new run.")
+        elif not database_ok:
+            reason = "DATABASE_DAMAGED"
+            message = ("The machine's run database failed its integrity check, so recent results may be "
+                       "missing. Empty the trays and sort those cards again in a new run.")
+        else:
+            reason = None
+            message = "The last run finished correctly."
+        return {
+            "ok": reason is None, "reason": reason, "message": message,
+            "finished": finished, "records_ok": records_ok, "database_ok": database_ok,
+            "cards_saved": n,
+            "run": {"run_id": row["local_uuid"],
+                    **{k: row[k] for k in ("status", "started_at", "stopped_at", "cards_processed",
+                                           "successful_scans", "failed_scans", "error_code", "message")}},
+        }
 
     def run_results(self, run_id: str) -> dict | None:
         """Per-bin counts and the full card list of a run (RF22)."""

@@ -247,6 +247,39 @@ void main() {
     expect(find.text('Select your machine'), findsOneWidget);
   });
 
+  testWidgets(
+      'an interrupted last run is explained and a new run suggested (RNF19)',
+      (tester) async {
+    final api = await openControl(
+      tester,
+      api: FakeMachineApi(snapshot: FakeMachineApi.interruptedSnapshot()),
+    );
+
+    expect(find.byKey(const ValueKey('unfinished-run-box')), findsOneWidget);
+    expect(find.text("The last run didn't finish correctly"), findsOneWidget);
+    expect(find.textContaining('lost power or restarted'), findsOneWidget);
+    expect(find.textContaining('(2 cards) is saved'), findsOneWidget);
+    expect(find.textContaining('start a new run'), findsOneWidget);
+    expect(find.text('Last run'), findsNothing); // the box replaces it
+
+    await tester.tap(find.widgetWithText(FilledButton, 'Start a new run'));
+    await tester.pumpAndSettle();
+    expect(api.calls, contains('startRun'));
+    expect(find.byKey(const ValueKey('unfinished-run-box')), findsNothing);
+  });
+
+  testWidgets('the unfinished-run box in Portuguese', (tester) async {
+    await openControl(
+      tester,
+      api: FakeMachineApi(snapshot: FakeMachineApi.interruptedSnapshot()),
+      preferences: {...linkedMachinePrefs, 'language_code': 'pt'},
+    );
+
+    expect(find.text('A última ordenação não terminou corretamente'),
+        findsOneWidget);
+    expect(find.text('Iniciar nova ordenação'), findsOneWidget);
+  });
+
   testWidgets('works in Portuguese', (tester) async {
     await openControl(
       tester,

@@ -206,6 +206,26 @@ right after the service starts: with `MTG_HOME_ON_POWER_ON=1`, the default, the 
 `run.status`: `running` · `paused` · `completed` · `failed` · `cancelled`.
 When it is `paused` or `failed`, `run.error_code` and `run.message` say why.
 `run.current_tray` is `null` while the run is active (RF23).
+After a restart, `run` is the last run saved in `run.db` (a run cut by a power loss is `failed` /
+`INTERRUPTED`).
+
+`last_run_check` (RNF19) — did the last run end correctly, with all its records? `null` before the
+first run and while a run is running or paused:
+```json
+"last_run_check": { "ok": false, "reason": "INTERRUPTED",
+  "message": "The last run did not finish correctly: the machine lost power or restarted during it. The 12 card(s) sorted before that are saved. Empty the trays, put the remaining cards back on the stack and start a new run.",
+  "finished": false, "records_ok": true, "database_ok": true, "cards_saved": 12,
+  "run": { "run_id": "…", "status": "failed", "cards_processed": 12, "error_code": "INTERRUPTED", … } }
+```
+| Field | `false` when |
+|---|---|
+| `finished` | The run failed or was interrupted. A Stop by the user is a correct end |
+| `records_ok` | Its saved cards don't match its counters, or their numbers have gaps |
+| `database_ok` | `run.db` failed SQLite's `quick_check` when the service started |
+| `ok` | Any of the three. `reason`: the run's `error_code` (`INTERRUPTED`, `MODULE_OFFLINE`, `PROTOCOL_ERROR`, …), else `RECORDS_MISMATCH` or `DATABASE_DAMAGED` |
+
+The app shows a not-ok check on Machine control and on Home, explains it, and turns "Start sorting"
+into "Start a new run", until the next run starts.
 
 `timing` (RNF22, RF02 / RF15) — figures of the current or last run, no card identity:
 ```json
@@ -234,7 +254,7 @@ Connect once and keep the socket open. Each message is one JSON object:
 | `attention` | A card went to tray 6 unidentified or face-down; the run continues (RF36) | `kind` (`unidentified` / `face_down`), `run_id`, `card_number`, `time` |
 | `fault` | **The run paused. Alert the user** (RF27) | `fault` (error code), `time`, `message`, `run` |
 | `run_resumed` | `/run/resume` succeeded | `run` |
-| `run_finished` | **Run ended. Notify the user** | `run` (with `status` completed / failed / cancelled), `message` |
+| `run_finished` | **Run ended. Notify the user** | `run` (with `status` completed / failed / cancelled), `message`, `last_run_check` (RNF19) |
 
 Example `run_finished` messages: `"Stack is empty: 37 card(s) processed. 7.4 cards/min (8.1 s per card)."`,
 `"Feed jam: no card reached the platform after 2 pull attempts (jam or empty stack)."`,

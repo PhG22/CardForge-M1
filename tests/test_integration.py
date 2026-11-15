@@ -17,7 +17,7 @@ from cardforge.data.records import CardRecord
 from sorter_api.api import create_app
 from sorter_api.config import Settings
 from sorter_api.controller import SorterController
-from sorter_api.store import RunStore
+from sorter_api.store import RunStore, ScanRecord
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -217,6 +217,79 @@ def test_run_interrupted_by_a_restart_is_closed(tmp_path):
     SorterController(None, None, None, None, fast_settings(), store)        # boot
     run = store.get_run("r1")
     assert run["status"] == "failed" and run["error_code"] == "INTERRUPTED"
+
+
+# ------------------------------------------------------------------ last run check (RNF19)
+
+def test_after_a_power_cut_the_app_is_told_the_last_run_did_not_finish(tmp_path):
+    db = tmp_path / "run.db"
+    store = RunStore(db)                                       # a run cut by a power loss after 2 cards
+    store.create_run("r1", "2026-11-07T10:00:00.000Z")
+    store.save_scan("r1", 1, "2026-11-07T10:00:05.000Z", ScanRecord("identified", 1, card_identifier="x"))
+    store.save_scan("r1", 2, "2026-11-07T10:00:09.000Z", ScanRecord("face_down", 6))
+    store.close()
+
+    with TestClient(create_app(fast_settings(run_db=str(db)), vision=ScriptedVision([]))) as c:
+        body = c.get("/run/status").json()
+        assert body["state"] == "idle"
+        assert body["run"]["run_id"] == "r1" and body["run"]["status"] == "failed"   # last run, after the restart
+        check = body["last_run_check"]
+        assert check["ok"] is False and check["reason"] == "INTERRUPTED"
+        assert check["finished"] is False and check["records_ok"] is True and check["database_ok"] is True
+        assert check["cards_saved"] == 2 and check["run"]["run_id"] == "r1"
+        assert "start a new run" in check["message"]
+        with c.websocket_connect("/ws/events") as ws:             # the snapshot carries it too
+            assert ws.receive_json()["last_run_check"]["reason"] == "INTERRUPTED"
+
+
+def test_a_run_that_ends_normally_passes_the_check():
+    vision = ScriptedVision([identified(card("Plains", "W"))])
+    with TestClient(create_app(fast_settings(sim_stack_cards=1), vision=vision)) as c:
+        assert c.get("/run/status").json()["last_run_check"] is None          # no run yet
+        with c.websocket_connect("/ws/events") as ws:
+            ws.receive_json()
+            c.post("/run/start")
+            events = events_until(ws)
+        assert events[-1]["last_run_check"]["ok"] is True                    # in run_finished
+        check = c.get("/run/status").json()["last_run_check"]
+        assert check["ok"] is True and check["reason"] is None and check["cards_saved"] == 1
+
+
+def test_last_run_check_details():
+    store = RunStore(":memory:")
+    assert store.last_run_check() is None
+    store.create_run("r1", "2026-11-07T10:00:00.000Z")
+    assert store.last_run_check() is None                                    # running: followed live
+    store.save_scan("r1", 1, "2026-11-07T10:00:05.000Z", ScanRecord("identified", 1, card_identifier="x"))
+    store.update_run("r1", status="cancelled", stopped_at="2026-11-07T10:01:00.000Z")
+    assert store.last_run_check()["ok"] is True                              # a Stop is a correct end
+
+    store._conn.execute("UPDATE local_run SET cards_processed = 3, failed_scans = 2")   # counters ≠ cards
+    check = store.last_run_check()
+    assert check["ok"] is False and check["reason"] == "RECORDS_MISMATCH" and check["finished"] is True
+
+    store._conn.execute("UPDATE local_run SET cards_processed = 1, failed_scans = 0")
+    store.integrity_error = "*** in database main ***"                       # quick_check complained at start
+    assert store.last_run_check()["reason"] == "DATABASE_DAMAGED"
+
+    store.integrity_error = None
+    store.create_run("r2", "2026-11-07T11:00:00.000Z")                       # the newest run is the one checked
+    store.update_run("r2", status="failed", stopped_at="2026-11-07T11:00:30.000Z", error_code="MODULE_OFFLINE",
+                     message="The bottom module (A2) stopped responding.")
+    check = store.last_run_check()
+    assert check["reason"] == "MODULE_OFFLINE" and check["run"]["run_id"] == "r2" and check["cards_saved"] == 0
+    assert "stopped responding" in check["message"]
+
+
+def test_a_damaged_run_db_is_detected_when_opened(tmp_path):
+    db = tmp_path / "run.db"
+    RunStore(db).close()
+    assert RunStore(db).integrity_error is None
+    data = bytearray(db.read_bytes())
+    page = int.from_bytes(data[16:18], "big")                  # page size, from the file header
+    data[page:page + 8] = b"\xff" * 8                         # scribble over the header of page 2 (a table)
+    db.write_bytes(bytes(data))
+    assert RunStore(db).integrity_error == "database disk image is malformed"
 
 
 def test_csv_export_follows_rfc4180():

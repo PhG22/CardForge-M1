@@ -56,6 +56,7 @@ de 5 s.
 | 4. Gira a base até o bin | A2 (`GOTO`) | RF03 |
 | 5. Abre o flap, espera a carta cair, fecha | A1 (`FLAP`) | RNF04 |
 | 6. Um registro em `run.db`, em uma transação, depois da queda física | Pi: [`store.py`](sorter_api/store.py) | RF19, RNF19, RNF20 |
+| Ao ligar: `run.db` passa pelo `quick_check` do SQLite; a última run é verificada (terminou certo? cartas salvas = contadores?). Se não, o app avisa e sugere uma nova run | Pi: `store.last_run_check`; app: Controle da máquina e Início | RNF19 |
 | 7. Evento de progresso (sem identidade nem bin) e, se for o caso, alerta de atenção | WebSocket | RF23, RF36 |
 
 **Falhas** (RNF23, FW-SD-04): atolamento, carta que não cai ou base fora de posição **pausam** a run: motores parados,

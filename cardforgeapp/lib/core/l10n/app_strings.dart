@@ -152,6 +152,12 @@ abstract class AppStrings {
   String machineApiError(MachineApiException error);
   String get lastRun;
   String runResult(RunInfo run);
+  // RNF19: the last run did not finish correctly
+  String get unfinishedRunTitle;
+  String unfinishedRunBody(LastRunCheck check);
+  String unfinishedRunSuggestion(LastRunCheck check);
+  String get startNewRun;
+  String get unfinishedRunHome;
   String get recentlySorted;
   String sortedCard(SortedCard card);
   String get diagnostics;

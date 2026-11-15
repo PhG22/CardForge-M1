@@ -419,6 +419,42 @@ class EnStrings extends AppStrings {
         RunStatus.unknown => run.message ?? '',
       };
   @override
+  String get unfinishedRunTitle => "The last run didn't finish correctly";
+  @override
+  String unfinishedRunBody(LastRunCheck check) {
+    final saved =
+        cardsCount(check.cardsSaved ?? check.run?.cardsProcessed ?? 0);
+    return switch (check.reason) {
+      'INTERRUPTED' => 'The machine lost power or restarted while it was '
+          'sorting. What was sorted before that ($saved) is saved; a card '
+          'that was in the feeder or on the platform was not recorded.',
+      'MODULE_OFFLINE' => 'A module stopped responding during the run. What '
+          'was sorted before that ($saved) is saved.',
+      'PROTOCOL_ERROR' => 'A module sent an invalid reply during the run. '
+          'What was sorted before that ($saved) is saved.',
+      'RECORDS_MISMATCH' => 'Its saved results are incomplete: the run counted '
+          '${cardsCount(check.run?.cardsProcessed ?? 0)}, but only $saved '
+          'are saved.',
+      'DATABASE_DAMAGED' => "The machine's run database failed its integrity "
+          'check, so recent results may be missing.',
+      final code => 'It ended with an error'
+          '${code == null || code == 'FAILED' ? '' : ' ($code)'}. What was '
+          'sorted before that ($saved) is saved.',
+    };
+  }
+  @override
+  String unfinishedRunSuggestion(LastRunCheck check) => check.finished
+      ? 'Compare the trays with the run results, put the cards that are '
+          'missing back on the stack and start a new run.'
+      : 'Take the sorted cards out of the trays (they are already saved), put '
+          'the remaining cards back on the stack together with any card left '
+          'in the feeder or on the platform, and start a new run.';
+  @override
+  String get startNewRun => 'Start a new run';
+  @override
+  String get unfinishedRunHome =>
+      "The last run didn't finish correctly. Tap to start a new one.";
+  @override
   String get recentlySorted => 'Recently sorted';
   @override
   String sortedCard(SortedCard card) {
@@ -676,6 +712,9 @@ class EnStrings extends AppStrings {
       AlertType.wifiDisconnected => '$name is offline. Check your Wi-Fi network.',
       AlertType.batchFinished =>
         '$name processed ${alert.cardCount ?? 0} cards.',
+      AlertType.runFailed when alert.faultCode == 'INTERRUPTED' =>
+        '$name lost power or restarted during the run. Open machine control '
+            'to start a new one.',
       AlertType.runFailed =>
         '$name stopped with an error. Open machine control for details.',
       AlertType.jamDetected => '$name paused at ${_hms(alert.createdAt)}: '

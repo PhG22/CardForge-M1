@@ -122,20 +122,84 @@ class RunInfo {
       );
 }
 
+/// RNF19: did the machine's last run end correctly, with all its records?
+/// (`last_run_check` in GET /run/status, the `snapshot` event and
+/// `run_finished`.) The machine sends none before its first run and while a
+/// run is running or paused.
+class LastRunCheck {
+  const LastRunCheck({
+    required this.ok,
+    this.reason,
+    this.message,
+    this.finished = true,
+    this.recordsOk = true,
+    this.databaseOk = true,
+    this.cardsSaved,
+    this.run,
+  });
+
+  factory LastRunCheck.fromJson(Map<String, Object?> json) {
+    final run = _map(json['run']);
+    return LastRunCheck(
+      // Lenient: a check the app cannot read never warns the user.
+      ok: _bool(json['ok']) ?? true,
+      reason: _str(json['reason']),
+      message: _str(json['message']),
+      finished: _bool(json['finished']) ?? true,
+      recordsOk: _bool(json['records_ok']) ?? true,
+      databaseOk: _bool(json['database_ok']) ?? true,
+      cardsSaved: _int(json['cards_saved']),
+      run: run == null ? null : RunInfo.fromJson(run),
+    );
+  }
+
+  /// The run ended by itself or by a Stop, and everything it saved is whole.
+  final bool ok;
+
+  /// Why not: the run's error code (`INTERRUPTED` = power cut or restart,
+  /// `MODULE_OFFLINE`, `PROTOCOL_ERROR`, ...), or `RECORDS_MISMATCH` (its saved
+  /// cards don't match its counters) or `DATABASE_DAMAGED` (run.db failed
+  /// its integrity check).
+  final String? reason;
+
+  /// The machine's own explanation (English).
+  final String? message;
+
+  /// False when the run failed or was interrupted.
+  final bool finished;
+
+  /// False when the saved cards don't match the run's counters.
+  final bool recordsOk;
+
+  /// False when run.db failed SQLite's integrity check at start.
+  final bool databaseOk;
+
+  /// Cards of that run saved on the machine (sorted before it ended).
+  final int? cardsSaved;
+
+  /// The run that was checked.
+  final RunInfo? run;
+}
+
 /// GET /run/status (also the `snapshot` event).
 class MachineSnapshot {
-  const MachineSnapshot({required this.state, this.run});
+  const MachineSnapshot({required this.state, this.run, this.lastRunCheck});
 
   factory MachineSnapshot.fromJson(Map<String, Object?> json) {
     final run = _map(json['run']);
+    final check = _map(json['last_run_check']);
     return MachineSnapshot(
       state: _controllerState(json['state']),
       run: run == null ? null : RunInfo.fromJson(run),
+      lastRunCheck: check == null ? null : LastRunCheck.fromJson(check),
     );
   }
 
   final ControllerState state;
   final RunInfo? run;
+
+  /// RNF19, see [LastRunCheck]. Null before the first run and during a run.
+  final LastRunCheck? lastRunCheck;
 }
 
 /// One reason why POST /run/start refused to start.
@@ -370,7 +434,12 @@ sealed class MachineEvent {
           cleared: true,
         );
       case 'run_finished' when run != null:
-        return RunFinishedEvent(RunInfo.fromJson(run), _str(json['message']));
+        final check = _map(json['last_run_check']);
+        return RunFinishedEvent(
+          RunInfo.fromJson(run),
+          _str(json['message']),
+          lastRunCheck: check == null ? null : LastRunCheck.fromJson(check),
+        );
       case 'fault':
         return FaultEvent(
           code: _str(json['fault']) ?? 'UNKNOWN',
@@ -417,9 +486,12 @@ class CardSortedEvent extends MachineEvent {
 }
 
 class RunFinishedEvent extends MachineEvent {
-  const RunFinishedEvent(this.run, this.message);
+  const RunFinishedEvent(this.run, this.message, {this.lastRunCheck});
   final RunInfo run;
   final String? message;
+
+  /// RNF19: the machine's check of the run that just ended.
+  final LastRunCheck? lastRunCheck;
 }
 
 /// A fault paused the run (RF27): the motors are stopped and the run waits

@@ -34,6 +34,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import sqlite3
 import threading
 import time
 import uuid
@@ -257,6 +258,11 @@ class SorterController:
             n = store.recover_interrupted(utc_now())
             if n:
                 log.warning("%d run(s) were interrupted by a restart and are now marked failed", n)
+            # "Current or last run" also after a restart: the last run comes from run.db.
+            self._run = _run_from_store(store.last_run())
+            check = self.last_run_check()
+            if check is not None and not check["ok"]:
+                log.warning("last run check (RNF19): %s %s", check["reason"], check["message"])
 
     @property
     def _modules(self) -> tuple:
@@ -266,12 +272,29 @@ class SorterController:
 
     def snapshot(self) -> dict:
         with self._lock:
-            return {
+            snapshot = {
                 "state": self._state.value,
                 "run": self._run.to_dict() if self._run else None,
                 # RNF22 / RF02: general run-status figures, no card identity (RF23).
                 "timing": self._timing.to_dict(),
             }
+        snapshot["last_run_check"] = self.last_run_check()   # reads run.db: outside the lock
+        return snapshot
+
+    def last_run_check(self) -> dict | None:
+        """RNF19: did the last finished run end correctly, with all its records? (RunStore.last_run_check)
+        None without run.db, before the first run, and while a run is running or paused."""
+        if self.store is None:
+            return None
+        try:
+            return self.store.last_run_check()
+        except sqlite3.Error as exc:
+            log.error("could not read run.db for the last run check: %s", exc)
+            return {"ok": False, "reason": "DATABASE_DAMAGED",
+                    "message": f"The machine could not read its run database ({exc}). Recent results may be "
+                               "missing. Empty the trays and sort those cards again in a new run.",
+                    "finished": None, "records_ok": None, "database_ok": False, "cards_saved": None,
+                    "run": None}
 
     @property
     def state(self) -> ControllerState:
@@ -1061,7 +1084,8 @@ class SorterController:
         if status is not RunStatus.FAILED:
             self._led("IDLE")
         log.info("run %s %s: %s", run.run_id, status.value, message)
-        self.events.publish({"type": "run_finished", "run": run.to_dict(), "message": message})
+        self.events.publish({"type": "run_finished", "run": run.to_dict(), "message": message,
+                             "last_run_check": self.last_run_check()})
 
     def _cleanup(self) -> None:
         """End of a run: free the SD card (temporary pictures/reports, run.db journal)."""
@@ -1087,6 +1111,19 @@ _ERROR_MESSAGES = {
     "MOVE_TIMEOUT": "The base did not reach the requested tray.",
     "NOT_HOMED": "The base has not been homed.",
 }
+
+
+def _run_from_store(row: dict | None) -> RunInfo | None:
+    """A run as saved in run.db (RunStore.last_run) -> RunInfo, for GET /run/status after a restart."""
+    if row is None:
+        return None
+    try:
+        status = RunStatus(row["status"])
+    except ValueError:
+        return None
+    return RunInfo(run_id=row["run_id"], status=status, started_at=row["started_at"],
+                   stopped_at=row["stopped_at"], cards_processed=row["cards_processed"],
+                   error_code=row["error_code"], message=row["message"], owner=row.get("owner_name"))
 
 
 def _quiet_time(duration_ms: int | None) -> float:

@@ -425,6 +425,45 @@ class PtStrings extends AppStrings {
         RunStatus.unknown => run.message ?? '',
       };
   @override
+  String get unfinishedRunTitle =>
+      'A última ordenação não terminou corretamente';
+  @override
+  String unfinishedRunBody(LastRunCheck check) {
+    final saved =
+        cardsCount(check.cardsSaved ?? check.run?.cardsProcessed ?? 0);
+    return switch (check.reason) {
+      'INTERRUPTED' => 'A máquina perdeu energia ou reiniciou durante a '
+          'ordenação. O que foi ordenado antes disso ($saved) está salvo; uma '
+          'carta que estava no alimentador ou na plataforma não foi registrada.',
+      'MODULE_OFFLINE' => 'Um módulo deixou de responder durante a ordenação. '
+          'O que foi ordenado antes disso ($saved) está salvo.',
+      'PROTOCOL_ERROR' => 'Um módulo enviou uma resposta inválida durante a '
+          'ordenação. O que foi ordenado antes disso ($saved) está salvo.',
+      'RECORDS_MISMATCH' => 'Os resultados salvos estão incompletos: a '
+          'ordenação contou ${cardsCount(check.run?.cardsProcessed ?? 0)}, mas '
+          'só $saved estão salvas.',
+      'DATABASE_DAMAGED' => 'O banco de dados de ordenações da máquina falhou '
+          'na verificação de integridade; resultados recentes podem estar '
+          'faltando.',
+      final code => 'Ela terminou com um erro'
+          '${code == null || code == 'FAILED' ? '' : ' ($code)'}. O que foi '
+          'ordenado antes disso ($saved) está salvo.',
+    };
+  }
+  @override
+  String unfinishedRunSuggestion(LastRunCheck check) => check.finished
+      ? 'Compare as bandejas com os resultados da ordenação, coloque as cartas '
+          'que faltam de volta na pilha e inicie uma nova ordenação.'
+      : 'Retire as cartas ordenadas das bandejas (elas já estão salvas), '
+          'coloque as cartas restantes de volta na pilha, junto com qualquer '
+          'carta que ficou no alimentador ou na plataforma, e inicie uma nova '
+          'ordenação.';
+  @override
+  String get startNewRun => 'Iniciar nova ordenação';
+  @override
+  String get unfinishedRunHome =>
+      'A última ordenação não terminou corretamente. Toque para iniciar outra.';
+  @override
   String get recentlySorted => 'Ordenadas há pouco';
   @override
   String sortedCard(SortedCard card) {
@@ -683,6 +722,9 @@ class PtStrings extends AppStrings {
         '$name está offline. Verifique sua rede Wi-Fi.',
       AlertType.batchFinished =>
         '$name processou ${alert.cardCount ?? 0} cartas.',
+      AlertType.runFailed when alert.faultCode == 'INTERRUPTED' =>
+        '$name perdeu energia ou reiniciou durante a ordenação. Abra o '
+            'controle da máquina para iniciar outra.',
       AlertType.runFailed =>
         '$name parou com um erro. Abra o controle da máquina para ver os detalhes.',
       AlertType.jamDetected => '$name pausou às ${_hms(alert.createdAt)}: '

@@ -99,6 +99,29 @@ class HomeScreen extends StatelessWidget {
                                   const SizedBox(height: 8),
                                   ConnectionChip(
                                       connection: deps.machine.connection),
+                                  // RNF19: the last run did not finish correctly.
+                                  if (deps.machine.unfinishedLastRun !=
+                                      null) ...[
+                                    const SizedBox(height: 8),
+                                    Row(
+                                      key: const ValueKey(
+                                          'home-unfinished-run'),
+                                      children: [
+                                        const Icon(
+                                            Icons.history_toggle_off_rounded,
+                                            size: 16,
+                                            color: MagicColors.gold),
+                                        const SizedBox(width: 6),
+                                        Expanded(
+                                          child: Text(
+                                            l10n.unfinishedRunHome,
+                                            style: text.bodySmall?.copyWith(
+                                                color: MagicColors.gold),
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ],
                                 ],
                               ),
                             ),

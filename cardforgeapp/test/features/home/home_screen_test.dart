@@ -3,6 +3,7 @@ import 'package:cardforge/features/alerts/machine_alert.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import '../../helpers/fake_machine_api.dart';
 import '../../helpers/test_helpers.dart';
 
 const _menuItems = [
@@ -133,6 +134,28 @@ void main() {
 
     expect(find.text('Start sorting'), findsOneWidget);
     expect(find.text('192.168.0.42:8000'), findsOneWidget);
+  });
+
+  testWidgets('warns when the last run did not finish correctly (RNF19)',
+      (tester) async {
+    await pumpApp(
+      tester,
+      initialLocation: '/home',
+      preferences: linkedMachinePrefs,
+      machineApi: FakeMachineApi(snapshot: FakeMachineApi.interruptedSnapshot()),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const ValueKey('home-unfinished-run')), findsOneWidget);
+    expect(find.textContaining("didn't finish correctly"), findsOneWidget);
+  });
+
+  testWidgets('no warning after a correct run', (tester) async {
+    await pumpApp(tester,
+        initialLocation: '/home', preferences: linkedMachinePrefs);
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const ValueKey('home-unfinished-run')), findsNothing);
   });
 
   testWidgets('"Settings" in the menu opens the settings screen',

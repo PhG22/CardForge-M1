@@ -53,6 +53,29 @@ class FakeMachineApi implements MachineApi {
         currentTray: tray,
       );
 
+  /// RNF19: GET /run/status after the machine lost power during run-1, which
+  /// had sorted [cards] cards.
+  static MachineSnapshot interruptedSnapshot({int cards = 2}) {
+    final run = RunInfo(
+      runId: 'run-1',
+      status: RunStatus.failed,
+      cardsProcessed: cards,
+      errorCode: 'INTERRUPTED',
+      message: 'The run was interrupted (power loss or software restart).',
+    );
+    return MachineSnapshot(
+      state: ControllerState.idle,
+      run: run,
+      lastRunCheck: LastRunCheck(
+        ok: false,
+        reason: 'INTERRUPTED',
+        finished: false,
+        cardsSaved: cards,
+        run: run,
+      ),
+    );
+  }
+
   void _check(String call) {
     calls.add(call);
     if (!reachable) throw _offline;
