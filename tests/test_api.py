@@ -290,14 +290,14 @@ def test_base_endpoints_refused_in_top_only_mode(top_client):
 
 def test_flap_manual_moves(client):
     flap = client.get("/flap").json()["flap"]
-    assert flap["open_angle"] == 7 and flap["closed_angle"] == 117
+    assert flap["open_angle"] == 24 and flap["closed_angle"] == 117
 
     r = client.post("/flap", json={"angle": 30})
     assert r.status_code == 200, r.text
     assert r.json()["flap"]["angle"] == 30
     assert client.get("/sim/state").json()["flap_angle"] == 30
 
-    assert client.post("/flap", json={"position": "open"}).json()["flap"]["angle"] == 7
+    assert client.post("/flap", json={"position": "open"}).json()["flap"]["angle"] == 24
     assert client.post("/flap", json={"position": "closed"}).json()["flap"]["angle"] == 117
 
 

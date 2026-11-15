@@ -41,7 +41,7 @@ class Settings:
 
     # --- mechanics (flap/drop timings from feeder_flap_test.ino)
     flap_closed_angle: int = 117         # closed. Override: MTG_FLAP_CLOSED_ANGLE (must match FLAP_CLOSED in a1_top.ino)
-    flap_open_angle: int = 7             # open (drop). Override: MTG_FLAP_OPEN_ANGLE
+    flap_open_angle: int = 24            # open (drop). Override: MTG_FLAP_OPEN_ANGLE
     flap_settle_s: float = 0.5          # time for the flap servo to reach its angle
     drop_timeout_s: float = 3.0         # max time for the card to leave the platform
     card_fall_s: float = 0.5            # after the platform IR clears, before closing the flap
