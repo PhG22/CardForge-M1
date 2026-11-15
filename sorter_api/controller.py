@@ -676,7 +676,7 @@ class SorterController:
             self.bottom.start_home(int(s.home_timeout_s * 1000), hint)
 
         self.top.roller_stop()                    # feed roller must not rotate
-        self.top.set_flap(s.flap_closed_angle)    # flap closed (117 degrees by default)
+        self.top.set_flap(s.flap_closed_angle)    # flap closed (90 degrees by default)
         self._light(s.light_base_level)
         self._sleep(s.flap_settle_s)
 
