@@ -60,6 +60,7 @@ class IdentificationResult:
                 "info_raw": self.fields.info_raw if self.fields else "",
                 "set_code": self.info.set_code if self.info else None,
                 "collector_number": self.info.collector_number if self.info else None,
+                "language": self.info.language if self.info else None,
             },
             "elapsed_ms": self.elapsed_ms,
             "debug": {k: v for k, v in self.debug.items() if isinstance(v, (str, int, float, bool))},

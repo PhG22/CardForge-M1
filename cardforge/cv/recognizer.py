@@ -17,8 +17,9 @@ from .result import IdentificationResult, IdentificationStatus
 
 class CardRecognizer:
     """
-    Pipeline de reconhecimento de UMA captura (CV-SD-01): borda + retificação → orientação →
-    verso? → layout → OCR dos campos → set/número → match local → (não identificada) verso?. Nenhuma chamada de rede (RNF15).
+    Pipeline de reconhecimento de UMA captura (CV-SD-01): borda + retificação → verso? (só cor) →
+    orientação → verso? → layout → OCR dos campos → set/número → match local → (não identificada)
+    verso?. Nenhuma chamada de rede (RNF15).
     """
 
     def __init__(self, cfg: VisionConfig, ocr: OcrEngine, repo: CardRepository,
@@ -57,15 +58,24 @@ class CardRecognizer:
         card = self.rectifier.rectify(image, quad)
         debug = {"strategy": quad.strategy.value, "sharpness": round(sharpness(card.image), 1)}
 
-        # 2. Orientação (0°/180°) e carta virada (RF39)
+        # 2. Verso da carta (RF39) só pela cor, antes de qualquer OCR: a assinatura marrom do verso
+        #    custa ~1 ms, e sem este atalho uma carta virada gastava DUAS chamadas de OCR (título nas
+        #    duas orientações) para chegar à mesma conclusão. O limiar é mais alto que o do teste da
+        #    etapa 3 porque aqui a cor é a única prova (ver FaceDownConfig). A medida não muda com a
+        #    rotação de 180°, por isso serve para as três verificações desta captura.
+        brown = self.face_down.brown_ratio(card.image)
+        debug["brown_ratio"] = round(brown, 3)
+        if brown >= self.cfg.face_down.skip_ocr_brown_ratio:
+            return done(self._face_down(card, "brown_only", debug))
+
+        # 3. Orientação (0°/180°) e carta virada com o título ilegível nas duas orientações (RF39)
         orient = self.orientation.resolve(card)
         card = orient.card
         debug.update(orient.debug, rotated180=card.rotated180, title_score=orient.title_score)
-        if self.face_down.is_face_down(orient):
-            debug["face_down_check"] = "no_title"
-            return done(IdentificationResult(IdentificationStatus.FACE_DOWN, rectified=card.image, debug=debug))
+        if self.face_down.has_no_title(orient) and brown >= self.cfg.face_down.min_brown_ratio:
+            return done(self._face_down(card, "no_title", debug))
 
-        # 3. Atalho: nome e info ficam no mesmo lugar em todos os layouts. Se a leitura com as ROIs padrão
+        # 4. Atalho: nome e info ficam no mesmo lugar em todos os layouts. Se a leitura com as ROIs padrão
         #    (já feita para a orientação) identifica a carta, o OCR de layout não mudaria o resultado.
         if self.cfg.skip_layout_when_identified and orient.fields is not None:
             first = self._identify(orient.fields, CardLayout.STANDARD)
@@ -78,7 +88,7 @@ class CardRecognizer:
         else:
             first = None
 
-        # 4. Layout (1 OCR) e campos nas ROIs desse layout (reaproveita a leitura STANDARD)
+        # 5. Layout (1 OCR) e campos nas ROIs desse layout (reaproveita a leitura STANDARD)
         layout = self.layouts.classify(card)
         if layout is CardLayout.STANDARD and first is not None:
             attempt = first
@@ -87,16 +97,22 @@ class CardRecognizer:
             attempt = self._identify(fields, layout)
         debug["name_score"] = attempt.debug_name_score
 
-        # 5. Não identificada: antes de pedir outra captura, confere se é o verso (RF39). Só cor, sem OCR
-        #    (alguns ms). O teste do passo 2 exige título vazio nas duas orientações, e o OCR às vezes lê
+        # 6. Não identificada: antes de pedir outra captura, confere se é o verso (RF39) com o limiar
+        #    normal. O teste da etapa 3 exige título vazio nas duas orientações, e o OCR às vezes lê
         #    ruído no "Deckmaster" do verso: sem isto a carta virada passava pelas 3 capturas (RF29).
-        if not attempt.identified:
-            ratio = self.face_down.brown_ratio(card.image)
-            debug["brown_ratio"] = round(ratio, 3)
-            if ratio >= self.cfg.face_down.min_brown_ratio:
-                debug["face_down_check"] = "after_identify"
-                return done(IdentificationResult(IdentificationStatus.FACE_DOWN, rectified=card.image, debug=debug))
+        if not attempt.identified and brown >= self.cfg.face_down.min_brown_ratio:
+            return done(self._face_down(card, "after_identify", debug))
         return done(attempt.to_result(card.image, debug))
+
+    def _face_down(self, card, check: str, debug: dict) -> IdentificationResult:
+        """
+        Resultado FACE_DOWN (RF39). A confiança é a própria assinatura de cor do verso: não há carta
+        para identificar, mas 0 % fazia o log e o relatório parecerem uma falha de leitura.
+        """
+        debug["face_down_check"] = check
+        return IdentificationResult(IdentificationStatus.FACE_DOWN,
+                                    confidence=min(100, round(debug["brown_ratio"] * 100)),
+                                    rectified=card.image, debug=debug)
 
     def _identify(self, fields: ExtractedFields, layout: CardLayout) -> "_Attempt":
         """Set/número e match no banco local para um conjunto de campos lidos."""

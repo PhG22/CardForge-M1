@@ -55,6 +55,11 @@ class FaceDownConfig:
     """Assinatura do verso da carta de Magic: moldura e oval central marrons (verso ≈ 0,85; frentes ≤ 0,67)."""
     min_brown_ratio: float = 0.75
     max_text_chars: int = 2       # caracteres no título tolerados (ruído) para considerar "sem título"
+    # Acima deste valor a cor basta e a carta é dada como virada ANTES de qualquer OCR (~1 ms em vez
+    # de duas chamadas de OCR). É mais alto que min_brown_ratio porque aqui a cor é a única prova:
+    # medido nas 59 frentes de referência, a mais marrom dá 0,67; o verso, ≈ 0,85. Confira o campo
+    # brown_ratio do debug com fotos da sua câmara antes de baixar; 1.01 desliga o atalho.
+    skip_ocr_brown_ratio: float = 0.80
 
 
 @dataclass

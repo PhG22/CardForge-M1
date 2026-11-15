@@ -44,3 +44,15 @@ def types_agree(ocr_type_line: str, official_type_line: str) -> bool:
     """Os tipos lidos (não vazios) são todos tipos da carta oficial?"""
     ocr = card_types(ocr_type_line)
     return bool(ocr) and ocr <= card_types(official_type_line)
+
+
+def types_conflict(ocr_type_line: str, official_type_line: str) -> bool:
+    """
+    Os tipos lidos CONTRADIZEM a carta oficial? ("Terreno" numa criatura.)
+
+    Não é o contrário de `types_agree`: uma linha de tipo que o OCR não conseguiu ler não concorda
+    nem contradiz — e essa diferença decide se uma carta não inglesa é aceita por edição + número
+    ou mandada para revisão.
+    """
+    ocr = card_types(ocr_type_line)
+    return bool(ocr) and not ocr <= card_types(official_type_line)

@@ -57,3 +57,7 @@ imx219 = [[0.8280, 0.3182], [0.8537, 0.9740], [0.1634, 0.9862], [0.1537, 0.3222]
 [face_down]                          # RF39
 min_brown_ratio = 0.75
 max_text_chars = 2
+# Acima disto a cor basta: carta dada como virada antes de qualquer OCR (~1 ms em vez de 2 chamadas de
+# OCR). Verso ≈ 0,85; a frente mais marrom das 59 fotos de referência, 0,67. Confira o brown_ratio do
+# debug com fotos da sua câmara antes de baixar; 1.01 desliga o atalho.
+skip_ocr_brown_ratio = 0.80

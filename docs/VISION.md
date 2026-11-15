@@ -22,13 +22,14 @@ cardforge/
     detection/               #   fixed.py (recorte fixo calibrado) · ContourCandidateGenerator, QuadrilateralFinder,
                              #   CardDetector (detecção de bordas: só calibração e fotos de outras fontes), PerspectiveRectifier
     ocr/                     #   OcrEngine, OrientationResolver, FaceDownDetector, LayoutClassifier, RoiCatalog, FieldExtractor
-    matching/                #   InfoLineParser, SetCodeCatalog, NameIndex, CardMatcher
+    matching/                #   ocr_text.py (saneamento do OCR) · InfoLineParser, SetCodeCatalog,
+                             #   NameIndex, CardMatcher
     report.py, __main__.py   #   relatórios e CLI
   data/                      # pacote cardforge.data (CV-CL-03 / CV-ER)
     repository.py            #   SqliteCardRepository (somente leitura)
     sync.py                  #   ScryfallSyncService (bulk "default_cards" + /sets, troca atômica)
     schema.py                #   schema do cards.db (CV16)
-tests/test_vision.py         # 23 testes unitários (sem câmara, rede ou modelos)
+tests/test_vision.py         # 34 testes unitários (sem câmara, rede ou modelos)
 vision.toml                  # limiares e parâmetros da câmara
 data/cards.db                # espelho local do Scryfall (gerado pelo comando sync, ~40 MB)
 ```
@@ -109,32 +110,54 @@ run ativa; se falhar, o banco anterior continua em uso.
    Otsu claro) em 3 passes; quadriláteros com proporção de carta, quase retangulares e sem encostar na borda do
    frame; escolhe o maior (borda externa, não a caixa de arte); perspectiva corrigida para 630×880.
    Falha → `CROP_FAILED`.
-2. **Orientação** (CV-AD-03): título lido com as ROIs padrão e pontuado contra os nomes oficiais; se < 75, lê
+2. **Verso da carta, só pela cor** (RF39): a assinatura marrom do verso custa ~1 ms e é medida antes de
+   qualquer OCR. Acima de `skip_ocr_brown_ratio` (0,80) a cor basta e a captura termina aqui com
+   `FACE_DOWN` e **zero chamadas de OCR** — antes uma carta virada gastava duas (título nas duas
+   orientações) para chegar à mesma conclusão. O limiar do atalho é mais alto que o do passo 3 porque aqui
+   a cor é a única prova: verso ≈ 0,85; a frente mais marrom das 59 fotos de referência, 0,67. O
+   `brown_ratio` vai no debug de toda captura, para calibrar o limiar com fotos da própria câmara.
+3. **Orientação** (CV-AD-03): título lido com as ROIs padrão e pontuado contra os nomes oficiais; se < 75, lê
    a carta girada 180° e só a adota se ganhar por > 10 pontos. Uma linha de info válida (edição oficial + número)
-   também confirma a orientação.
-3. **Verso da carta** (RF39, novo): nenhum título nas duas orientações **e** ≥ 75 % do interior marrom
-   (verso ≈ 85 %, frentes ≤ 67 %) → `FACE_DOWN`.
-4. **Atalho**: Nome e Info ficam no mesmo lugar em todos os layouts. Se a leitura da etapa 2 (ROIs padrão) já
+   também confirma a orientação. Nenhum título nas duas orientações **e** ≥ `min_brown_ratio` (0,75) de
+   interior marrom → `FACE_DOWN`.
+4. **Atalho**: Nome e Info ficam no mesmo lugar em todos os layouts. Se a leitura da etapa 3 (ROIs padrão) já
    identifica a carta, a captura termina aqui — exceto quando a linha de info marca token (`T0002`) ou quando só
    o nome bateu apesar de set+número lidos. Na maioria das fotos a captura usa **uma única chamada de OCR**.
 5. **Layout** (uma chamada de OCR, só se o atalho não resolveu): Standard, Saga, Full Art, Token Full, Token Classic.
-6. **Campos** (uma chamada de OCR): Nome, Tipo e Info nas ROIs do layout; reaproveita a leitura da etapa 2
+6. **Campos** (uma chamada de OCR): Nome, Tipo e Info nas ROIs do layout; reaproveita a leitura da etapa 3
    quando o layout é Standard.
-7. **Info** (CV-AD-04): número (`236/249` tem prioridade sobre o ano do copyright) e código da edição (exato;
-   idioma colado como em `FICEN`/`TLEENBI`; trocas típicas de OCR como `F1N`→`FIN`, `JKO`→`IKO`).
-8. **Match** no `cards.db`: set+número cruzado com o nome → nome exato → nome fuzzy. Divergências ficam com
-   `needs_review` abaixo de 90 % e viram `LOW_CONFIDENCE` (o controle recaptura e, no fim, manda para o bin 6).
+7. **Info** (CV-AD-04, `matching/ocr_text.py`): a linha do rodapé é curta e sem redundância, então uma troca
+   de caractere derruba a identificação. Em vez de apostar numa leitura, o `InfoLineParser` devolve
+   *candidatos ordenados* de edição e número:
+   * **número**: `236/249` tem prioridade sobre o ano do copyright; a leitura com os dígitos saneados
+     (`O`→`0`, `I`/`L`→`1`, `S`→`5`, `B`→`8`, só dentro de grupos que já têm dígito: `RO271`→`R0271`,
+     `1OO`→`100`) entra como alternativa, porque conserta uns casos e estraga outros (`L0277`→`10277`);
+   * **edição**, por pontuação: código exato ou com a etiqueta de idioma colada, `FICEN`/`LCIPT` (100) →
+     etiqueta separada por um caractere lido errado, `MOM★PT` virando `MOMAPT` (95) → troca típica de OCR,
+     `F1N`→`FIN`, `JKO`→`IKO` (90) → etiqueta lida errada, `LCIPI`/`IKOFT` (88) → semelhança genérica
+     (≥ `set_cutoff`), que é o último recurso porque o nome do artista também cai aqui;
+   * **idioma**: a etiqueta é lida *ancorada no código* (`IKO·PT`, `IKO·PTSTEVEELLIS`, `LCIPT`) — duas letras
+     soltas no meio do nome do artista não contam. É ela que marca a carta como não inglesa na etapa 8.
+8. **Match** no `cards.db`: set+número cruzado com o nome → nome exato → nome fuzzy. O banco é o árbitro do
+   saneamento do OCR: o `CardMatcher` tenta os candidatos de edição × número até achar uma impressão que
+   exista em `card_print` (consulta indexada, ~0,05 ms cada), e uma combinação inventada por uma troca de
+   caractere simplesmente não existe. Divergências ficam com `needs_review` abaixo de 90 % e viram
+   `LOW_CONFIDENCE` (o controle recaptura e, no fim, manda para o bin 6).
 
 ## Resultados no conjunto de fotos da PoC (63 imagens de `input_cartas`)
 
 | Status | Imagens |
 | --- | --- |
-| IDENTIFIED | 56 (88,9 %) |
-| LOW_CONFIDENCE | 3 (4,8 %) |
+| IDENTIFIED | 58 (92,1 %) |
+| LOW_CONFIDENCE | 1 (1,6 %) |
 | CROP_FAILED | 4 (6,3 %) |
 | FACE_DOWN | 0 (nenhum falso positivo) |
 
 - Os 7 exemplos do Deliverable 4 são identificados, incluindo a carta em português *Sagui Espinhoso* → Prickly Marmoset.
+- As 2 cartas que passaram de `LOW_CONFIDENCE` a `IDENTIFIED` são o mesmo *Furanuvem* (= Cloudpiercer, IKO 291)
+  em duas fotos: edição e número lidos certos, mas a linha de tipo não lida — ver a etiqueta de idioma na
+  tabela abaixo. Cada uma delas custava 2 chamadas de OCR por captura **e as 3 capturas** do laço de
+  retentativas (RF29) antes de ir para o bin 6; agora resolve em 1 chamada na primeira captura.
 - Tempo médio de 0,62 s por captura num PC (Python 3.13, x86-64) — era 1,19 s antes das otimizações abaixo,
   com resultados idênticos nas 63 fotos; **ainda não medido no Raspberry Pi**.
 
@@ -165,7 +188,8 @@ referência, fotografe-o **na máquina** e rode `batch --truth`.
 
 | Item | Design | Implementado | Motivo |
 | --- | --- | --- | --- |
-| Cartas não inglesas | `SET_NUMBER_NAME_MISMATCH` → revisão | `SET_NUMBER_LOCALIZED` (90 %) quando o nome não bate com nenhuma carta inglesa e os tipos da linha de tipo (PT/ES/FR/DE/IT) batem com a carta | Senão toda carta em português iria para o bin 6, comprometendo RNF18. Desligável com `accept_localized_cards = false` |
+| Cartas não inglesas | `SET_NUMBER_NAME_MISMATCH` → revisão | `SET_NUMBER_LOCALIZED` (90 %) quando o nome não bate com nenhuma carta inglesa e **os tipos da linha de tipo (PT/ES/FR/DE/IT) batem com a carta, ou a linha de info traz a etiqueta de idioma** (`IKO·PT`) e a linha de tipo não contradiz a carta | Senão toda carta em português iria para o bin 6, comprometendo RNF18. A etiqueta de idioma é prova direta de que o nome vai divergir, e cobre as cartas cuja linha de tipo não foi lida (moldura showcase, linha fora da ROI); uma linha de tipo que *contradiz* a carta continua indo para revisão. Desligável com `accept_localized_cards = false` |
+| Leitura da edição / número | código exato + trocas típicas de OCR | candidatos ordenados (etiqueta de idioma colada ou lida errada, dígitos saneados) conferidos no `cards.db` | Uma troca de caractere na linha do rodapé deixava a carta sem edição: ela caía no match por nome, que nunca bate numa carta em português, e a carta era rejeitada depois das 3 capturas |
 | `max_area_ratio` | 0,60 | 0,85 (configurável) | Nas fotos de teste a carta ocupa até 67 % do frame; recalibrar com o enquadramento final |
 | Validação do quadrilátero | proporção | + retangularidade ≥ 0,85, sem encostar na borda do frame, proporção por média dos lados | Evita quads "puxados" até o canto da imagem pela sombra |
 | ROIs de Nome/Info | PoC (y 30–85, x 30–300) | Nome y 22–105, Info x 10–320 | O título e o 1.º caractere da edição eram cortados quando o recorte vinha um pouco deslocado |
@@ -183,7 +207,7 @@ referência, fotografe-o **na máquina** e rode `batch --truth`.
 | RF17 | Nome, Edição e Número extraídos por OCR; medir com `batch --truth` |
 | RF18 | Confiança ≥ 90 % e sem `needs_review` → `IDENTIFIED`; dados completos (tipo, identidade de cor…) do `cards.db` |
 | RF25 / RF29 / RNF09 | Status explícitos por captura; retentativas e luz no programa de controle (exemplo acima) |
-| RF39 | `FaceDownDetector` → `FACE_DOWN` |
+| RF39 | `FaceDownDetector` → `FACE_DOWN` em três testes (cor antes do OCR, título ausente nas duas orientações, cor depois de uma identificação falhada). A confiança do resultado é a própria assinatura de cor (≥ 75 %), não 0 % |
 | RNF15 | Pipeline 100 % local (OpenCV + RapidOCR/ONNX + SQLite); `requests` só é importado pelo `sync` |
 | RNF16 | Scryfall como única fonte, via espelho local |
 | RNF18 / RNF22 | Ferramentas de medição em `batch` (acurácia com gabarito, tempo por captura) |

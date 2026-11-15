@@ -1,8 +1,11 @@
 """
-RF39 / RF29: a capture that is not identified is checked for the card back (colour only, no OCR)
-BEFORE the identifier asks for another capture. The early check (no title in either orientation)
-misses card backs when OCR reads noise in the "Deckmaster" logo; then the card went through all
-3 captures. Now it is FACE_DOWN at the first capture.
+RF39 / RF29: a card back must be FACE_DOWN at the FIRST capture, never after all 3 of them.
+
+Three checks, cheapest first:
+  * colour alone, before any OCR (`brown_only`): the usual case, 0 OCR calls;
+  * no title in either orientation (`no_title`);
+  * colour again after a failed identification (`after_identify`): catches a back whose colour is
+    below the shortcut threshold and whose "Deckmaster" logo the OCR read as a title.
 """
 from __future__ import annotations
 
@@ -26,6 +29,10 @@ from sorter_api.identifier import FACE_DOWN, UNIDENTIFIED, VisionIdentifier  # n
 
 BACK = np.full((880, 630, 3), (30, 80, 150), np.uint8)     # BGR brown/orange: the Magic card back
 FRONT = np.full((880, 630, 3), (200, 200, 200), np.uint8)  # a light grey card front
+# A back whose colour lands BETWEEN the two thresholds (0.75 <= ratio < 0.80): the colour-only
+# shortcut must not fire, so it is caught by the check after the failed identification.
+DIM_BACK = BACK.copy()
+DIM_BACK[:int(0.27 * 880)] = (200, 200, 200)
 
 
 def recognizer(card_image: np.ndarray, title: str = "Dkmstr") -> CardRecognizer:
@@ -49,11 +56,23 @@ def recognizer(card_image: np.ndarray, title: str = "Dkmstr") -> CardRecognizer:
     return r
 
 
-def test_card_back_with_ocr_noise_is_face_down_after_identification():
+def test_card_back_is_face_down_before_any_ocr():
     result = recognizer(BACK).recognize(np.zeros((720, 1280, 3), np.uint8))
     assert result.status is IdentificationStatus.FACE_DOWN
+    assert result.debug["face_down_check"] == "brown_only"
+    assert result.debug["ocr_calls"] == 0                 # nothing was read: ~1 ms instead of 2 OCR calls
+    # The confidence is the colour signature itself, not 0 % (which read as a failure in the log).
+    assert result.confidence == round(result.debug["brown_ratio"] * 100) >= 75
+
+
+def test_card_back_with_ocr_noise_is_face_down_after_identification():
+    cfg = VisionConfig()
+    ratio = FaceDownDetector.brown_ratio(DIM_BACK)
+    assert cfg.face_down.min_brown_ratio <= ratio < cfg.face_down.skip_ocr_brown_ratio
+    result = recognizer(DIM_BACK).recognize(np.zeros((720, 1280, 3), np.uint8))
+    assert result.status is IdentificationStatus.FACE_DOWN
     assert result.debug["face_down_check"] == "after_identify"
-    assert result.debug["brown_ratio"] >= 0.75
+    assert result.debug["brown_ratio"] >= cfg.face_down.min_brown_ratio
 
 
 def test_unidentified_front_still_asks_for_another_capture():

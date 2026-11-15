@@ -19,7 +19,7 @@ from cardforge.cv.config import VisionConfig  # noqa: E402
 from cardforge.cv.detection import CardDetector, PerspectiveRectifier, order_points  # noqa: E402
 from cardforge.cv.matching import (CardMatcher, InfoLineParser, MatchMethod, NameIndex,  # noqa: E402
                                    SetCodeCatalog)
-from cardforge.cv.matching.type_words import card_types, types_agree  # noqa: E402
+from cardforge.cv.matching.type_words import card_types, types_agree, types_conflict  # noqa: E402
 from cardforge.cv.ocr.fields import ExtractedFields  # noqa: E402
 from cardforge.cv.ocr.layout import LayoutClassifier  # noqa: E402
 from cardforge.cv.ocr.rois import CardLayout  # noqa: E402
@@ -124,6 +124,37 @@ class TestInfoLineParser(DatabaseTestCase):
         info = self.parser.parse("")
         self.assertFalse(info.has_set or info.has_number)
 
+    def test_language_tag_read_wrong_still_finds_the_set(self):
+        """"PT" lido como "PI": o prefixo continua candidato a código (teoria 1 das falhas em PT)."""
+        self.assertEqual(self.parser.parse("0129 IKOPI SIMONDOMINIC").set_code, "IKO")
+        self.assertEqual(self.parser.parse("0129 IKOFT SIMONDOMINIC").set_code, "IKO")
+
+    def test_language_tag_glued_to_the_artist(self):
+        info = self.parser.parse("129/274 IKO·PTSTEVEELLIS")
+        self.assertEqual((info.set_code, info.language, info.is_localized), ("IKO", "PT", True))
+
+    def test_separator_read_as_a_letter(self):
+        """"IKO★PT" com o ★ lido como letra: código e idioma ainda saem certos."""
+        info = self.parser.parse("0277 IKOAPTSAMBURLEY")
+        self.assertEqual((info.set_code, info.language), ("IKO", "PT"))
+
+    def test_language_of_a_corrected_set_code(self):
+        """O código sai de uma troca de caractere ("JKO" -> "IKO"); o idioma vem do token lido."""
+        info = self.parser.parse("156/274 JKO·PT YIONG-HAOHAN")
+        self.assertEqual((info.set_code, info.language), ("IKO", "PT"))
+
+    def test_english_card_is_not_localized(self):
+        self.assertFalse(self.parser.parse("R0061FFVII FICENALEXANDREHONORE").is_localized)
+
+    def test_artist_name_is_not_a_language_tag(self):
+        """Só conta a etiqueta logo depois do código: um "DE" no nome do artista não vale."""
+        self.assertEqual(self.parser.parse("0129 IKO RYANALEXANDERLEE DE SOUZA").language, "")
+
+    def test_digits_read_as_letters(self):
+        """O número saneado entra como alternativa, e a leitura cortada vai para o fim da fila."""
+        self.assertEqual(InfoLineParser.number_candidates("1OO IKO·EN")[0], "100")
+        self.assertIn("0271", InfoLineParser.number_candidates("RO271 LCIPT MAURICIOCALLE"))
+
 
 class TestCardMatcher(DatabaseTestCase):
     def test_set_number_confirmed_by_name(self):
@@ -138,6 +169,29 @@ class TestCardMatcher(DatabaseTestCase):
         m = self.match("Sagui Espinhoso", "Criatura-Macaco", "129/274C IKO·PT")
         self.assertEqual((m.method, m.card.name), (MatchMethod.SET_NUMBER_LOCALIZED, "Prickly Marmoset"))
         self.assertGreaterEqual(m.confidence, self.cfg.confidence_threshold)
+
+    def test_localized_card_accepted_by_language_tag(self):
+        """
+        Caso real (Furanuvem = Cloudpiercer): edição e número certos, mas a linha de tipo não foi
+        lida. A etiqueta "·PT" já explica por que o nome divergiu — sem ela a carta era achada no
+        banco e ainda assim ia para revisão, gastando as 3 capturas (RF29) para cair no bin 6.
+        """
+        m = self.match("Sagui Espinhoso", "", "129/274 IKO·PTSIMONDOMINIC")
+        self.assertEqual((m.method, m.card.name, m.needs_review),
+                         (MatchMethod.SET_NUMBER_LOCALIZED, "Prickly Marmoset", False))
+        self.assertGreaterEqual(m.confidence, self.cfg.confidence_threshold)
+
+    def test_english_card_without_type_line_still_needs_review(self):
+        """Sem etiqueta de idioma, um nome que não bate continua sendo motivo de revisão."""
+        m = self.match("Zzzz Qqqq", "", "129/274 IKO·EN SIMONDOMINIC")
+        self.assertEqual(m.method, MatchMethod.SET_NUMBER_NAME_MISMATCH)
+        self.assertTrue(m.needs_review)
+
+    def test_set_candidates_are_cross_checked_in_the_database(self):
+        """"FIC" existe no catálogo mas não tem a carta 7; o próximo candidato ("TFIC") tem."""
+        m = self.match("REBEL", "Token Creature-Rebel", "0007 FIC TFIC EN")
+        self.assertEqual((m.method, m.card.name, m.card.set_code),
+                         (MatchMethod.SET_NUMBER, "Rebel", "TFIC"))
 
     def test_localized_card_with_wrong_type_needs_review(self):
         m = self.match("Sagui Espinhoso", "Terreno", "129/274C IKO·PT")
@@ -172,6 +226,9 @@ class TestHelpers(unittest.TestCase):
         self.assertEqual(card_types("EnchantmentCreature-Saga Ox"), {"enchantment", "creature"})
         self.assertTrue(types_agree("Mágica Instantânea", "Instant"))
         self.assertFalse(types_agree("", "Instant"))
+        # Uma linha de tipo não lida não concorda nem contradiz (decide a aceitação de cartas não inglesas).
+        self.assertFalse(types_conflict("", "Instant"))
+        self.assertTrue(types_conflict("Terreno", "Creature — Monkey"))
 
     def test_layout_decision(self):
         d = LayoutClassifier.decide
