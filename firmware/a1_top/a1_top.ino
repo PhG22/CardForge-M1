@@ -9,7 +9,7 @@
     STATUS              -> OK STATE=IDLE|BUSY|ERROR STACK=0/1 PLAT=0/1 FLAP=<deg> ROLLER=0/1
                               ATTEMPT=<0-2> [ERR=..]
     ROLLER STOP         -> stop the feed roller (also cancels a FEED)
-    FLAP <0-180>        -> move the flap servo (85 = closed, 26 = open; the Pi sends the angles)
+    FLAP <0-180>        -> move the flap servo (80 = closed, 25 = open; the Pi sends the angles)
     FEED <timeout_ms>   -> feed ONE card onto the platform (RF05): up to 2 pull attempts of
                            timeout_ms / 2 each, in small steps (run 150 ms, pause 150 ms,
                            check the IR). No card after the first attempt: the roller stops
@@ -18,7 +18,7 @@
                            ATTEMPT in STATUS = the attempt running (or the last one).
     STOP                -> stop the roller, cancel FEED, clear the error (flap keeps its angle)
 
-  Power-up: flap closed (85), roller stopped, nothing moves until the Pi asks.
+  Power-up: flap closed (80), roller stopped, nothing moves until the Pi asks.
   Built-in LED: off = idle, on = feeding, fast blink = error (until the next FEED or STOP).
   If DE/RE is on D13 (= the built-in LED pin), the LED is NOT used for status: it then
   just lights up briefly whenever this module transmits. Use the Serial Monitor instead.
@@ -55,7 +55,7 @@ const uint8_t PLAT_IR_PIN  = 6;
 const uint8_t STACK_IR_PIN = 5;      // stack IR
 
 // ===================== Flap =====================
-const int FLAP_CLOSED = 85;          // power-up position; the Pi sends FLAP 26 (open) / FLAP 85 (closed)
+const int FLAP_CLOSED = 80;          // power-up position; the Pi sends FLAP 25 (open) / FLAP 80 (closed)
 
 // ===================== Feeder (same values as feeder_flap_test.ino) =====================
 const int           FEEDER_STOP_US = 1500;  // trim (e.g. 1490 / 1510) if it creeps when stopped
