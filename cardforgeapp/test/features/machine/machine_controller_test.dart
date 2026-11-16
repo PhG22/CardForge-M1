@@ -94,7 +94,6 @@ void main() {
     expect(controller.canStart, isFalse);
     expect(controller.run?.cardsProcessed, 2);
     expect(controller.run?.currentTray, 6);
-    expect(controller.recentCards.map((c) => c.tray), [6, 4]);
 
     const finished = RunInfo(
       runId: 'run-1',

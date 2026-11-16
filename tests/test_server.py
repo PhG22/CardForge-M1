@@ -20,13 +20,14 @@ def signup(client, username="luca", email=None, password="correct-horse"):
     return {"Authorization": f"Bearer {body['access_token']}"}, body["user"]
 
 
-def card(owner_id, number, status="identified", name=None, bin_=None, set_code="FIN", collector="1"):
+def card(owner_id, number, status="identified", name=None, bin_=None, set_code="FIN", collector="1",
+         colors="W"):
     identified = status == "identified"
     return {"local_uuid": str(uuid.uuid4()), "owner_id": owner_id, "card_number": number, "scan_status": status,
             "bin": bin_ if bin_ is not None else (1 if identified else 6),
             "card_identifier": f"print-{name}" if identified else None,
             "card_name": name if identified else None, "set_code": set_code if identified else None,
-            "collector_number": collector if identified else None, "color_identity": "W" if identified else None,
+            "collector_number": collector if identified else None, "color_identity": colors if identified else None,
             "type_line": "Basic Land" if identified else None, "rarity": "common" if identified else None,
             "attempts": 1, "confidence": 100 if identified else 0,
             "scanned_at": f"2026-11-11T20:00:{number:02d}.000Z",
@@ -186,38 +187,101 @@ def test_run_results_have_tray_counts_and_every_card(server):
     assert results["run"]["cards_processed"] == 4
     assert results["bin_counts"] == {"1": 1, "5": 1, "6": 2}
     assert results["scan_counts"] == {"identified": 2, "unidentified": 1, "face_down": 1}
+    assert results["color_counts"] == {"W": 2, "U": 0, "B": 0, "R": 0, "G": 0, "colorless": 0, "multicolor": 0}
     assert [c["status"] for c in results["cards"]] == ["identified", "identified", "unidentified", "face_down"]
+    assert [c["color"] for c in results["cards"]] == ["W", "W", None, None]
     assert results["cards"][1]["card_name"] == "Forest"
 
 
-def test_collection_groups_cards_by_name_with_their_folders(server):
+def _two_runs(server):
+    """Run 1: 2 Lightning Bolt (R), Opt (U), Lightning Helix (RW), Sol Ring (colorless), 1 unidentified.
+    Run 2: 1 Lightning Bolt."""
     headers, user = signup(server)
     uid = user["id"]
-    server.post("/sync/runs", json=run_body(uid, [card(uid, 1, name="Lightning Bolt", bin_=4),
-                                                  card(uid, 2, name="Lightning Bolt", bin_=4),
-                                                  card(uid, 3, name="Opt", bin_=2),
-                                                  card(uid, 4, status="unidentified")]), headers=MACHINE)
-    server.post("/sync/runs", json=run_body(uid, [card(uid, 1, name="Lightning Bolt", bin_=6)]), headers=MACHINE)
+    first = server.post("/sync/runs", json=run_body(uid, [
+        card(uid, 1, name="Lightning Bolt", bin_=4, colors="R"),
+        card(uid, 2, name="Lightning Bolt", bin_=4, colors="R"),
+        card(uid, 3, name="Opt", bin_=2, colors="U", set_code="ELD", collector="59"),
+        card(uid, 4, name="Lightning Helix", bin_=6, colors="RW"),
+        card(uid, 5, name="Sol Ring", bin_=6, colors=""),
+        card(uid, 6, status="unidentified")]), headers=MACHINE).json()["run_id"]
+    second = server.post("/sync/runs", json=run_body(uid, [
+        card(uid, 1, name="Lightning Bolt", bin_=6, colors="R", set_code="M10", collector="146")]),
+        headers=MACHINE).json()["run_id"]
+    return headers, first, second
 
+
+def test_collection_groups_cards_by_name_across_all_runs(server):
+    headers, _, _ = _two_runs(server)
     page = server.get("/cards", headers=headers).json()
-    assert page["total"] == 2                                   # unidentified cards are not in the collection
+    assert page["total"] == 4                                   # unidentified cards are not in the collection
+    assert [(i["name"], i["quantity"], i["color"]) for i in page["items"]] == [
+        ("Lightning Bolt", 3, "R"), ("Lightning Helix", 1, "multicolor"), ("Opt", 1, "U"),
+        ("Sol Ring", 1, "colorless")]
     bolt = page["items"][0]
-    assert bolt["name"] == "Lightning Bolt" and bolt["quantity"] == 3
-    assert bolt["folders"] == [{"folder": 4, "quantity": 2}, {"folder": 6, "quantity": 1}]
+    assert "folders" not in bolt and bolt["sets"] == "FIN, M10" and bolt["color_identity"] == "R"
+    assert page["color_counts"] == {"W": 0, "U": 1, "B": 0, "R": 3, "G": 0, "colorless": 1, "multicolor": 1}
+    assert page["not_identified"] == 1
     found = server.get("/cards", params={"query": "BOLT"}, headers=headers).json()
     assert [i["name"] for i in found["items"]] == ["Lightning Bolt"] and found["total"] == 1
+    assert found["color_counts"]["R"] == 3 and found["color_counts"]["U"] == 0
+    assert found["not_identified"] == 0
     second = server.get("/cards", params={"limit": 1, "offset": 1}, headers=headers).json()
-    assert [i["name"] for i in second["items"]] == ["Opt"] and second["total"] == 2
+    assert [i["name"] for i in second["items"]] == ["Lightning Helix"] and second["total"] == 4
+
+
+@pytest.mark.parametrize("color, names", [
+    ("R", ["Lightning Bolt"]), ("r", ["Lightning Bolt"]), ("U", ["Opt"]), ("W", []),
+    ("colorless", ["Sol Ring"]), ("Multicolor", ["Lightning Helix"]),
+])
+def test_collection_filters_by_color_group(server, color, names):
+    headers, _, _ = _two_runs(server)
+    page = server.get("/cards", params={"color": color}, headers=headers).json()
+    assert [i["name"] for i in page["items"]] == names and page["total"] == len(names)
+    # the chip counts ignore the color filter, so every chip keeps its number
+    assert page["color_counts"]["R"] == 3
+
+
+def test_collection_of_one_run(server):
+    headers, first, second = _two_runs(server)
+    page = server.get("/cards", params={"run_id": second}, headers=headers).json()
+    assert [(i["name"], i["quantity"]) for i in page["items"]] == [("Lightning Bolt", 1)]
+    assert page["not_identified"] == 0
+    page = server.get("/cards", params={"run_id": first, "color": "R"}, headers=headers).json()
+    assert [(i["name"], i["quantity"]) for i in page["items"]] == [("Lightning Bolt", 2)]
+    assert page["not_identified"] == 1
+
+
+def test_collection_refuses_a_bad_color_or_someone_elses_run(server):
+    headers, first, _ = _two_runs(server)
+    r = server.get("/cards", params={"color": "purple"}, headers=headers)
+    assert r.status_code == 422 and r.json()["code"] == "INVALID_COLOR"
+    other, _ = signup(server, "other")
+    for path in ("/cards", "/cards/export"):
+        r = server.get(path, params={"run_id": first}, headers=other)
+        assert r.status_code == 404 and r.json()["code"] == "RUN_NOT_FOUND"
 
 
 def test_export_lists_every_card_with_its_quantity(server):
     headers, user = signup(server)
     uid = user["id"]
-    server.post("/sync/runs", json=run_body(uid, [card(uid, 1, name="Plains"), card(uid, 2, name="Plains"),
-                                                  card(uid, 3, name="Opt", bin_=2, set_code="ELD", collector="59"),
+    server.post("/sync/runs", json=run_body(uid, [card(uid, 1, name="Plains"), card(uid, 2, name="Plains", bin_=6),
+                                                  card(uid, 3, name="Opt", bin_=2, set_code="ELD", collector="59",
+                                                       colors="U"),
                                                   card(uid, 4, status="face_down")]), headers=MACHINE)
     export = server.get("/cards/export", headers=headers).json()
-    assert export["total_cards"] == 4
-    rows = [(r["quantity"], r["name"], r["set_code"], r["folder"], r["status"]) for r in export["rows"]]
-    assert rows == [(1, "Opt", "ELD", 2, "identified"), (2, "Plains", "FIN", 1, "identified"),
-                    (1, None, None, 6, "face_down")]
+    assert export["total_cards"] == 4 and export["run_id"] is None
+    # one row per print: the tray a copy fell into does not split it
+    rows = [(r["quantity"], r["name"], r["set_code"], r["color"], r["status"]) for r in export["rows"]]
+    assert rows == [(1, "Opt", "ELD", "U", "identified"), (2, "Plains", "FIN", "W", "identified"),
+                    (1, None, None, None, "face_down")]
+    assert all("folder" not in r for r in export["rows"])
+
+
+def test_export_of_one_run(server):
+    headers, first, second = _two_runs(server)
+    export = server.get("/cards/export", params={"run_id": second}, headers=headers).json()
+    assert export["total_cards"] == 1 and export["run_id"] == second
+    assert [(r["quantity"], r["name"], r["set_code"]) for r in export["rows"]] == [(1, "Lightning Bolt", "M10")]
+    whole = server.get("/cards/export", headers=headers).json()
+    assert whole["total_cards"] == 7

@@ -1,6 +1,7 @@
 import '../../features/alerts/machine_alert.dart';
 import '../../features/auth/auth_service.dart';
 import '../../features/cards/card_models.dart';
+import '../../features/cards/collection_export.dart' show ExportFormat;
 import '../../features/machine/api/machine_api_models.dart';
 import '../../features/machine/machine_controller.dart';
 import '../../features/machine/machine_models.dart';
@@ -125,11 +126,11 @@ class PtStrings extends AppStrings {
   @override
   String get menuMachineControl => 'Controle da máquina';
   @override
-  String get menuCardsInFolders => 'Cartas nas pastas';
+  String get menuMyCards => 'Minhas cartas';
   @override
   String get menuRuns => 'Ordenações';
   @override
-  String get menuCsvReport => 'Relatório CSV';
+  String get menuExport => 'Exportar cartas';
   @override
   String get menuSortingRules => 'Regras de ordenação';
   @override
@@ -304,8 +305,6 @@ class PtStrings extends AppStrings {
   @override
   String get cardsProcessed => 'Cartas processadas';
   @override
-  String get currentFolder => 'Pasta atual';
-  @override
   String get startSorting => 'Iniciar ordenação';
   @override
   String get startingHint =>
@@ -464,15 +463,6 @@ class PtStrings extends AppStrings {
   String get unfinishedRunHome =>
       'A última ordenação não terminou corretamente. Toque para iniciar outra.';
   @override
-  String get recentlySorted => 'Ordenadas há pouco';
-  @override
-  String sortedCard(SortedCard card) {
-    final folder = card.tray == null ? '' : ' → ${folderLabel(card.tray!)}';
-    return card.cleared
-        ? 'Carta nº ${card.number} descartada pela parada$folder'
-        : 'Carta nº ${card.number}$folder';
-  }
-  @override
   String get diagnostics => 'Diagnóstico';
   @override
   String get refresh => 'Atualizar';
@@ -533,13 +523,13 @@ class PtStrings extends AppStrings {
   @override
   String get forget => 'Esquecer';
 
-  // Cards in folders
+  // My cards
   @override
   String get searchCardsHint => 'Pesquisar carta pelo nome';
   @override
   String get clearSearch => 'Limpar pesquisa';
   @override
-  String get allCardsHeader => 'Cartas nas suas pastas';
+  String get allCardsHeader => 'Todas as suas cartas';
   @override
   String resultsFor(String query) => 'Resultados para “$query”';
   @override
@@ -550,14 +540,46 @@ class PtStrings extends AppStrings {
   @override
   String folderLabel(int folder) => 'Pasta $folder';
   @override
-  String get cardsEmptyTitle => 'Nenhuma carta nas pastas ainda';
+  String colorGroupLabel(ColorGroup group) => switch (group) {
+        ColorGroup.white => 'Branco',
+        ColorGroup.blue => 'Azul',
+        ColorGroup.black => 'Preto',
+        ColorGroup.red => 'Vermelho',
+        ColorGroup.green => 'Verde',
+        ColorGroup.colorless => 'Incolor',
+        ColorGroup.multicolor => 'Multicolor',
+      };
+  @override
+  String get allColors => 'Todas as cores';
+  @override
+  String get cardsFromLabel => 'Cartas de';
+  @override
+  String get wholeCollection => 'Todas as ordenações (coleção inteira)';
+  @override
+  String runScopeLabel(RunSummary run) => [
+        if (run.startedAt != null) dateTime(run.startedAt!),
+        cardsCount(run.cardsProcessed),
+      ].join(' · ');
+  @override
+  String get runCardsHeader => 'Cartas desta ordenação';
+  @override
+  String notIdentifiedHidden(int count) => count == 1
+      ? '1 carta não foi identificada (não reconhecida ou virada): '
+          'ela está no resultado da ordenação, não aqui.'
+      : '$count cartas não foram identificadas (não reconhecidas ou viradas): '
+          'elas estão no resultado da ordenação, não aqui.';
+  @override
+  String get notIdentifiedLabel => 'Não identificadas';
+  @override
+  String get cardsEmptyTitle => 'Nenhuma carta ainda';
   @override
   String get cardsEmptyHint =>
       'As cartas aparecem aqui depois de uma ordenação.';
   @override
   String get noCardsFoundTitle => 'Nenhuma carta encontrada';
   @override
-  String get noCardsFoundHint => 'Confira a grafia ou tente outro nome.';
+  String get noCardsFoundHint =>
+      'Confira a grafia, ou tente outro nome ou outra cor.';
   @override
   String get cardsLoadFailedTitle => 'Não foi possível carregar as cartas';
   @override
@@ -628,7 +650,7 @@ class PtStrings extends AppStrings {
   @override
   String get faceDownLabel => 'Viradas';
   @override
-  String get cardsPerFolder => 'Cartas por pasta';
+  String get cardsPerColor => 'Cartas por cor';
   @override
   String get cardsInThisRun => 'Cartas desta ordenação';
   @override
@@ -643,26 +665,42 @@ class PtStrings extends AppStrings {
   String runCardDetails(RunCard card) => [
         if (card.setCode != null)
           '${card.setCode!.toUpperCase()} ${card.collectorNumber ?? ''}'.trim(),
-        if (card.folder != null) folderLabel(card.folder!),
+        if (card.color != null) colorGroupLabel(card.color!),
       ].join(' · ');
 
-  // CSV export
+  // Export
   @override
-  String get exportTitle => 'Exportar sua coleção';
+  String get exportTitle => 'Exportar suas cartas';
   @override
   String get exportHint =>
-      'Todas as suas cartas, de todas as ordenações, em um arquivo CSV: nome, '
-      'edição, número de coleção, pasta e quantidade. Abre no Excel, no '
-      'Google Planilhas e na maioria dos sites de coleção.';
+      'Sua coleção inteira ou as cartas de uma ordenação, em um arquivo: '
+      'nome, edição, número de coleção, cor e quantidade. As cartas vêm '
+      'separadas por cor (branco, azul, preto, vermelho, verde, incolor, '
+      'multicolor).';
   @override
-  String get exportCsv => 'Exportar CSV';
+  String get exportWhatLabel => 'O que exportar';
+  @override
+  String get exportFormatLabel => 'Formato';
+  @override
+  String exportFormatHint(ExportFormat format) => switch (format) {
+        ExportFormat.csv =>
+          'CSV: uma tabela para o Excel ou o Google Planilhas, com uma coluna '
+              'de cor que você pode filtrar.',
+        ExportFormat.txt =>
+          'TXT: uma linha por carta ("2 Lightning Bolt (M10) 146"), separadas '
+              'por cor. A maioria dos sites de coleção importa.',
+      };
+  @override
+  String get exportAction => 'Exportar';
+  @override
+  String get exportThisRun => 'Exportar esta ordenação';
   @override
   String get exportNothing =>
-      'Sua coleção está vazia: separe algumas cartas primeiro.';
+      'Nada para exportar: nenhuma carta foi separada aqui ainda.';
   @override
   String get exportFileFailed => 'Não foi possível criar ou compartilhar o arquivo.';
   @override
-  String get exportFailedTitle => 'Não foi possível exportar a coleção';
+  String get exportFailedTitle => 'Não foi possível exportar as cartas';
   @override
   String exportDone(int cards, String fileName) =>
       '${cardsCount(cards)} exportadas para $fileName.';

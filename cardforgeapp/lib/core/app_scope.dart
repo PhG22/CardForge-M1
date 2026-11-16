@@ -35,7 +35,7 @@ class AppDependencies {
     required this.cardRepository,
     required this.runRepository,
     required this.collectionExport,
-    required this.shareCsv,
+    required this.shareFile,
     required this.machineApiFor,
     required this.machine,
     GlobalKey<ScaffoldMessengerState>? messengerKey,
@@ -47,7 +47,7 @@ class AppDependencies {
     CardRepository? cardRepository,
     RunRepository? runRepository,
     CollectionExportSource? collectionExport,
-    CsvSharer? shareCsv,
+    ExportSharer? shareFile,
     MachineApiFactory? machineApiFor,
     List<Duration>? machineRetryDelays,
     BackgroundAlerts? backgroundAlerts,
@@ -77,7 +77,7 @@ class AppDependencies {
           (AppConfig.useMockBackend
               ? MockCollectionExportSource()
               : ApiCollectionExportSource()),
-      shareCsv: shareCsv ?? shareCsvFile,
+      shareFile: shareFile ?? shareExportFile,
       machineApiFor: apiFor,
       machine: MachineController(
         store: machineStore,
@@ -121,11 +121,11 @@ class AppDependencies {
   /// The user's finished runs, from the server.
   final RunRepository runRepository;
 
-  /// Rows of the collection CSV export, from the server.
+  /// Rows of the CSV / TXT export (whole collection or one run), from the server.
   final CollectionExportSource collectionExport;
 
   /// Opens the share sheet for an exported file.
-  final CsvSharer shareCsv;
+  final ExportSharer shareFile;
   final MachineApiFactory machineApiFor;
 
   /// Live connection to the linked machine (run state, commands).

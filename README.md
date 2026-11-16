@@ -88,8 +88,9 @@ saídas dos comandos de bancada), apaga downloads interrompidos (`data/*.tmp`) e
 código, o `vision.toml`, o `cards.db`, o `run.db` e as fotos de `calibragem_recorte/` nunca são apagados.
 
 **Resultados** (RF22): só depois do fim da run. O app lê do servidor, com o login do usuário: histórico em
-`GET /runs`, resultado em `GET /runs/{id}` (contagem por pasta + todas as cartas), coleção em `GET /cards` e
-as linhas da exportação CSV em `GET /cards/export` (o app monta o arquivo, RF24 / RFC 4180). No próprio Pi,
+`GET /runs`, resultado em `GET /runs/{id}` (contagem por cor + todas as cartas), coleção em `GET /cards` (a coleção
+inteira ou uma run, filtrada por cor) e as linhas da exportação em `GET /cards/export` (coleção inteira ou uma run;
+o app monta o arquivo CSV ou TXT, RF24 / RFC 4180). No próprio Pi,
 `GET /runs`, `GET /runs/{id}` e `GET /inventory/export.csv` continuam como visão de manutenção da máquina.
 
 ## Instalação no Raspberry Pi
@@ -290,9 +291,12 @@ usuário ao Pi, então a run fica na conta de quem a iniciou. Depois do fim da r
 
 | No app | O que mostra | Requisito | Rota do servidor |
 |---|---|---|---|
-| **Sorting runs** | Todas as runs do usuário, mais nova primeiro; toque para o resultado: cartas por pasta, identificadas / não identificadas / viradas e a lista de cartas | RF22, RF25, RF39 | `GET /runs`, `GET /runs/{id}` |
-| **Cards in folders** | A coleção (todas as runs), por nome, com as pastas de cada carta | — | `GET /cards` |
-| **CSV report** | Exporta a coleção inteira num arquivo CSV (RFC 4180, UTF-8) e abre o compartilhar do sistema | RF24, RNF17 | `GET /cards/export` |
+| **Sorting runs** | Todas as runs do usuário, mais nova primeiro; toque para o resultado: cartas por cor (toque numa cor para filtrar a lista), identificadas / não identificadas / viradas e a lista de cartas; atalhos para *My cards* e *Export* daquela run | RF22, RF25, RF39 | `GET /runs`, `GET /runs/{id}` |
+| **My cards** | A coleção inteira ou as cartas de uma run (seletor no topo), por nome, filtrada por cor: branco, azul, preto, vermelho, verde, incolor, multicolor (com a contagem de cada uma) | RF22 | `GET /cards?run_id=&color=` |
+| **Export cards** | Exporta a coleção inteira ou uma run, em CSV (RFC 4180, UTF-8, coluna `color`) ou TXT (`2 Lightning Bolt (M10) 146`, agrupado por cor), e abre o compartilhar do sistema | RF24, RNF17 | `GET /cards/export?run_id=` |
+
+Durante a run o app mostra só o estado e quantas cartas já passaram (RF23): nenhuma lista de cartas, bin ou
+identidade. Tudo isso aparece no resultado da run, quando ela termina.
 
 Sem servidor (`MTG_SERVER_URL` vazia) o Pi continua respondendo o login e `/cards` ([`app_compat.py`](sorter_api/app_compat.py)),
 com `API_BASE_URL=http://<ip-do-pi>:8000` e o usuário `admin` / `MTG_APP_PASSWORD`; cadastro, histórico e
@@ -344,7 +348,7 @@ O código pronto (firmware e API) é a referência; o design do Deliverable 3 fo
 | RF16, RF32, RF37, RF41 (LED de status) | Implementados no Pi (GPIO 17/22/27) |
 | RNF09 (luz da câmara) | Lado do Pi pronto; **falta o comando `LIGHT` no `a1_top.ino`** ([PROTOCOL.md 5.1](docs/PROTOCOL.md)). Até lá o Pi desliga esse recurso sozinho |
 | RF07, RF12, RF13 (sensores IR dos bins) | Implementados: `a2_base.ino` lê os 6 IR (D10, D8, D11, D7, D9, D12) com filtro; o Pi só os consulta antes de iniciar |
-| RF19, RF22, RF24, RNF17 | Implementados: `run.db` → servidor (PostgreSQL) → telas *Sorting runs* e *CSV report* do app. Lado Python coberto por testes com PostgreSQL real; **o app (Flutter) precisa de `flutter analyze` / `flutter test`** — não havia Flutter neste ambiente |
+| RF19, RF22, RF24, RNF17 | Implementados: `run.db` → servidor (PostgreSQL) → telas *Sorting runs*, *My cards* e *Export cards* do app. Lado Python coberto por testes com PostgreSQL real; **o app (Flutter) precisa de `flutter analyze` / `flutter test`** — não havia Flutter neste ambiente |
 | RF26, RF27 | Implementados: o app mostra a run pausada com o motivo, os botões **Resume** e **Stop**, e um alerta (banner + tela de alertas) com o tipo da falha e o horário. **Rodar `flutter analyze` / `flutter test`** |
 | RF08 | Homing ao ligar e antes de cada run, com a posição guardada e a base estacionada no fim da run (`a2_base.ino` 1.1). **Medir o tempo** (meta ≤ 5,0 s): o log diz "base homed ... in N s". Base girada à mão com tudo desligado = busca completa, que pode passar de 5 s |
 | RF36 | API pronta; falta a tela no app |

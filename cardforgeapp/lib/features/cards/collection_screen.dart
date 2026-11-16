@@ -8,28 +8,36 @@ import '../../core/widgets/magic_panel.dart';
 import '../../core/widgets/magic_scaffold.dart';
 import '../auth/auth_service.dart';
 import 'card_models.dart';
-import 'cards_in_folders_controller.dart';
+import 'collection_controller.dart';
+import 'color_filter_bar.dart';
 
-/// Cards in folders: a search bar on top and, below it, the cards with the
-/// folders (1 to 6) each one is in. With nothing typed, it lists the cards that
-/// are in the folders. Everything comes from the server.
-class CardsInFoldersScreen extends StatefulWidget {
-  const CardsInFoldersScreen({super.key});
+/// My cards: the user's identified cards, from every run or from one run
+/// (picker on top), filtered by color (white, blue, black, red, green,
+/// colorless, multicolor) and by name. Everything comes from the server.
+class CollectionScreen extends StatefulWidget {
+  const CollectionScreen({super.key, this.initialRunId});
+
+  /// Opens the screen on one run's cards (`/cards?run=<id>`).
+  final String? initialRunId;
 
   @override
-  State<CardsInFoldersScreen> createState() => _CardsInFoldersScreenState();
+  State<CollectionScreen> createState() => _CollectionScreenState();
 }
 
-class _CardsInFoldersScreenState extends State<CardsInFoldersScreen> {
-  late final CardsInFoldersController _controller;
+class _CollectionScreenState extends State<CollectionScreen> {
+  late final CollectionController _controller;
   final _searchCtrl = TextEditingController();
   final _scroll = ScrollController();
 
   @override
   void initState() {
     super.initState();
-    _controller =
-        CardsInFoldersController(AppScope.of(context).cardRepository)..load();
+    final deps = AppScope.of(context);
+    _controller = CollectionController(
+      deps.cardRepository,
+      runs: deps.runRepository,
+      runId: widget.initialRunId,
+    )..load();
     _scroll.addListener(_loadMoreNearTheEnd);
   }
 
@@ -57,6 +65,13 @@ class _CardsInFoldersScreenState extends State<CardsInFoldersScreen> {
     if (mounted) context.go('/login');
   }
 
+  void _export() {
+    final run = _controller.runId;
+    context.push(run == null
+        ? '/export'
+        : '/export?run=${Uri.encodeQueryComponent(run)}');
+  }
+
   @override
   Widget build(BuildContext context) {
     final l10n = context.l10n;
@@ -65,19 +80,26 @@ class _CardsInFoldersScreenState extends State<CardsInFoldersScreen> {
       showOrbs: false,
       showSymbols: true,
       appBar: AppBar(
-        title: Text(l10n.menuCardsInFolders),
+        title: Text(l10n.menuMyCards),
         actions: [
           IconButton(
-            tooltip: l10n.exportCsv,
+            tooltip: l10n.menuExport,
             icon: const Icon(Icons.ios_share_rounded),
-            onPressed: () => context.push('/export'),
+            onPressed: _export,
           ),
         ],
       ),
       body: Column(
         children: [
           Padding(
-            padding: const EdgeInsets.fromLTRB(20, 8, 20, 8),
+            padding: const EdgeInsets.fromLTRB(20, 8, 20, 0),
+            child: ListenableBuilder(
+              listenable: _controller,
+              builder: (context, _) => _ScopePicker(controller: _controller),
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(20, 12, 20, 8),
             child: ValueListenableBuilder<TextEditingValue>(
               valueListenable: _searchCtrl,
               builder: (context, value, _) => TextField(
@@ -123,9 +145,6 @@ class _CardsInFoldersScreenState extends State<CardsInFoldersScreen> {
         onSignInAgain: _signInAgain,
       );
     }
-    if (c.items.isEmpty) {
-      return _EmptyState(searching: c.isSearching);
-    }
 
     return RefreshIndicator(
       onRefresh: c.refresh,
@@ -133,9 +152,15 @@ class _CardsInFoldersScreenState extends State<CardsInFoldersScreen> {
         controller: _scroll,
         physics: const AlwaysScrollableScrollPhysics(),
         padding: const EdgeInsets.fromLTRB(20, 8, 20, 24),
-        itemCount: c.items.length + 2, // header + cards + footer
+        // header (colors + count) + cards or the empty message + footer
+        itemCount: (c.items.isEmpty ? 1 : c.items.length) + 2,
         itemBuilder: (context, index) {
           if (index == 0) return _Header(controller: c);
+          if (c.items.isEmpty) {
+            return index == 1
+                ? _EmptyState(filtered: c.isFiltered)
+                : const SizedBox(height: 8);
+          }
           if (index == c.items.length + 1) return _Footer(controller: c);
           return Padding(
             padding: const EdgeInsets.only(bottom: 12),
@@ -147,33 +172,95 @@ class _CardsInFoldersScreenState extends State<CardsInFoldersScreen> {
   }
 }
 
+/// "Cards from": the whole collection or one of the user's runs.
+class _ScopePicker extends StatelessWidget {
+  const _ScopePicker({required this.controller});
+
+  final CollectionController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    final l10n = context.l10n;
+    final runs = controller.runs;
+    final selected = controller.runId;
+    // A run opened from a link may not be in the list yet: keep it selectable.
+    final known = selected == null || runs.any((r) => r.id == selected);
+    return InputDecorator(
+      decoration: InputDecoration(
+        labelText: l10n.cardsFromLabel,
+        prefixIcon: const Icon(Icons.history_rounded),
+        contentPadding:
+            const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+      ),
+      child: DropdownButtonHideUnderline(
+        child: DropdownButton<String?>(
+          key: const ValueKey('scope-picker'),
+          value: known ? selected : null,
+          isExpanded: true,
+          items: [
+            DropdownMenuItem<String?>(
+              value: null,
+              child:
+                  Text(l10n.wholeCollection, overflow: TextOverflow.ellipsis),
+            ),
+            for (final run in runs)
+              DropdownMenuItem<String?>(
+                value: run.id,
+                child: Text(l10n.runScopeLabel(run),
+                    overflow: TextOverflow.ellipsis),
+              ),
+          ],
+          onChanged: controller.selectRun,
+        ),
+      ),
+    );
+  }
+}
+
 class _Header extends StatelessWidget {
   const _Header({required this.controller});
 
-  final CardsInFoldersController controller;
+  final CollectionController controller;
 
   @override
   Widget build(BuildContext context) {
     final l10n = context.l10n;
     final text = Theme.of(context).textTheme;
     final scheme = Theme.of(context).colorScheme;
+    final title = controller.isSearching
+        ? l10n.resultsFor(controller.query)
+        : controller.runId == null
+            ? l10n.allCardsHeader
+            : l10n.runCardsHeader;
     return Padding(
       padding: const EdgeInsets.only(bottom: 12),
-      child: Row(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Expanded(
-            child: Text(
-              controller.isSearching
-                  ? l10n.resultsFor(controller.query)
-                  : l10n.allCardsHeader,
-              style: text.titleMedium,
+          ColorFilterBar(
+            counts: controller.colorCounts,
+            selected: controller.color,
+            onSelected: controller.selectColor,
+          ),
+          const SizedBox(height: 16),
+          Row(
+            children: [
+              Expanded(child: Text(title, style: text.titleMedium)),
+              const SizedBox(width: 12),
+              Text(
+                l10n.cardsCount(controller.total),
+                style:
+                    text.bodyMedium?.copyWith(color: scheme.onSurfaceVariant),
+              ),
+            ],
+          ),
+          if (controller.notIdentified > 0) ...[
+            const SizedBox(height: 4),
+            Text(
+              l10n.notIdentifiedHidden(controller.notIdentified),
+              style: text.bodySmall?.copyWith(color: scheme.onSurfaceVariant),
             ),
-          ),
-          const SizedBox(width: 12),
-          Text(
-            l10n.cardsCount(controller.total),
-            style: text.bodyMedium?.copyWith(color: scheme.onSurfaceVariant),
-          ),
+          ],
         ],
       ),
     );
@@ -183,7 +270,7 @@ class _Header extends StatelessWidget {
 class _Footer extends StatelessWidget {
   const _Footer({required this.controller});
 
-  final CardsInFoldersController controller;
+  final CollectionController controller;
 
   @override
   Widget build(BuildContext context) {
@@ -218,121 +305,91 @@ class _Footer extends StatelessWidget {
   }
 }
 
+/// One card: name, how many copies, its color and the sets they come from.
 class _CardTile extends StatelessWidget {
   const _CardTile({required this.card});
 
-  final FolderedCard card;
+  final CollectionCard card;
 
   @override
   Widget build(BuildContext context) {
+    final l10n = context.l10n;
     final text = Theme.of(context).textTheme;
+    final scheme = Theme.of(context).colorScheme;
+    final details = [
+      l10n.colorGroupLabel(card.color),
+      if (card.sets.isNotEmpty) card.sets,
+      if (card.typeLine != null) card.typeLine!,
+    ].join(' · ');
     return MagicPanel(
+      key: ValueKey('card-${card.name}'),
       padding: const EdgeInsets.all(16),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+      child: Row(
         children: [
-          Text(card.name, style: text.titleMedium),
-          if (card.folders.isNotEmpty) ...[
-            const SizedBox(height: 12),
-            Wrap(
-              spacing: 8,
-              runSpacing: 8,
+          ColorDot(group: card.color, size: 14),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                for (final entry in card.folders)
-                  _FolderChip(
-                    key: ValueKey('chip-${card.id}-${entry.folder}'),
-                    entry: entry,
-                  ),
+                Text(card.name, style: text.titleMedium),
+                const SizedBox(height: 4),
+                Text(
+                  details,
+                  style: text.bodySmall
+                      ?.copyWith(color: scheme.onSurfaceVariant),
+                ),
               ],
             ),
-          ],
+          ),
+          const SizedBox(width: 12),
+          Semantics(
+            label: l10n.copiesCount(card.quantity),
+            child: ExcludeSemantics(
+              child: Text(
+                '×${card.quantity}',
+                style: text.titleMedium?.copyWith(color: MagicColors.gold),
+              ),
+            ),
+          ),
         ],
       ),
     );
   }
 }
 
-class _FolderChip extends StatelessWidget {
-  const _FolderChip({super.key, required this.entry});
-
-  final CardFolderEntry entry;
-
-  @override
-  Widget build(BuildContext context) {
-    final l10n = context.l10n;
-    final text = Theme.of(context).textTheme;
-    final scheme = Theme.of(context).colorScheme;
-
-    return Semantics(
-      label: '${l10n.folderLabel(entry.folder)}, '
-          '${l10n.copiesCount(entry.quantity)}',
-      child: ExcludeSemantics(
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(999),
-            border: Border.all(color: MagicColors.goldSoft),
-            color: MagicColors.cardFace,
-          ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Icon(Icons.folder_rounded,
-                  size: 16, color: MagicColors.gold),
-              const SizedBox(width: 6),
-              Text(
-                l10n.folderLabel(entry.folder),
-                style: text.bodyMedium?.copyWith(fontWeight: FontWeight.w600),
-              ),
-              const SizedBox(width: 6),
-              Text(
-                '×${entry.quantity}',
-                style:
-                    text.bodyMedium?.copyWith(color: scheme.onSurfaceVariant),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
 class _EmptyState extends StatelessWidget {
-  const _EmptyState({required this.searching});
+  const _EmptyState({required this.filtered});
 
-  final bool searching;
+  final bool filtered;
 
   @override
   Widget build(BuildContext context) {
     final l10n = context.l10n;
     final text = Theme.of(context).textTheme;
     final scheme = Theme.of(context).colorScheme;
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(32),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(
-              searching ? Icons.search_off_rounded : Icons.folder_open_rounded,
-              size: 48,
-              color: MagicColors.goldSoft,
-            ),
-            const SizedBox(height: 12),
-            Text(
-              searching ? l10n.noCardsFoundTitle : l10n.cardsEmptyTitle,
-              style: text.titleMedium,
-              textAlign: TextAlign.center,
-            ),
-            const SizedBox(height: 4),
-            Text(
-              searching ? l10n.noCardsFoundHint : l10n.cardsEmptyHint,
-              style: text.bodyMedium?.copyWith(color: scheme.onSurfaceVariant),
-              textAlign: TextAlign.center,
-            ),
-          ],
-        ),
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 32),
+      child: Column(
+        children: [
+          Icon(
+            filtered ? Icons.search_off_rounded : Icons.style_outlined,
+            size: 48,
+            color: MagicColors.goldSoft,
+          ),
+          const SizedBox(height: 12),
+          Text(
+            filtered ? l10n.noCardsFoundTitle : l10n.cardsEmptyTitle,
+            style: text.titleMedium,
+            textAlign: TextAlign.center,
+          ),
+          const SizedBox(height: 4),
+          Text(
+            filtered ? l10n.noCardsFoundHint : l10n.cardsEmptyHint,
+            style: text.bodyMedium?.copyWith(color: scheme.onSurfaceVariant),
+            textAlign: TextAlign.center,
+          ),
+        ],
       ),
     );
   }

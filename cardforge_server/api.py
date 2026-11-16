@@ -7,9 +7,10 @@
     GET  /auth/me              who the token belongs to        (app, and the Pi at run start)
     POST /sync/runs            one finished run + its cards     (the Pi's SyncWorker, machine token)
     GET  /runs                 the user's runs, newest first    (app)
-    GET  /runs/{id}            per-tray counts + every card of one run (RF22)
-    GET  /cards                the user's collection, grouped by name, with trays ("Cards in folders")
-    GET  /cards/export         every card the user owns, rows for the app's CSV export (RF24)
+    GET  /runs/{id}            per-color counts + every card of one run (RF22)
+    GET  /cards                the user's identified cards (all runs, or run_id=), grouped by name,
+                               filtered by color group (color=W|U|B|R|G|colorless|multicolor)
+    GET  /cards/export         every card the user owns (or run_id=), rows for the app's CSV/TXT export (RF24)
     POST /machine/events       an alert of a run: fault / run end (the Pi, machine token)  (RF38)
     GET  /notifications        the user's alerts after an id (of one run: run_id); waits up to
                                `wait` s for a new one
@@ -282,16 +283,35 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
             raise ApiError(404, "RUN_NOT_FOUND", "Run not found.")
         return results
 
+    def run_scope(run_id: Optional[int], user: dict, conn) -> Optional[int]:
+        """run_id of one of the user's runs, or None for the whole collection."""
+        if run_id is not None and not repo.run_exists(conn, user["id"], run_id):
+            raise ApiError(404, "RUN_NOT_FOUND", "Run not found.")
+        return run_id
+
+    def color_group(color: Optional[str]) -> Optional[str]:
+        if color is None or color.strip() == "":
+            return None
+        value = color.strip()
+        value = value.upper() if len(value) == 1 else value.lower()
+        if value not in repo.COLOR_GROUPS:
+            raise ApiError(422, "INVALID_COLOR",
+                           "color must be one of: " + ", ".join(repo.COLOR_GROUPS) + ".")
+        return value
+
     @app.get("/cards")
-    def cards(query: str = "", limit: int = 30, offset: int = 0,
-              user: dict = Depends(current_user), conn=Depends(db)):
-        items, total = repo.collection(conn, user["id"], query.strip(), max(1, min(limit, 200)), max(0, offset))
-        return {"items": items, "total": total}
+    def cards(query: str = "", limit: int = 30, offset: int = 0, run_id: Optional[int] = None,
+              color: Optional[str] = None, user: dict = Depends(current_user), conn=Depends(db)):
+        group = color_group(color)
+        scope = run_scope(run_id, user, conn)
+        return repo.collection(conn, user["id"], query.strip(), max(1, min(limit, 200)), max(0, offset),
+                               run_id=scope, color=group)
 
     @app.get("/cards/export")
-    def export(user: dict = Depends(current_user), conn=Depends(db)):
-        rows = repo.export_rows(conn, user["id"])
-        return {"rows": rows, "total_cards": sum(r["quantity"] for r in rows)}
+    def export(run_id: Optional[int] = None, user: dict = Depends(current_user), conn=Depends(db)):
+        scope = run_scope(run_id, user, conn)
+        rows = repo.export_rows(conn, user["id"], scope)
+        return {"rows": rows, "total_cards": sum(r["quantity"] for r in rows), "run_id": scope}
 
     # -------------------------------------------------------------- alerts (RF38)
 

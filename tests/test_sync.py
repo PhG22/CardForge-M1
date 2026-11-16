@@ -220,8 +220,8 @@ def test_end_to_end_run_is_saved_to_the_users_account(server):
     results = server.get(f"/runs/{runs['runs'][0]['run_id']}", headers=app_headers).json()
     assert results["bin_counts"] == {"1": 1, "4": 2}
     collection = server.get("/cards", headers=app_headers).json()
-    assert [(i["name"], i["folders"]) for i in collection["items"]] == [
-        ("Lightning Bolt", [{"folder": 4, "quantity": 2}]), ("Plains", [{"folder": 1, "quantity": 1}])]
+    assert [(i["name"], i["quantity"], i["color"]) for i in collection["items"]] == [
+        ("Lightning Bolt", 2, "R"), ("Plains", 1, "W")]
     export = server.get("/cards/export", headers=app_headers).json()
     assert export["total_cards"] == 3
 

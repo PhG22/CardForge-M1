@@ -23,6 +23,11 @@ class MockRunRepository implements RunRepository {
     ('Sol Ring', 'C21', '263', 6),
   ];
 
+  /// The sample runs, newest first. The simulated collection
+  /// ([MockCardRepository]) and export are built from them, so picking a run
+  /// shows exactly its cards.
+  static List<RunDetails> get sampleRuns => _runs;
+
   static final List<RunDetails> _runs = [
     _details(
       id: '3',
@@ -77,14 +82,16 @@ class MockRunRepository implements RunRepository {
           setCode: cards[i].$2,
           collectorNumber: cards[i].$3,
           folder: cards[i].$4,
+          // Trays 1-5 hold one color each (RF20); the identified cards in
+          // tray 6 of this sample are colorless.
+          color: switch ((cards[i].$1, cards[i].$4)) {
+            (null || '*', _) => null,
+            (_, final tray) when tray >= 1 && tray <= 5 =>
+              ColorGroup.values[tray - 1],
+            _ => ColorGroup.colorless,
+          },
         ),
     ];
-    final folders = <int, int>{};
-    for (final card in runCards) {
-      if (card.folder != null) {
-        folders[card.folder!] = (folders[card.folder!] ?? 0) + 1;
-      }
-    }
     int count(ScanOutcome outcome) =>
         runCards.where((c) => c.outcome == outcome).length;
     return RunDetails(
@@ -99,7 +106,7 @@ class MockRunRepository implements RunRepository {
         errorCode: errorCode,
         message: message,
       ),
-      folderCounts: folders,
+      colorCounts: countColors(runCards),
       identified: count(ScanOutcome.identified),
       unidentified: count(ScanOutcome.unidentified),
       faceDown: count(ScanOutcome.faceDown),

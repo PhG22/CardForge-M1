@@ -115,6 +115,17 @@ class Owner:
     username: str
 
 
+# Color groups of the collection filter (same as the CardForge server): one per identified card.
+COLOR_GROUPS = ("W", "U", "B", "R", "G", "colorless", "multicolor")
+
+
+def color_group(color_identity: str | None) -> str:
+    colors = {ch for ch in (color_identity or "").upper() if ch in "WUBRG"}
+    if not colors:
+        return "colorless"
+    return next(iter(colors)) if len(colors) == 1 else "multicolor"
+
+
 @dataclass
 class ScanRecord:
     """One card that was physically sorted."""
@@ -321,32 +332,50 @@ class RunStore:
 
     # ------------------------------------------------------- inventory
 
-    def inventory(self, query: str = "", limit: int = 30, offset: int = 0) -> tuple[list[dict], int]:
-        """Identified cards of finished runs, grouped by name, with the quantity per bin.
-        Cards of a run in progress are left out (RF23)."""
-        where = ("c.scan_status = 'identified' AND r.status NOT IN ('running', 'paused')"
-                 + (" AND lower(c.card_name) LIKE ?" if query else ""))
-        params: list = [f"%{query.lower()}%"] if query else []
+    def inventory(self, query: str = "", limit: int = 30, offset: int = 0, run_uuid: str | None = None,
+                  color: str | None = None) -> dict:
+        """Identified cards of finished runs (or of one run), grouped by name, with their color group
+        (W, U, B, R, G, colorless, multicolor) and the copies per color group: the same contract as the
+        CardForge server's GET /cards. Cards of a run in progress are left out (RF23)."""
+        where = "r.status NOT IN ('running', 'paused')"
+        params: list = []
+        if run_uuid:
+            where += " AND r.local_uuid = ?"
+            params.append(run_uuid)
+        if query:
+            where += " AND lower(c.card_name) LIKE ?"
+            params.append(f"%{query.lower()}%")
         with self._lock:
-            total = self._conn.execute(
-                f"SELECT COUNT(DISTINCT c.card_name) FROM local_cards c JOIN local_run r ON r.local_uuid = c.run_uuid "
-                f"WHERE {where}", params).fetchone()[0]
-            names = [r[0] for r in self._conn.execute(
-                f"SELECT DISTINCT c.card_name FROM local_cards c JOIN local_run r ON r.local_uuid = c.run_uuid "
-                f"WHERE {where} ORDER BY c.card_name COLLATE NOCASE LIMIT ? OFFSET ?", [*params, limit, offset])]
-            items = []
-            for name in names:
-                rows = self._conn.execute(
-                    "SELECT c.bin, COUNT(*) AS quantity, MIN(c.card_identifier) AS card_id "
-                    "FROM local_cards c JOIN local_run r ON r.local_uuid = c.run_uuid "
-                    "WHERE c.card_name = ? AND c.scan_status = 'identified' AND r.status NOT IN ('running', 'paused') "
-                    "GROUP BY c.bin ORDER BY c.bin", (name,)).fetchall()
-                items.append({
-                    "id": rows[0]["card_id"] if rows else name,
-                    "name": name,
-                    "folders": [{"folder": r["bin"], "quantity": r["quantity"]} for r in rows if r["bin"]],
-                })
-        return items, total
+            rows = self._conn.execute(
+                "SELECT c.card_name, c.card_identifier, c.color_identity, c.type_line, c.mana_cost, c.rarity, "
+                "c.set_code, c.scan_status FROM local_cards c JOIN local_run r ON r.local_uuid = c.run_uuid "
+                f"WHERE {where}", params).fetchall()
+        counts = {g: 0 for g in COLOR_GROUPS}
+        groups: dict[str, dict] = {}
+        not_identified = 0
+        for r in rows:
+            if r["scan_status"] != "identified":
+                if not query:
+                    not_identified += 1
+                continue
+            group = color_group(r["color_identity"])
+            counts[group] += 1
+            if color and group != color:
+                continue
+            item = groups.setdefault(r["card_name"], {
+                "id": r["card_identifier"] or r["card_name"], "name": r["card_name"], "quantity": 0,
+                "color_identity": r["color_identity"] or "", "color": group, "type_line": r["type_line"],
+                "mana_cost": r["mana_cost"], "rarity": r["rarity"], "_sets": set()})
+            item["quantity"] += 1
+            item["id"] = min(item["id"], r["card_identifier"] or item["id"])
+            if r["set_code"]:
+                item["_sets"].add(r["set_code"].upper())
+        ordered = sorted(groups.values(), key=lambda i: (i["name"].lower(), i["name"]))
+        page = []
+        for item in ordered[offset:offset + limit]:
+            item["sets"] = ", ".join(sorted(item.pop("_sets")))
+            page.append(item)
+        return {"items": page, "total": len(ordered), "color_counts": counts, "not_identified": not_identified}
 
     def export_csv(self) -> str:
         """Every card of every finished run, as RFC 4180 CSV (RF24 / RNF17)."""

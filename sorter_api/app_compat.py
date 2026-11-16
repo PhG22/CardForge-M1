@@ -3,7 +3,8 @@ served by the Pi so the app works with API_BASE_URL=http://<raspberry-ip>:8000.
 
     POST /auth/login             {identifier, password} -> {access_token}
     POST /auth/google            not available on the machine (needs the CardForge server)
-    GET  /cards                  ?query=&limit=&offset= -> {items: [{id, name, folders}], total}
+    GET  /cards                  ?query=&run_id=&color=&limit=&offset= -> {items: [{id, name, quantity, color,
+                                 ...}], total, color_counts, not_identified}   (same as the CardForge server)
     GET  /machines/{id}/status   -> {state: idle | running | stopped}
     POST /machines/{id}/start    start a run, or resume a paused one -> {state}
     POST /machines/{id}/stop     normal stop -> {state}
@@ -30,6 +31,7 @@ from fastapi import APIRouter, Header, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
+from .store import COLOR_GROUPS
 from .controller import ControllerState, NoActiveRun, NotPaused, SorterController, StartRefused, utc_now
 
 log = logging.getLogger(__name__)
@@ -99,12 +101,19 @@ def create_app_router(settings) -> APIRouter:
             "message": "Google sign-in needs the CardForge server. Sign in with username and password."})
 
     @router.get("/cards")
-    def cards(request: Request, query: str = "", limit: int = 30, offset: int = 0,
-              authorization: str | None = Header(default=None)):
+    def cards(request: Request, query: str = "", limit: int = 30, offset: int = 0, run_id: str | None = None,
+              color: str | None = None, authorization: str | None = Header(default=None)):
         if not signed_in(request, authorization):
             return unauthorized()
-        items, total = store_of(request).inventory(query.strip(), max(1, min(limit, 200)), max(0, offset))
-        return {"items": items, "total": total}
+        group = None
+        if color and color.strip():
+            value = color.strip()
+            group = value.upper() if len(value) == 1 else value.lower()
+            if group not in COLOR_GROUPS:
+                return JSONResponse(status_code=422, content={
+                    "code": "INVALID_COLOR", "message": "color must be one of: " + ", ".join(COLOR_GROUPS) + "."})
+        return store_of(request).inventory(query.strip(), max(1, min(limit, 200)), max(0, offset),
+                                           run_uuid=(run_id or "").strip() or None, color=group)
 
     @router.get("/machines/{machine_id}/status")
     def machine_status(machine_id: str, request: Request, authorization: str | None = Header(default=None)):

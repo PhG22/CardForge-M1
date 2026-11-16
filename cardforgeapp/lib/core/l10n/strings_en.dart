@@ -1,6 +1,7 @@
 import '../../features/alerts/machine_alert.dart';
 import '../../features/auth/auth_service.dart';
 import '../../features/cards/card_models.dart';
+import '../../features/cards/collection_export.dart' show ExportFormat;
 import '../../features/machine/api/machine_api_models.dart';
 import '../../features/machine/machine_controller.dart';
 import '../../features/machine/machine_models.dart';
@@ -125,11 +126,11 @@ class EnStrings extends AppStrings {
   @override
   String get menuMachineControl => 'Machine control';
   @override
-  String get menuCardsInFolders => 'Cards in folders';
+  String get menuMyCards => 'My cards';
   @override
   String get menuRuns => 'Sorting runs';
   @override
-  String get menuCsvReport => 'CSV report';
+  String get menuExport => 'Export cards';
   @override
   String get menuSortingRules => 'Sorting rules';
   @override
@@ -305,8 +306,6 @@ class EnStrings extends AppStrings {
   @override
   String get cardsProcessed => 'Cards processed';
   @override
-  String get currentFolder => 'Current folder';
-  @override
   String get startSorting => 'Start sorting';
   @override
   String get startingHint =>
@@ -455,15 +454,6 @@ class EnStrings extends AppStrings {
   String get unfinishedRunHome =>
       "The last run didn't finish correctly. Tap to start a new one.";
   @override
-  String get recentlySorted => 'Recently sorted';
-  @override
-  String sortedCard(SortedCard card) {
-    final folder = card.tray == null ? '' : ' → ${folderLabel(card.tray!)}';
-    return card.cleared
-        ? 'Card #${card.number} dropped by the stop$folder'
-        : 'Card #${card.number}$folder';
-  }
-  @override
   String get diagnostics => 'Diagnostics';
   @override
   String get refresh => 'Refresh';
@@ -524,13 +514,13 @@ class EnStrings extends AppStrings {
   @override
   String get forget => 'Forget';
 
-  // Cards in folders
+  // My cards
   @override
   String get searchCardsHint => 'Search a card by name';
   @override
   String get clearSearch => 'Clear search';
   @override
-  String get allCardsHeader => 'Cards in your folders';
+  String get allCardsHeader => 'All your cards';
   @override
   String resultsFor(String query) => 'Results for “$query”';
   @override
@@ -541,13 +531,45 @@ class EnStrings extends AppStrings {
   @override
   String folderLabel(int folder) => 'Folder $folder';
   @override
-  String get cardsEmptyTitle => 'No cards in the folders yet';
+  String colorGroupLabel(ColorGroup group) => switch (group) {
+        ColorGroup.white => 'White',
+        ColorGroup.blue => 'Blue',
+        ColorGroup.black => 'Black',
+        ColorGroup.red => 'Red',
+        ColorGroup.green => 'Green',
+        ColorGroup.colorless => 'Colorless',
+        ColorGroup.multicolor => 'Multicolor',
+      };
+  @override
+  String get allColors => 'All colors';
+  @override
+  String get cardsFromLabel => 'Cards from';
+  @override
+  String get wholeCollection => 'All my runs (whole collection)';
+  @override
+  String runScopeLabel(RunSummary run) => [
+        if (run.startedAt != null) dateTime(run.startedAt!),
+        cardsCount(run.cardsProcessed),
+      ].join(' · ');
+  @override
+  String get runCardsHeader => 'Cards of this run';
+  @override
+  String notIdentifiedHidden(int count) => count == 1
+      ? '1 card was not identified (unidentified or face-down): '
+          'it is in the run results, not here.'
+      : '$count cards were not identified (unidentified or face-down): '
+          'they are in the run results, not here.';
+  @override
+  String get notIdentifiedLabel => 'Not identified';
+  @override
+  String get cardsEmptyTitle => 'No cards yet';
   @override
   String get cardsEmptyHint => 'Cards show up here after a sorting run.';
   @override
   String get noCardsFoundTitle => 'No cards found';
   @override
-  String get noCardsFoundHint => 'Check the spelling or try another name.';
+  String get noCardsFoundHint =>
+      'Check the spelling, or try another name or color.';
   @override
   String get cardsLoadFailedTitle => 'Could not load the cards';
   @override
@@ -619,7 +641,7 @@ class EnStrings extends AppStrings {
   @override
   String get faceDownLabel => 'Face-down';
   @override
-  String get cardsPerFolder => 'Cards per folder';
+  String get cardsPerColor => 'Cards per color';
   @override
   String get cardsInThisRun => 'Cards in this run';
   @override
@@ -634,26 +656,40 @@ class EnStrings extends AppStrings {
   String runCardDetails(RunCard card) => [
         if (card.setCode != null)
           '${card.setCode!.toUpperCase()} ${card.collectorNumber ?? ''}'.trim(),
-        if (card.folder != null) folderLabel(card.folder!),
+        if (card.color != null) colorGroupLabel(card.color!),
       ].join(' · ');
 
-  // CSV export
+  // Export
   @override
-  String get exportTitle => 'Export your collection';
+  String get exportTitle => 'Export your cards';
   @override
   String get exportHint =>
-      'Every card you own, from all your runs, in one CSV file: name, set, '
-      'collector number, folder and quantity. It opens in Excel, Google '
-      'Sheets and most collection sites.';
+      'Your whole collection or the cards of one run, in one file: name, '
+      'set, collector number, color and quantity. Cards are listed by color '
+      '(white, blue, black, red, green, colorless, multicolor).';
   @override
-  String get exportCsv => 'Export CSV';
+  String get exportWhatLabel => 'What to export';
   @override
-  String get exportNothing =>
-      'Your collection is empty: sort some cards first.';
+  String get exportFormatLabel => 'Format';
+  @override
+  String exportFormatHint(ExportFormat format) => switch (format) {
+        ExportFormat.csv =>
+          'CSV: a table for Excel or Google Sheets, with a color column you '
+              'can filter.',
+        ExportFormat.txt =>
+          'TXT: one line per card ("2 Lightning Bolt (M10) 146"), grouped by '
+              'color. Most collection sites import it.',
+      };
+  @override
+  String get exportAction => 'Export';
+  @override
+  String get exportThisRun => 'Export this run';
+  @override
+  String get exportNothing => 'Nothing to export: no card was sorted here yet.';
   @override
   String get exportFileFailed => 'Could not create or share the file.';
   @override
-  String get exportFailedTitle => 'Could not export the collection';
+  String get exportFailedTitle => 'Could not export the cards';
   @override
   String exportDone(int cards, String fileName) =>
       '${cardsCount(cards)} exported to $fileName.';

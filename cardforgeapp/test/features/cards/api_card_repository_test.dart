@@ -30,13 +30,15 @@ void main() {
           {
             'id': '7',
             'name': 'Lightning Bolt',
-            'folders': [
-              {'folder': 6, 'quantity': 1},
-              {'folder': 4, 'quantity': 4},
-            ],
+            'quantity': 3,
+            'color': 'R',
+            'color_identity': 'R',
+            'sets': 'FIN, M10',
           },
         ],
         'total': 45,
+        'color_counts': {'R': 3},
+        'not_identified': 1,
       });
     }));
 
@@ -49,7 +51,26 @@ void main() {
     expect(seen.headers['Authorization'], 'Bearer abc');
     expect(page.total, 45);
     expect(page.items.single.name, 'Lightning Bolt');
-    expect(page.items.single.folders.map((f) => f.folder), [4, 6]);
+    expect(page.items.single.quantity, 3);
+    expect(page.items.single.color, ColorGroup.red);
+    expect(page.colorCounts[ColorGroup.red], 3);
+    expect(page.notIdentified, 1);
+  });
+
+  test('sends the run and the color when they are picked', () async {
+    late Uri seen;
+    final repo = _repo(MockClient((request) async {
+      seen = request.url;
+      return _json({'items': [], 'total': 0});
+    }));
+
+    await repo.fetchCards(runId: '12', color: ColorGroup.colorless);
+    expect(seen.queryParameters['run_id'], '12');
+    expect(seen.queryParameters['color'], 'colorless');
+
+    await repo.fetchCards(color: ColorGroup.white);
+    expect(seen.queryParameters.containsKey('run_id'), isFalse);
+    expect(seen.queryParameters['color'], 'W');
   });
 
   test('leaves the query out when it is empty', () async {
@@ -62,6 +83,8 @@ void main() {
     await repo.fetchCards();
 
     expect(seen.queryParameters.containsKey('query'), isFalse);
+    expect(seen.queryParameters.containsKey('run_id'), isFalse);
+    expect(seen.queryParameters.containsKey('color'), isFalse);
     expect(seen.queryParameters['limit'], '30');
     expect(seen.queryParameters['offset'], '0');
   });

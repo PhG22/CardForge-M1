@@ -62,7 +62,7 @@ void main() {
     expect(run.startedAt, DateTime.utc(2026, 11, 11, 20).toLocal());
   });
 
-  test('GET /runs/{id}: folder counts, outcome counts and every card',
+  test('GET /runs/{id}: color counts, outcome counts and every card',
       () async {
     late Uri seen;
     final repo = _repo(MockClient((request) async {
@@ -71,11 +71,13 @@ void main() {
         'run': _run,
         'bin_counts': {'1': 1, '4': 1, '6': 1, 'none': 0},
         'scan_counts': {'identified': 2, 'unidentified': 0, 'face_down': 1},
+        'color_counts': {'W': 1, 'R': 1},
         'cards': [
           {
             'card_number': 1,
             'status': 'identified',
             'bin': 1,
+            'color': 'W',
             'card_name': 'Plains',
             'set_code': 'fin',
             'collector_number': '1',
@@ -84,6 +86,7 @@ void main() {
             'card_number': 2,
             'status': 'identified',
             'bin': 4,
+            'color_identity': 'R',
             'card_name': 'Lightning Bolt',
           },
           {'card_number': 3, 'status': 'face_down', 'bin': 6},
@@ -95,7 +98,11 @@ void main() {
 
     expect(seen.path, '/runs/12');
     expect(details.run.id, '12');
-    expect(details.folderCounts, {1: 1, 4: 1, 6: 1});
+    expect(details.colorCounts[ColorGroup.white], 1);
+    expect(details.colorCounts[ColorGroup.red], 1);
+    expect(details.colorCounts[ColorGroup.blue], 0);
+    expect(details.cards.map((c) => c.color),
+        [ColorGroup.white, ColorGroup.red, null]);
     expect(details.identified, 2);
     expect(details.faceDown, 1);
     expect(details.cards.map((c) => c.outcome), [

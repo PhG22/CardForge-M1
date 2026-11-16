@@ -3,7 +3,7 @@ import 'package:go_router/go_router.dart';
 import '../../features/alerts/alerts_screen.dart';
 import '../../features/auth/login_screen.dart';
 import '../../features/auth/signup_screen.dart';
-import '../../features/cards/cards_in_folders_screen.dart';
+import '../../features/cards/collection_screen.dart';
 import '../../features/cards/export_screen.dart';
 import '../../features/home/home_screen.dart';
 import '../../features/machine/link_machine_screen.dart';
@@ -40,8 +40,17 @@ GoRouter createAppRouter({
         builder: (_, __) => const MachineControlScreen(),
       ),
       GoRoute(path: '/alerts', builder: (_, __) => const AlertsScreen()),
-      GoRoute(path: '/cards', builder: (_, __) => const CardsInFoldersScreen()),
-      GoRoute(path: '/export', builder: (_, __) => const ExportScreen()),
+      // ?run=<id> opens them on one run's cards instead of the whole collection
+      GoRoute(
+        path: '/cards',
+        builder: (_, state) =>
+            CollectionScreen(initialRunId: state.uri.queryParameters['run']),
+      ),
+      GoRoute(
+        path: '/export',
+        builder: (_, state) =>
+            ExportScreen(initialRunId: state.uri.queryParameters['run']),
+      ),
       GoRoute(path: '/runs', builder: (_, __) => const RunsScreen()),
       GoRoute(
         path: '/runs/:id',

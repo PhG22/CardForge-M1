@@ -5,65 +5,79 @@ import 'package:flutter_test/flutter_test.dart';
 void main() {
   final repo = MockCardRepository(latency: Duration.zero);
 
-  test('lists every card alphabetically when there is no search', () async {
+  test('the collection is every identified card of the sample runs', () async {
     final page = await repo.fetchCards(limit: 100);
 
-    expect(page.total, 36);
-    expect(page.items, hasLength(36));
-    final names = page.items.map((c) => c.name).toList();
-    expect(names, [...names]..sort());
+    expect(page.items.map((c) => c.name), [
+      'Counterspell',
+      'Doom Blade',
+      'Giant Growth',
+      'Lightning Bolt',
+      'Llanowar Elves',
+      'Opt',
+      'Shock',
+      'Sol Ring',
+      'Swords to Plowshares',
+      'Wall of Omens',
+    ]);
+    expect(page.total, 10);
+    expect(page.items.firstWhere((c) => c.name == 'Lightning Bolt').quantity,
+        2);
+    expect(page.notIdentified, 2);
   });
 
-  test('every card is in folders numbered 1 to 6', () async {
+  test('counts the copies per color', () async {
     final page = await repo.fetchCards(limit: 100);
 
-    for (final card in page.items) {
-      expect(card.folders, isNotEmpty, reason: card.name);
-      for (final entry in card.folders) {
-        expect(entry.folder, inInclusiveRange(1, folderCount),
-            reason: card.name);
-      }
-    }
-    // All six folders hold cards.
-    final used = {
-      for (final c in page.items) for (final f in c.folders) f.folder
-    };
-    expect(used, {1, 2, 3, 4, 5, 6});
+    expect(page.colorCounts, {
+      ColorGroup.white: 2,
+      ColorGroup.blue: 2,
+      ColorGroup.black: 1,
+      ColorGroup.red: 3,
+      ColorGroup.green: 2,
+      ColorGroup.colorless: 1,
+      ColorGroup.multicolor: 0,
+    });
+  });
+
+  test('a color keeps only that group, and the counts stay the same',
+      () async {
+    final red = await repo.fetchCards(color: ColorGroup.red);
+    final colorless = await repo.fetchCards(color: ColorGroup.colorless);
+
+    expect(red.items.map((c) => c.name), ['Lightning Bolt', 'Shock']);
+    expect(red.total, 2);
+    expect(red.colorCounts[ColorGroup.white], 2);
+    expect(colorless.items.single.name, 'Sol Ring');
+  });
+
+  test('a run keeps only its own cards', () async {
+    final run2 = await repo.fetchCards(runId: '2');
+    final run1 = await repo.fetchCards(runId: '1');
+
+    expect(run2.items.map((c) => c.name), ['Opt', 'Shock', 'Wall of Omens']);
+    expect(run2.notIdentified, 0);
+    expect(run1.items.single.name, 'Giant Growth');
   });
 
   test('search ignores case and matches part of the name', () async {
-    final page = await repo.fetchCards(query: 'LIGHTNING');
+    final page = await repo.fetchCards(query: 'LL');
 
     expect(page.items.map((c) => c.name),
-        ['Chain Lightning', 'Lightning Bolt', 'Lightning Helix']);
+        ['Counterspell', 'Llanowar Elves', 'Wall of Omens']);
     expect(page.total, 3);
-  });
-
-  test('a card can be in more than one folder', () async {
-    final page = await repo.fetchCards(query: 'lightning bolt');
-
-    final card = page.items.single;
-    expect(card.folders.map((f) => (f.folder, f.quantity)), [(4, 4), (6, 1)]);
-  });
-
-  test('a search with no match returns an empty page', () async {
-    final page = await repo.fetchCards(query: 'zzz');
-
-    expect(page.items, isEmpty);
-    expect(page.total, 0);
   });
 
   test('pages follow each other without gaps and report the full total',
       () async {
-    final first = await repo.fetchCards(offset: 0, limit: 30);
-    final second = await repo.fetchCards(offset: 30, limit: 30);
-    final beyond = await repo.fetchCards(offset: 90, limit: 30);
+    final first = await repo.fetchCards(offset: 0, limit: 6);
+    final second = await repo.fetchCards(offset: 6, limit: 6);
+    final beyond = await repo.fetchCards(offset: 30, limit: 6);
 
-    expect(first.items, hasLength(30));
-    expect(second.items, hasLength(6));
-    expect(first.total, 36);
-    expect(second.total, 36);
-    expect(second.items.last.name, 'Wrath of God');
+    expect(first.items, hasLength(6));
+    expect(second.items, hasLength(4));
+    expect(second.total, 10);
+    expect(second.items.last.name, 'Wall of Omens');
     expect(beyond.items, isEmpty);
   });
 

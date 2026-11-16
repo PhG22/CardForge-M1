@@ -49,8 +49,8 @@ const Map<String, Object> linkedMachinePrefs = {
 /// - [linkService]: the Bluetooth service (a fast simulated one by default).
 /// - [cardRepository]: where the cards come from (a fast simulated one by default).
 /// - [machineApi]: the machine's REST API ([FakeMachineApi] by default).
-/// - [runRepository] / [collectionExport]: run history and CSV export rows
-///   (fast simulated ones by default). [shareCsv] replaces the share sheet
+/// - [runRepository] / [collectionExport]: run history and export rows
+///   (fast simulated ones by default). [shareFile] replaces the share sheet
 ///   (by default it does nothing).
 Future<AppDependencies> pumpApp(
   WidgetTester tester, {
@@ -61,7 +61,7 @@ Future<AppDependencies> pumpApp(
   MachineApi? machineApi,
   RunRepository? runRepository,
   CollectionExportSource? collectionExport,
-  CsvSharer? shareCsv,
+  ExportSharer? shareFile,
   Map<String, Object> preferences = const {},
 }) async {
   tester.view.physicalSize = const Size(1170, 2532);
@@ -79,7 +79,7 @@ Future<AppDependencies> pumpApp(
     runRepository: runRepository ?? MockRunRepository(latency: Duration.zero),
     collectionExport: collectionExport ??
         MockCollectionExportSource(latency: Duration.zero),
-    shareCsv: shareCsv ?? (_, __, ___) async {},
+    shareFile: shareFile ?? (_, __, ___) async {},
     machineApiFor: (_) => api,
   );
 

@@ -4,6 +4,7 @@ import 'package:flutter/widgets.dart';
 import '../../features/alerts/machine_alert.dart';
 import '../../features/auth/auth_service.dart';
 import '../../features/cards/card_models.dart';
+import '../../features/cards/collection_export.dart' show ExportFormat;
 import '../../features/machine/api/machine_api_models.dart';
 import '../../features/machine/machine_controller.dart';
 import '../../features/machine/machine_models.dart';
@@ -81,9 +82,9 @@ abstract class AppStrings {
   String get noMachineBody;
   String get machineLinkedBody;
   String get menuMachineControl;
-  String get menuCardsInFolders;
+  String get menuMyCards;
   String get menuRuns;
-  String get menuCsvReport;
+  String get menuExport;
   String get menuSortingRules;
   String get linkMachine;
   String get alerts;
@@ -137,7 +138,6 @@ abstract class AppStrings {
   String get topOnlyMode;
   String runStateLabel(ControllerState state);
   String get cardsProcessed;
-  String get currentFolder;
   String get startSorting;
   String get startingHint;
   String get stopSorting;
@@ -158,8 +158,6 @@ abstract class AppStrings {
   String unfinishedRunSuggestion(LastRunCheck check);
   String get startNewRun;
   String get unfinishedRunHome;
-  String get recentlySorted;
-  String sortedCard(SortedCard card);
   String get diagnostics;
   String get refresh;
   String get topModule;
@@ -187,7 +185,7 @@ abstract class AppStrings {
   String get cancel;
   String get forget;
 
-  // Cards in folders
+  // My cards (the collection, or one run's cards, by color)
   String get searchCardsHint;
   String get clearSearch;
   String get allCardsHeader;
@@ -195,6 +193,14 @@ abstract class AppStrings {
   String cardsCount(int count);
   String copiesCount(int quantity);
   String folderLabel(int folder);
+  String colorGroupLabel(ColorGroup group);
+  String get allColors;
+  String get cardsFromLabel;
+  String get wholeCollection;
+  String runScopeLabel(RunSummary run);
+  String get runCardsHeader;
+  String notIdentifiedHidden(int count);
+  String get notIdentifiedLabel;
   String get cardsEmptyTitle;
   String get cardsEmptyHint;
   String get noCardsFoundTitle;
@@ -217,16 +223,20 @@ abstract class AppStrings {
   String get identifiedLabel;
   String get unidentifiedLabel;
   String get faceDownLabel;
-  String get cardsPerFolder;
+  String get cardsPerColor;
   String get cardsInThisRun;
   String get noCardsInRun;
   String scanOutcome(ScanOutcome outcome);
   String runCardDetails(RunCard card);
 
-  // CSV export (RF24)
+  // Export (RF24): CSV or TXT, whole collection or one run
   String get exportTitle;
   String get exportHint;
-  String get exportCsv;
+  String get exportWhatLabel;
+  String get exportFormatLabel;
+  String exportFormatHint(ExportFormat format);
+  String get exportAction;
+  String get exportThisRun;
   String get exportNothing;
   String get exportFileFailed;
   String get exportFailedTitle;

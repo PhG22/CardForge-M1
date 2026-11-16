@@ -25,17 +25,6 @@ enum MachineConnection {
   offline,
 }
 
-/// A card the machine just dropped, for the "Recently sorted" list.
-class SortedCard {
-  const SortedCard({required this.number, this.tray, this.cleared = false});
-
-  final int number;
-  final int? tray;
-
-  /// Dropped by a stop instead of being sorted.
-  final bool cleared;
-}
-
 /// The live connection to the linked machine, for the whole app.
 ///
 /// - Connects as soon as a machine with an address is linked, and keeps the
@@ -71,12 +60,9 @@ class MachineController extends ChangeNotifier {
   final MachineLinkService _linkService;
   final List<Duration> retryDelays;
 
-  static const int recentCardsLimit = 10;
-
   MachineConnection connection = MachineConnection.none;
   MachineHealth? health;
   MachineSnapshot? snapshot;
-  List<SortedCard> recentCards = const [];
 
   /// RNF19: the machine's check of its last finished run (see
   /// [unfinishedLastRun]). Null before the first run and once a new one starts.
@@ -191,7 +177,6 @@ class MachineController extends ChangeNotifier {
       connection = MachineConnection.none;
       health = null;
       snapshot = null;
-      recentCards = const [];
     } else if (address == null) {
       connection = MachineConnection.noAddress;
     } else {
@@ -284,11 +269,12 @@ class MachineController extends ChangeNotifier {
         _applySnapshot(snapshot);
         lastRunCheck = snapshot.lastRunCheck;
       case RunStartedEvent(:final run):
-        recentCards = const [];
         lastRunCheck = null; // a new run supersedes the warning
         _applySnapshot(
             MachineSnapshot(state: ControllerState.running, run: run));
       case final CardSortedEvent card:
+        // RF23: only progress during a run (how many cards), never which card
+        // it was or where it went. The results are shown once the run ends.
         final current = run;
         if (current != null) {
           snapshot = MachineSnapshot(
@@ -297,11 +283,6 @@ class MachineController extends ChangeNotifier {
                 cardsProcessed: card.cardNumber, tray: card.tray),
           );
         }
-        recentCards = [
-          SortedCard(
-              number: card.cardNumber, tray: card.tray, cleared: card.cleared),
-          ...recentCards,
-        ].take(recentCardsLimit).toList();
       case RunFinishedEvent(:final run, lastRunCheck: final check):
         _applySnapshot(MachineSnapshot(state: ControllerState.idle, run: run));
         if (check != null) lastRunCheck = check;
@@ -404,7 +385,6 @@ class MachineController extends ChangeNotifier {
     _notify();
     try {
       final run = await api.startRun();
-      recentCards = const [];
       lastRunCheck = null;
       _applySnapshot(MachineSnapshot(state: ControllerState.running, run: run));
     } on MachineApiException catch (e) {

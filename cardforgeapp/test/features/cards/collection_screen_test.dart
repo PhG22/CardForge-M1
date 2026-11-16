@@ -13,6 +13,8 @@ class _UnauthorizedRepository implements CardRepository {
     String query = '',
     int offset = 0,
     int limit = 30,
+    String? runId,
+    ColorGroup? color,
   }) =>
       Future<CardsPage>.error(const CardsException(CardsFailure.unauthorized));
 }
@@ -23,12 +25,13 @@ void main() {
 
   Future<void> openCards(
     WidgetTester tester, {
+    String location = '/cards',
     CardRepository? repository,
     Map<String, Object> preferences = const {},
   }) async {
     await pumpApp(
       tester,
-      initialLocation: '/cards',
+      initialLocation: location,
       cardRepository: repository,
       preferences: preferences,
     );
@@ -41,6 +44,29 @@ void main() {
     await tester.pumpAndSettle();
   }
 
+  Future<void> pickColor(WidgetTester tester, String key) async {
+    await tester.tap(find.byKey(ValueKey('color-$key')));
+    await tester.pumpAndSettle();
+  }
+
+  Future<void> pickScope(WidgetTester tester, String label) async {
+    await tester.tap(find.byKey(const ValueKey('scope-picker')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text(label).last);
+    await tester.pumpAndSettle();
+  }
+
+  /// Scrolls the card list (not the search field) until [text] is on screen.
+  Future<void> reveal(WidgetTester tester, String text) =>
+      tester.scrollUntilVisible(
+        find.text(text),
+        200,
+        scrollable: find
+            .descendant(
+                of: find.byType(ListView), matching: find.byType(Scrollable))
+            .first,
+      );
+
   /// The panel (card tile) that holds [cardName].
   Finder tileOf(String cardName) => find.ancestor(
         of: find.text(cardName),
@@ -50,16 +76,70 @@ void main() {
   Finder inTile(String cardName, String text) =>
       find.descendant(of: tileOf(cardName), matching: find.text(text));
 
-  testWidgets('with nothing typed, lists the cards that are in the folders',
+  testWidgets('lists the whole collection by default, with no folders',
       (tester) async {
     await openCards(tester);
 
+    expect(find.text('My cards'), findsOneWidget);
+    expect(find.text('All my runs (whole collection)'), findsOneWidget);
     expect(find.text('Search a card by name'), findsOneWidget);
-    expect(find.text('Cards in your folders'), findsOneWidget);
-    expect(find.text('36 cards'), findsOneWidget);
-    expect(find.text('Arcane Signet'), findsOneWidget);
-    expect(inTile('Birds of Paradise', 'Folder 5'), findsOneWidget);
-    expect(inTile('Birds of Paradise', '×2'), findsOneWidget);
+    expect(find.text('All your cards'), findsOneWidget);
+    expect(find.text('10 cards'), findsOneWidget);
+    expect(inTile('Counterspell', '×1'), findsOneWidget);
+    expect(inTile('Counterspell', 'Blue · MH2'), findsOneWidget);
+    expect(find.textContaining('Folder'), findsNothing);
+    expect(find.textContaining('2 cards were not identified'), findsOneWidget);
+  });
+
+  testWidgets('the color chips show their counts and filter the list',
+      (tester) async {
+    await openCards(tester);
+
+    expect(find.text('All colors  11'), findsOneWidget);
+    expect(find.text('Red  3'), findsOneWidget);
+    expect(find.text('Colorless  1'), findsOneWidget);
+    expect(find.text('Multicolor  0'), findsOneWidget);
+
+    await pickColor(tester, 'red');
+    expect(find.text('2 cards'), findsOneWidget);
+    expect(find.text('Lightning Bolt'), findsOneWidget);
+    expect(find.text('Shock'), findsOneWidget);
+    expect(find.text('Counterspell'), findsNothing);
+
+    await pickColor(tester, 'colorless');
+    expect(find.text('1 card'), findsOneWidget);
+    expect(find.text('Sol Ring'), findsOneWidget);
+
+    await pickColor(tester, 'multicolor');
+    expect(find.text('No cards found'), findsOneWidget);
+
+    await pickColor(tester, 'all');
+    expect(find.text('10 cards'), findsOneWidget);
+  });
+
+  testWidgets('picking a run shows only the cards of that run',
+      (tester) async {
+    await openCards(tester);
+
+    await pickScope(tester, '2026-11-08 15:05 · 3 cards');
+
+    expect(find.text('Cards of this run'), findsOneWidget);
+    expect(find.text('3 cards'), findsOneWidget);
+    await reveal(tester, 'Wall of Omens');
+    expect(find.text('Opt'), findsOneWidget);
+    expect(find.text('Wall of Omens'), findsOneWidget);
+    expect(find.text('Lightning Bolt'), findsNothing);
+
+    await pickScope(tester, 'All my runs (whole collection)');
+    expect(find.text('10 cards'), findsOneWidget);
+  });
+
+  testWidgets('opens on one run from /cards?run=<id>', (tester) async {
+    await openCards(tester, location: '/cards?run=1');
+
+    expect(find.text('Cards of this run'), findsOneWidget);
+    expect(find.text('Giant Growth'), findsOneWidget);
+    expect(find.text('1 card'), findsOneWidget);
   });
 
   testWidgets('shows the symbols at the top instead of the colored circles',
@@ -68,38 +148,22 @@ void main() {
 
     expect(find.byKey(const ValueKey('mana-symbols')), findsOneWidget);
     expect(find.byType(MagicBackdrop), findsNothing);
-    // The search bar sits below the symbols.
     final symbolsBottom =
         tester.getRect(find.byKey(const ValueKey('mana-symbols'))).bottom;
     expect(tester.getTopLeft(find.byType(TextField)).dy,
         greaterThanOrEqualTo(symbolsBottom));
   });
 
-  testWidgets('shows the folders a searched card is in', (tester) async {
+  testWidgets('a search narrows the list', (tester) async {
     await openCards(tester);
 
     await search(tester, 'lightning bolt');
 
     expect(find.text('Results for “lightning bolt”'), findsOneWidget);
     expect(find.text('1 card'), findsOneWidget);
-    expect(inTile('Lightning Bolt', 'Folder 4'), findsOneWidget);
-    expect(inTile('Lightning Bolt', '×4'), findsOneWidget);
-    expect(inTile('Lightning Bolt', 'Folder 6'), findsOneWidget);
-    expect(inTile('Lightning Bolt', '×1'), findsOneWidget);
+    expect(inTile('Lightning Bolt', '×2'), findsOneWidget);
+    expect(inTile('Lightning Bolt', 'Red · 2XM'), findsOneWidget);
     expect(find.text('Counterspell'), findsNothing);
-  });
-
-  testWidgets('a search can match several cards', (tester) async {
-    await openCards(tester);
-
-    await search(tester, 'growth');
-
-    expect(find.text('2 cards'), findsOneWidget);
-    expect(find.text('Giant Growth'), findsOneWidget);
-    expect(find.text('Rampant Growth'), findsOneWidget);
-    // Giant Growth is in two folders.
-    expect(inTile('Giant Growth', 'Folder 2'), findsOneWidget);
-    expect(inTile('Giant Growth', 'Folder 5'), findsOneWidget);
   });
 
   testWidgets('says so when no card matches', (tester) async {
@@ -108,7 +172,7 @@ void main() {
     await search(tester, 'zzz');
 
     expect(find.text('No cards found'), findsOneWidget);
-    expect(find.text('Check the spelling or try another name.'),
+    expect(find.text('Check the spelling, or try another name or color.'),
         findsOneWidget);
   });
 
@@ -120,26 +184,10 @@ void main() {
     await tester.tap(find.byTooltip('Clear search'));
     await tester.pumpAndSettle();
 
-    expect(find.text('Cards in your folders'), findsOneWidget);
+    expect(find.text('All your cards'), findsOneWidget);
     expect(find.byTooltip('Clear search'), findsNothing);
     expect(tester.widget<TextField>(find.byType(TextField)).controller?.text,
         isEmpty);
-  });
-
-  testWidgets('loads more cards while scrolling', (tester) async {
-    await openCards(tester);
-    expect(find.text('Wrath of God'), findsNothing);
-
-    await tester.scrollUntilVisible(
-      find.text('Wrath of God'),
-      600,
-      scrollable: find
-          .descendant(
-              of: find.byType(ListView), matching: find.byType(Scrollable))
-          .first,
-    );
-
-    expect(find.text('Wrath of God'), findsOneWidget);
   });
 
   testWidgets('shows a server error and recovers when the search changes',
@@ -156,7 +204,7 @@ void main() {
     await tester.tap(find.byTooltip('Clear search'));
     await tester.pumpAndSettle();
 
-    expect(find.text('Cards in your folders'), findsOneWidget);
+    expect(find.text('All your cards'), findsOneWidget);
   });
 
   testWidgets('an expired session offers to sign in again', (tester) async {
@@ -174,10 +222,12 @@ void main() {
   testWidgets('works in Portuguese', (tester) async {
     await openCards(tester, preferences: {'language_code': 'pt'});
 
+    expect(find.text('Minhas cartas'), findsOneWidget);
     expect(find.text('Pesquisar carta pelo nome'), findsOneWidget);
-    expect(find.text('Cartas nas suas pastas'), findsOneWidget);
-    expect(find.text('36 cartas'), findsOneWidget);
-    expect(inTile('Birds of Paradise', 'Pasta 5'), findsOneWidget);
+    expect(find.text('Todas as suas cartas'), findsOneWidget);
+    expect(find.text('10 cartas'), findsOneWidget);
+    expect(find.text('Vermelho  3'), findsOneWidget);
+    expect(find.text('Incolor  1'), findsOneWidget);
 
     await search(tester, 'lightning bolt');
     expect(find.text('Resultados para “lightning bolt”'), findsOneWidget);

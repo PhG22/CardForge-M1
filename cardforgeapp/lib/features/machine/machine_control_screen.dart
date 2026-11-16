@@ -84,10 +84,6 @@ class MachineControlScreen extends StatelessWidget {
       case MachineConnection.connecting || MachineConnection.online:
         return [
           _RunPanel(controller: controller),
-          if (controller.recentCards.isNotEmpty) ...[
-            const SizedBox(height: 16),
-            _RecentCards(controller: controller),
-          ],
           if (controller.isOnline) ...[
             const SizedBox(height: 16),
             _DiagnosticsPanel(controller: controller),
@@ -377,23 +373,11 @@ class _RunPanel extends StatelessWidget {
           Text(l10n.runStateLabel(state), style: text.titleLarge),
           if (showCounters) ...[
             const SizedBox(height: 16),
-            Row(
-              children: [
-                Expanded(
-                  child: _Counter(
-                    label: l10n.cardsProcessed,
-                    value: '${run.cardsProcessed}',
-                  ),
-                ),
-                if (controller.bottomEnabled)
-                  Expanded(
-                    child: _Counter(
-                      label: l10n.currentFolder,
-                      value:
-                          run.currentTray == null ? '–' : '${run.currentTray}',
-                    ),
-                  ),
-              ],
+            // RF23: only how many cards were processed; which cards they
+            // were is in the run's results once it ends.
+            _Counter(
+              label: l10n.cardsProcessed,
+              value: '${run.cardsProcessed}',
             ),
           ],
           if (paused) ...[
@@ -582,42 +566,6 @@ class _ProblemsBox extends StatelessWidget {
             Padding(
               padding: const EdgeInsets.only(top: 8),
               child: Text(bullets ? '• $line' : line, style: text.bodyMedium),
-            ),
-        ],
-      ),
-    );
-  }
-}
-
-class _RecentCards extends StatelessWidget {
-  const _RecentCards({required this.controller});
-
-  final MachineController controller;
-
-  @override
-  Widget build(BuildContext context) {
-    final l10n = context.l10n;
-    final text = Theme.of(context).textTheme;
-    return MagicPanel(
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(l10n.recentlySorted, style: text.titleMedium),
-          const SizedBox(height: 8),
-          for (final card in controller.recentCards)
-            Padding(
-              padding: const EdgeInsets.symmetric(vertical: 4),
-              child: Row(
-                children: [
-                  Icon(
-                    card.cleared ? Icons.cancel_outlined : Icons.style_outlined,
-                    size: 18,
-                    color: MagicColors.gold,
-                  ),
-                  const SizedBox(width: 10),
-                  Expanded(child: Text(l10n.sortedCard(card))),
-                ],
-              ),
             ),
         ],
       ),

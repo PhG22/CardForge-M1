@@ -9,17 +9,21 @@ import 'card_models.dart';
 /// Where the cards come from. The screen only knows this interface, so the
 /// simulated data and the real server are interchangeable.
 abstract class CardRepository {
-  /// Cards that are in the folders. An empty [query] lists all of them;
-  /// otherwise only the cards whose name contains [query]. Throws
+  /// The user's identified cards, grouped by name. An empty [query] lists all
+  /// of them; otherwise only the cards whose name contains [query].
+  /// [runId] keeps only the cards of that run (null = the whole collection);
+  /// [color] keeps only one color group (null = every color). Throws
   /// [CardsException] on failure.
   Future<CardsPage> fetchCards({
     String query = '',
     int offset = 0,
     int limit = 30,
+    String? runId,
+    ColorGroup? color,
   });
 }
 
-/// Real server: `GET /cards?query=...&limit=...&offset=...`
+/// Real server: `GET /cards?query=&run_id=&color=&limit=&offset=`
 /// with `Authorization: Bearer <token>`.
 class ApiCardRepository implements CardRepository {
   ApiCardRepository({
@@ -39,10 +43,14 @@ class ApiCardRepository implements CardRepository {
     String query = '',
     int offset = 0,
     int limit = 30,
+    String? runId,
+    ColorGroup? color,
   }) async {
     final token = await _tokenProvider();
     final uri = Uri.parse('$_baseUrl/cards').replace(queryParameters: {
       if (query.isNotEmpty) 'query': query,
+      if (runId != null) 'run_id': runId,
+      if (color != null) 'color': color.apiValue,
       'limit': '$limit',
       'offset': '$offset',
     });

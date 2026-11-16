@@ -309,7 +309,7 @@ and the CSV export need the server.
 |---|---|
 | `POST /auth/login` `{identifier, password}` | **200** `{access_token}` · **401**. User `MTG_APP_USERNAME` (default `admin`), password `MTG_APP_PASSWORD` (empty = anything is accepted) |
 | `POST /auth/google` | **501**: Google sign-in needs the CardForge server |
-| `GET /cards?query=&limit=&offset=` | `{items: [{id, name, folders: [{folder, quantity}]}], total}` — identified cards of finished runs, by name |
+| `GET /cards?query=&run_id=&color=&limit=&offset=` | Same answer as the CardForge server's `GET /cards` (`items` by name with `quantity` and `color`, `total`, `color_counts`, `not_identified`): identified cards of finished runs, or of one run (`run_id` = the Pi's run uuid), filtered by color group (`W`, `U`, `B`, `R`, `G`, `colorless`, `multicolor`; **422** `INVALID_COLOR`) |
 | `GET /machines/{id}/status` | `{state}`: `idle`, `running` (starting / running / stopping), `stopped` (paused by a fault) |
 | `POST /machines/{id}/start` | Starts a run, or **resumes** a paused one. Waits up to 8 s: a refusal comes back as **409** with `problems`; after 8 s (still homing) the answer is `running` |
 | `POST /machines/{id}/stop` | Normal stop, `{state}` (waits up to 8 s) |

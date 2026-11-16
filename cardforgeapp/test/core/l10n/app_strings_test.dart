@@ -5,6 +5,7 @@ import 'package:cardforge/core/l10n/strings_pt.dart';
 import 'package:cardforge/features/alerts/machine_alert.dart';
 import 'package:cardforge/features/auth/auth_service.dart';
 import 'package:cardforge/features/cards/card_models.dart';
+import 'package:cardforge/features/cards/collection_export.dart';
 import 'package:cardforge/features/machine/api/machine_api_models.dart';
 import 'package:cardforge/features/machine/machine_controller.dart';
 import 'package:cardforge/features/machine/machine_models.dart';
@@ -67,6 +68,13 @@ void main() {
         }
         for (final failure in CardsFailure.values) {
           expect(strings.cardsFailure(failure), isNotEmpty, reason: '$failure');
+        }
+        for (final group in ColorGroup.values) {
+          expect(strings.colorGroupLabel(group), isNotEmpty, reason: '$group');
+        }
+        for (final format in ExportFormat.values) {
+          expect(strings.exportFormatHint(format), isNotEmpty,
+              reason: '$format');
         }
         for (final step in LinkStep.values) {
           expect(strings.linkStep(step), isNotEmpty, reason: '$step');

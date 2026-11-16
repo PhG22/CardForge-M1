@@ -62,9 +62,10 @@ void main() {
     api.emit(const CardSortedEvent(runId: 'run-1', cardNumber: 1, tray: 4));
     api.emit(const CardSortedEvent(runId: 'run-1', cardNumber: 2, tray: 2));
     await deliver(tester);
-    expect(find.text('Recently sorted'), findsOneWidget);
-    expect(find.text('Card #2 → Folder 2'), findsOneWidget);
-    expect(find.text('Card #1 → Folder 4'), findsOneWidget);
+    // RF23: progress only (the count), never the cards themselves.
+    expect(find.text('Cards processed'), findsOneWidget);
+    expect(find.textContaining('Card #'), findsNothing);
+    expect(find.text('Current folder'), findsNothing);
 
     api.emit(const RunFinishedEvent(
       RunInfo(runId: 'run-1', status: RunStatus.completed, cardsProcessed: 2),
@@ -262,7 +263,10 @@ void main() {
     expect(find.textContaining('start a new run'), findsOneWidget);
     expect(find.text('Last run'), findsNothing); // the box replaces it
 
-    await tester.tap(find.widgetWithText(FilledButton, 'Start a new run'));
+    final startNew = find.widgetWithText(FilledButton, 'Start a new run');
+    await tester.ensureVisible(startNew); // below the box on a phone screen
+    await tester.pumpAndSettle();
+    await tester.tap(startNew);
     await tester.pumpAndSettle();
     expect(api.calls, contains('startRun'));
     expect(find.byKey(const ValueKey('unfinished-run-box')), findsNothing);

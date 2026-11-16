@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
 
 import '../../core/app_scope.dart';
 import '../../core/l10n/app_strings.dart';
@@ -7,11 +8,13 @@ import '../../core/widgets/magic_panel.dart';
 import '../../core/widgets/magic_scaffold.dart';
 import '../../core/widgets/server_error_view.dart';
 import '../cards/card_models.dart';
+import '../cards/color_filter_bar.dart';
 import 'run_models.dart';
 import 'runs_screen.dart' show runStatusColor, runStatusIcon;
 
-/// Results of one finished run (RF22): how it ended, the cards per folder,
-/// how many were identified, and every card in the order it was sorted.
+/// Results of one finished run (RF22): how it ended, how many were
+/// identified, the cards per color (tap a color to see only those cards),
+/// and every card in the order it was sorted.
 class RunDetailsScreen extends StatefulWidget {
   const RunDetailsScreen({super.key, required this.runId});
 
@@ -24,6 +27,12 @@ class RunDetailsScreen extends StatefulWidget {
 class _RunDetailsScreenState extends State<RunDetailsScreen> {
   RunDetails? _details;
   CardsFailure? _failure;
+
+  /// The color shown in the list; null = every card.
+  ColorGroup? _color;
+
+  /// Shows only the unidentified and face-down cards.
+  bool _onlyNotIdentified = false;
 
   @override
   void initState() {
@@ -51,6 +60,14 @@ class _RunDetailsScreenState extends State<RunDetailsScreen> {
     _load();
   }
 
+  List<RunCard> _visibleCards(RunDetails details) => [
+        for (final card in details.cards)
+          if (_onlyNotIdentified
+              ? card.outcome != ScanOutcome.identified
+              : _color == null || card.color == _color)
+            card,
+      ];
+
   @override
   Widget build(BuildContext context) {
     final l10n = context.l10n;
@@ -70,7 +87,30 @@ class _RunDetailsScreenState extends State<RunDetailsScreen> {
           children: [
             _Summary(details: details),
             const SizedBox(height: 16),
-            _Folders(details: details),
+            MagicPanel(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(l10n.cardsPerColor,
+                      style: Theme.of(context).textTheme.titleMedium),
+                  const SizedBox(height: 12),
+                  ColorFilterBar(
+                    counts: details.colorCounts,
+                    selected: _color,
+                    onSelected: (group) => setState(() {
+                      _color = group;
+                      _onlyNotIdentified = false;
+                    }),
+                    notIdentified: details.unidentified + details.faceDown,
+                    notIdentifiedSelected: _onlyNotIdentified,
+                    onNotIdentifiedSelected: () => setState(() {
+                      _color = null;
+                      _onlyNotIdentified = true;
+                    }),
+                  ),
+                ],
+              ),
+            ),
             const SizedBox(height: 16),
             Padding(
               padding: const EdgeInsets.only(left: 4, bottom: 8),
@@ -80,12 +120,16 @@ class _RunDetailsScreenState extends State<RunDetailsScreen> {
             if (details.cards.isEmpty)
               Text(l10n.noCardsInRun,
                   style: Theme.of(context).textTheme.bodyMedium)
+            else if (_visibleCards(details).isEmpty)
+              Text(l10n.noCardsFoundTitle,
+                  style: Theme.of(context).textTheme.bodyMedium)
             else
               MagicPanel(
                 padding: const EdgeInsets.symmetric(vertical: 4),
                 child: Column(
                   children: [
-                    for (final card in details.cards) _CardRow(card: card),
+                    for (final card in _visibleCards(details))
+                      _CardRow(card: card),
                   ],
                 ),
               ),
@@ -95,7 +139,23 @@ class _RunDetailsScreenState extends State<RunDetailsScreen> {
     }
     return MagicScaffold(
       showOrbs: false,
-      appBar: AppBar(title: Text(l10n.runResultsTitle)),
+      appBar: AppBar(
+        title: Text(l10n.runResultsTitle),
+        actions: [
+          IconButton(
+            tooltip: l10n.menuMyCards,
+            icon: const Icon(Icons.style_outlined),
+            onPressed: () => context.push(
+                '/cards?run=${Uri.encodeQueryComponent(widget.runId)}'),
+          ),
+          IconButton(
+            tooltip: l10n.exportThisRun,
+            icon: const Icon(Icons.ios_share_rounded),
+            onPressed: () => context.push(
+                '/export?run=${Uri.encodeQueryComponent(widget.runId)}'),
+          ),
+        ],
+      ),
       body: body,
     );
   }
@@ -174,49 +234,6 @@ class _Count extends StatelessWidget {
   }
 }
 
-/// Cards per folder (the per-category counts of RF22).
-class _Folders extends StatelessWidget {
-  const _Folders({required this.details});
-
-  final RunDetails details;
-
-  @override
-  Widget build(BuildContext context) {
-    final l10n = context.l10n;
-    final text = Theme.of(context).textTheme;
-    return MagicPanel(
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(l10n.cardsPerFolder, style: text.titleMedium),
-          const SizedBox(height: 12),
-          Wrap(
-            spacing: 8,
-            runSpacing: 8,
-            children: [
-              for (var folder = 1; folder <= folderCount; folder++)
-                Container(
-                  key: ValueKey('folder-count-$folder'),
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                  decoration: BoxDecoration(
-                    borderRadius: BorderRadius.circular(999),
-                    border: Border.all(color: MagicColors.goldSoft),
-                    color: MagicColors.cardFace,
-                  ),
-                  child: Text(
-                    '${l10n.folderLabel(folder)}  ×${details.folderCounts[folder] ?? 0}',
-                    style: text.bodyMedium,
-                  ),
-                ),
-            ],
-          ),
-        ],
-      ),
-    );
-  }
-}
-
 class _CardRow extends StatelessWidget {
   const _CardRow({required this.card});
 
@@ -238,7 +255,7 @@ class _CardRow extends StatelessWidget {
           identified ? (card.name ?? '?') : l10n.scanOutcome(card.outcome)),
       subtitle: Text(l10n.runCardDetails(card)),
       trailing: identified
-          ? null
+          ? (card.color == null ? null : ColorDot(group: card.color!))
           : Icon(
               card.outcome == ScanOutcome.faceDown
                   ? Icons.flip_to_back_rounded

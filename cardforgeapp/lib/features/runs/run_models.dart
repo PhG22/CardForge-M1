@@ -4,6 +4,7 @@
 // A run reaches the server only after it finished (the machine uploads it), so
 // every run here is completed, cancelled or failed (RF22 / RF23).
 
+import '../cards/card_models.dart' show ColorGroup, colorCountsFromJson;
 import '../machine/api/machine_api_models.dart' show RunStatus;
 
 int? _int(Object? v) => v is num ? v.toInt() : null;
@@ -80,38 +81,50 @@ class RunCard {
     required this.number,
     required this.outcome,
     this.folder,
+    this.color,
     this.name,
     this.setCode,
     this.collectorNumber,
     this.rarity,
   });
 
-  factory RunCard.fromJson(Map<String, Object?> json) => RunCard(
-        number: _int(json['card_number']) ?? 0,
-        outcome: _outcome(json['status']),
-        folder: _int(json['bin']),
-        name: _str(json['card_name']),
-        setCode: _str(json['set_code']),
-        collectorNumber: _str(json['collector_number']),
-        rarity: _str(json['rarity']),
-      );
+  factory RunCard.fromJson(Map<String, Object?> json) {
+    final outcome = _outcome(json['status']);
+    return RunCard(
+      number: _int(json['card_number']) ?? 0,
+      outcome: outcome,
+      folder: _int(json['bin']),
+      color: outcome == ScanOutcome.identified
+          ? ColorGroup.fromApi(json['color']) ??
+              ColorGroup.fromIdentity(_str(json['color_identity']))
+          : null,
+      name: _str(json['card_name']),
+      setCode: _str(json['set_code']),
+      collectorNumber: _str(json['collector_number']),
+      rarity: _str(json['rarity']),
+    );
+  }
 
   final int number;
   final ScanOutcome outcome;
 
-  /// Folder 1-6 it fell into (null on the top-only test bench).
+  /// The physical tray 1-6 it fell into (null on the top-only test bench).
+  /// Kept for maintenance; the app groups cards by [color], not by tray.
   final int? folder;
+
+  /// Its color group; null when it was not identified.
+  final ColorGroup? color;
   final String? name;
   final String? setCode;
   final String? collectorNumber;
   final String? rarity;
 }
 
-/// GET /runs/{id}: per-folder counts and every card (RF22).
+/// GET /runs/{id}: per-color counts and every card (RF22).
 class RunDetails {
   const RunDetails({
     required this.run,
-    required this.folderCounts,
+    required this.colorCounts,
     required this.identified,
     required this.unidentified,
     required this.faceDown,
@@ -119,12 +132,6 @@ class RunDetails {
   });
 
   factory RunDetails.fromJson(Map<String, Object?> json) {
-    final folders = <int, int>{};
-    _map(json['bin_counts']).forEach((key, value) {
-      final folder = int.tryParse(key);
-      final count = _int(value);
-      if (folder != null && count != null) folders[folder] = count;
-    });
     final scans = _map(json['scan_counts']);
     final cards = json['cards'] is List
         ? (json['cards'] as List)
@@ -134,7 +141,9 @@ class RunDetails {
         : const <RunCard>[];
     return RunDetails(
       run: RunSummary.fromJson(_map(json['run'])),
-      folderCounts: Map.unmodifiable(folders),
+      colorCounts: json['color_counts'] is Map
+          ? colorCountsFromJson(json['color_counts'])
+          : countColors(cards),
       identified: _int(scans['identified']) ?? 0,
       unidentified: _int(scans['unidentified']) ?? 0,
       faceDown: _int(scans['face_down']) ?? 0,
@@ -144,12 +153,22 @@ class RunDetails {
 
   final RunSummary run;
 
-  /// Folder (1-6) -> cards that fell into it. Folders with no card are absent.
-  final Map<int, int> folderCounts;
+  /// Identified cards per color group (every group is present, 0 or more).
+  final Map<ColorGroup, int> colorCounts;
   final int identified;
   final int unidentified;
   final int faceDown;
   final List<RunCard> cards;
+}
+
+/// Identified cards per color group (every group present).
+Map<ColorGroup, int> countColors(List<RunCard> cards) {
+  final counts = {for (final g in ColorGroup.values) g: 0};
+  for (final card in cards) {
+    final color = card.color;
+    if (color != null) counts[color] = counts[color]! + 1;
+  }
+  return Map.unmodifiable(counts);
 }
 
 /// One page of GET /runs. [total] counts every run of the user.

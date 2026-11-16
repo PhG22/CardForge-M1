@@ -166,35 +166,55 @@ The user's runs, newest first: `{ "runs": [ { "run_id": 12, "local_uuid", "statu
 ### GET /runs/{run_id}
 
 Results of one of the user's runs (RF22); **404** `RUN_NOT_FOUND` for anyone else's.
+`color_counts` counts the identified cards per color group (see GET /cards); `bin_counts` (per
+tray) is kept for maintenance, the app does not show it.
 ```json
 { "run": { … },
   "bin_counts":  { "1": 1, "4": 2, "6": 1 },
   "scan_counts": { "identified": 3, "unidentified": 0, "face_down": 1 },
-  "cards": [ { "card_number": 1, "status": "identified", "bin": 1, "card_name": "Plains",
+  "color_counts": { "W": 1, "U": 0, "B": 0, "R": 2, "G": 0, "colorless": 0, "multicolor": 0 },
+  "cards": [ { "card_number": 1, "status": "identified", "color": "W", "bin": 1, "card_name": "Plains",
                "set_code": "fin", "collector_number": "1", "color_identity": "W", "rarity": "common",
                "card_identifier": "…", "type_line": "…", "mana_cost": "", "match_method": "…",
                "confidence": 100, "attempts": 1, "scanned_at": "…" } ] }
 ```
 
-### GET /cards?query=&limit=30&offset=0
+### GET /cards?query=&run_id=&color=&limit=30&offset=0
 
-The user's collection (identified cards of all runs) grouped by name, with the copies per
-folder — the app's "Cards in folders" contract:
-`{ "items": [ { "id": "<scryfall id>", "name": "Lightning Bolt", "quantity": 3,
-"folders": [ {"folder": 4, "quantity": 2}, {"folder": 6, "quantity": 1} ] } ], "total": 2 }`.
-`query` matches any part of the name, ignoring case.
+The user's identified cards grouped by name — the app's **My cards** screen. Not split by tray.
 
-### GET /cards/export
+| Parameter | |
+|---|---|
+| `run_id` | Only the cards of that run (`runs.id`). Left out = the whole collection (every run). **404** `RUN_NOT_FOUND` if it is not one of the user's runs |
+| `color` | Only one color group: `W`, `U`, `B`, `R`, `G` (one color), `colorless` (no color) or `multicolor` (two or more). Same groups as the machine's sorting rule (RF20), from the card's color identity. **422** `INVALID_COLOR` otherwise |
+| `query` | Any part of the name, ignoring case |
 
-Every card the user owns, one row per (print, folder, status) with its quantity; identified
-cards first, then unidentified and face-down ones. The **app** turns the rows into the CSV
-file (RF24, RFC 4180), as in the design (DB05).
+```json
+{ "items": [ { "id": "<scryfall id>", "name": "Lightning Bolt", "quantity": 3, "color": "R",
+               "color_identity": "R", "type_line": "Instant", "mana_cost": "{R}", "rarity": "common",
+               "sets": "FIN, M10" } ],
+  "total": 1,
+  "color_counts": { "W": 0, "U": 1, "B": 0, "R": 3, "G": 0, "colorless": 1, "multicolor": 1 },
+  "not_identified": 1 }
+```
+`total` counts the names that match everything. `color_counts` counts the copies per color group
+for the same run and search but **ignoring `color`**, so every filter chip keeps its number.
+`not_identified` = unidentified + face-down cards of the scope (they have no name, so they are
+not in `items`; 0 while searching).
+
+### GET /cards/export?run_id=
+
+Every card the user owns — or only one run's (`run_id`, **404** `RUN_NOT_FOUND` like above) — one
+row per (print, status) with its quantity, not split by tray; identified cards first, then
+unidentified and face-down ones. `color` is the color group (null when not identified). The
+**app** turns the rows into the file (RF24): CSV (RFC 4180) or TXT (`2 Lightning Bolt (M10) 146`
+lines under one `// <Color>` heading per group), as in the design (DB05).
 ```json
 { "rows": [ { "quantity": 2, "name": "Plains", "set_code": "fin", "collector_number": "1",
-              "rarity": "common", "color_identity": "W", "type_line": "Basic Land — Plains",
-              "mana_cost": "", "folder": 1, "status": "identified", "scryfall_id": "…" },
-            { "quantity": 1, "name": null, …, "folder": 6, "status": "face_down", "scryfall_id": null } ],
-  "total_cards": 3 }
+              "rarity": "common", "color": "W", "color_identity": "W", "type_line": "Basic Land — Plains",
+              "mana_cost": "", "status": "identified", "scryfall_id": "…" },
+            { "quantity": 1, "name": null, …, "color": null, "status": "face_down", "scryfall_id": null } ],
+  "total_cards": 3, "run_id": null }
 ```
 
 ### POST /machine/events (machine) — RF38

@@ -388,9 +388,16 @@ def test_app_contract_start_status_stop_and_cards():
 
         page = c.get("/cards", params={"limit": 30, "offset": 0}, headers=h).json()
         assert page["total"] == 2
-        assert page["items"][0] == {"id": "id-Forest", "name": "Forest", "folders": [{"folder": 5, "quantity": 1}]}
-        assert page["items"][1]["folders"] == [{"folder": 1, "quantity": 2}]
+        assert [(i["name"], i["quantity"], i["color"]) for i in page["items"]] == [("Forest", 1, "G"), ("Plains", 2, "W")]
+        assert page["items"][0]["id"] == "id-Forest" and "folders" not in page["items"][0]
+        assert page["color_counts"] == {"W": 2, "U": 0, "B": 0, "R": 0, "G": 1, "colorless": 0, "multicolor": 0}
         assert c.get("/cards", params={"query": "FOR"}, headers=h).json()["total"] == 1
+        white = c.get("/cards", params={"color": "w"}, headers=h).json()
+        assert [i["name"] for i in white["items"]] == ["Plains"] and white["color_counts"]["G"] == 1
+        run_id = c.get("/run/status").json()["run"]["run_id"]
+        assert c.get("/cards", params={"run_id": run_id}, headers=h).json()["total"] == 2
+        assert c.get("/cards", params={"run_id": "other"}, headers=h).json()["total"] == 0
+        assert c.get("/cards", params={"color": "pink"}, headers=h).status_code == 422
 
 
 def test_app_start_refusal_and_resume_from_stopped():

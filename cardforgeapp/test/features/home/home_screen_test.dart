@@ -9,8 +9,8 @@ import '../../helpers/test_helpers.dart';
 const _menuItems = [
   'Machine control',
   'Sorting runs',
-  'Cards in folders',
-  'CSV report',
+  'My cards',
+  'Export cards',
   'Sorting rules',
   'Link machine',
   'Alerts',
@@ -86,23 +86,23 @@ void main() {
     expect(find.text('2026-11-10 19:42'), findsOneWidget); // newest mock run
   });
 
-  testWidgets('"CSV report" in the menu opens the export screen',
+  testWidgets('"Export cards" in the menu opens the export screen',
       (tester) async {
     await pumpApp(tester, initialLocation: '/home');
     await openDrawer(tester);
 
-    await tester.tap(inDrawer('CSV report'));
+    await tester.tap(inDrawer('Export cards'));
     await tester.pumpAndSettle();
 
-    expect(find.text('Export your collection'), findsOneWidget);
+    expect(find.text('Export your cards'), findsOneWidget);
   });
 
-  testWidgets('"Cards in folders" in the menu opens the cards screen',
+  testWidgets('"My cards" in the menu opens the cards screen',
       (tester) async {
     await pumpApp(tester, initialLocation: '/home');
     await openDrawer(tester);
 
-    await tester.tap(inDrawer('Cards in folders'));
+    await tester.tap(inDrawer('My cards'));
     await tester.pumpAndSettle();
 
     expect(find.text('Search a card by name'), findsOneWidget);
