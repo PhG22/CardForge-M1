@@ -46,6 +46,7 @@ within 8 s instead.
 | 409 | `CROP_NOT_CALIBRATED` | `vision.toml` `[crop] mode = "fixed"` without corners: save the fixed crop on `/calibration` |
 | 409 | `RUN_ACTIVE` | A run is already starting / running / stopping / paused |
 | 409 | `HOMING` | The base is still homing after the service started (RF08): try again in a few seconds |
+| 409 | `CARD_DB_UPDATING` | The service just started and is checking Scryfall for new cards, or downloading them (status LED blinking white): try again when the LED turns green |
 | 409 | `START_CANCELLED` | `/run/stop` was called during the start checks |
 | 503 | `MODULE_OFFLINE` | A1 or A2 did not answer (`module` says which) |
 | 500 | `HOME_TIMEOUT`, `PROTOCOL_ERROR`, … | Hardware fault during preparation |
@@ -114,18 +115,33 @@ transaction, right after the drop. Results are only given once the run is over (
 | Call | Answer |
 |---|---|
 | `GET /runs?limit=50&offset=0` | `{ "runs": [run, …] }`, newest first |
-| `GET /runs/{run_id}` | **200** `{ "run", "bin_counts", "scan_counts", "cards" }` · **409** while the run is running or paused · **404** unknown id |
+| `GET /runs/{run_id}` | **200** `{ "run", "bin_counts", "scan_counts", "benchmark", "cards" }` · **409** while the run is running or paused · **404** unknown id |
 | `GET /inventory/export.csv` | Every card of every finished run, CSV (RFC 4180, UTF-8, CRLF) |
 
 ```json
 { "run": { "run_id": "…", "status": "completed", "cards_processed": 5, "successful_scans": 3, "failed_scans": 2, … },
   "bin_counts": { "1": 1, "5": 1, "6": 3 },
   "scan_counts": { "identified": 3, "unidentified": 1, "face_down": 1 },
+  "benchmark": { "general":   { "identify_s": { "n": 5, "mean": 2.1, "median": 1.8, "mode": 1.8, "mode_count": 2,
+                                                 "min": 1.6, "max": 4.9 },
+                                 "total_s":    { … } },
+                 "first_try": { "identify_s": { … }, "total_s": { … } } },
   "cards": [ { "card_number": 1, "bin": 1, "scan_status": "identified", "card_name": "Plains",
                "set_code": "FIN", "collector_number": "295", "color_identity": "W",
                "card_identifier": "<scryfall print id>", "match_method": "SET_NUMBER",
-               "confidence": 100, "attempts": 1, "scanned_at": "…" }, … ] }
+               "confidence": 100, "attempts": 1, "scanned_at": "…",
+               "identify_s": 1.8, "total_s": 6.9, "first_try": 1, "fallbacks": "" }, … ] }
 ```
+
+`benchmark` (null for runs from before it existed or with no measured card) — card times of the run, in seconds:
+`identify_s` = first photo → decision, retries included; `total_s` = start of the feed → end of the drop.
+`general` = every card; `first_try` = only the cards identified (or found face down) at the first capture with the
+minimum OCR and fed at the first pull. `mode` = most common time rounded to 0.1 s (tie: the shortest). Per card,
+`first_try` is 1/0 (null = not measured, e.g. the card cleared out by a Stop) and `fallbacks` says why a card was
+not first-try: `retry`, `orientation_reread`, `layout_ocr`, `face_down_after_identify`, `not_identified`,
+`vision_error`, `feed_retry`. The same figures are written to `benchmarks/` on the Pi, and the cards whose
+identification took longer than `MTG_SLOW_CARD_S` (3 s) to `cards_to_improve/` with their pictures
+([PASSO_A_PASSO.md](PASSO_A_PASSO.md), part E4/E5).
 
 These are the **machine's** views (every run made on this Pi, any user). The app reads
 the signed-in user's runs, collection and export from the CardForge server instead
@@ -207,6 +223,20 @@ or to catch up after the WebSocket was disconnected.
 ```
 `state`: `idle` · `starting` · `running` · `stopping` · `paused` · `manual` (a base test move, or the homing
 right after the service starts: with `MTG_HOME_ON_POWER_ON=1`, the default, the base homes by itself at power-on, RF08)
+`startup`: `null` once the machine is ready; right after the service starts, `card_db` (checking Scryfall for new
+cards and, if there are any, updating `data/cards.db`; Start answers 409 `CARD_DB_UPDATING`) and then `homing`.
+`card_db` (`null` when the check is off, e.g. with the simulator) — the card database check at power-on:
+```json
+"card_db": { "phase": "done", "progress": null, "result": "updated", "reason": "new cards or sets on Scryfall",
+             "message": "updated (110960 prints, 66442 names, …)", "seconds": 212.4,
+             "finished_at": "2026-11-17T18:26:13+00:00",
+             "local": { "bulk_updated_at": "2026-11-17T10:06:30.623+00:00", "printed_langs": "pt",
+                        "schema_version": "2", "localized_names": "26041" } }
+```
+`phase`: `pending` · `waiting_network` (boot: Wi-Fi configured, not connected yet; up to `MTG_CARD_DB_UPDATE_WAIT_S`)
+· `checking` · `updating` (`progress`: `{"stage": "all_cards", "fraction": 0.42}`) · `done`.
+`result`: `up_to_date` · `updated` · `offline` (no network) · `unreachable` (no internet / Scryfall down) ·
+`failed` (see the log). In every case but `updated` the machine runs with the local `data/cards.db`.
 `run.status`: `running` · `paused` · `completed` · `failed` · `cancelled`.
 When it is `paused` or `failed`, `run.error_code` and `run.message` say why.
 `run.current_tray` is `null` while the run is active (RF23).
@@ -236,14 +266,19 @@ into "Start a new run", until the next run starts.
 "timing": { "cards": 50, "seconds_per_card": 8.31, "cards_per_min": 7.2,
             "nominal_cards": 47, "nominal_seconds_per_card": 8.02, "nominal_cards_per_min": 7.5,
             "slowest_capture_s": 0.62,
-            "last_card": { "card": 50, "feed_s": 1.1, "capture_s": 0.41, "identify_s": 4.4,
-                           "move_s": 1.6, "drop_s": 1.2, "total_s": 8.3 } }
+            "last_card": { "card": 50, "feed_s": 1.1, "feed_attempt": 1, "capture_s": 0.41, "identify_s": 4.4,
+                           "move_s": 1.6, "drop_s": 1.2, "total_s": 8.3 },
+            "first_try_cards": 44,
+            "benchmark": { "cards": 50, "first_try_cards": 44, "first_try_share": 0.88,
+                           "fallbacks": { "orientation_reread": 4, "retry": 3, "not_identified": 1 },
+                           "general": { … }, "first_try": { … } } }
 ```
 `nominal_*` = only the cards identified at the first capture (no retry): what RNF22 measures
 (≥ 7 cards/min, ≤ 8.6 s per card). A card's time runs from the start of its feed to the end
 of its drop, so a pause does not count. `capture_s` = the card held still until its photo is
 taken (RF02 / RF15, ≤ 2.0 s; the log warns above it). The end-of-run message adds the cards
-per minute.
+per minute. `first_try_cards` / `benchmark`: see `GET /runs/{run_id}` above (`benchmark` is null before the
+first card of a run).
 
 ## WS /ws/events — notifications
 
@@ -280,8 +315,8 @@ Returns the live STATUS of both modules, for a debug or maintenance screen:
 
 ## GET /health
 
-Returns `{ "ok": true, "simulate": false, "bottom_enabled": true, "server": true }`
-(`server`: a CardForge server is configured).
+Returns `{ "ok": true, "simulate": false, "bottom_enabled": true, "server": true, "startup": null, "card_db": {…} }`
+(`server`: a CardForge server is configured; `startup` and `card_db`: as in `GET /run/status`).
 
 ## Top-only mode (`--top-only` / `MTG_BOTTOM_ENABLED=0`)
 

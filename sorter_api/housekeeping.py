@@ -5,11 +5,12 @@
   debugged later from the real machine's photos. Never deleted automatically.
 * cleanup_after_run(): at the end of every run, delete temporary files (pictures and
   reports from the bench commands, leftovers of interrupted downloads/captures) and
-  shrink run.db's write-ahead log. Project files, data/cards.db, data/run.db and
-  calibragem_recorte/ are never touched.
+  shrink run.db's write-ahead log. Project files, data/cards.db, data/run.db,
+  calibragem_recorte/, cards_to_improve/ and benchmarks/ are never touched.
 
-The run loop itself keeps the card pictures in memory only: nothing is written to
-disk per card except its row in run.db.
+The run loop keeps the card pictures in memory only: nothing is written to disk per
+card except its row in run.db, and the pictures of the cards that took longer than
+slow_card_s to identify (cards_to_improve/, slow_cards.py).
 """
 
 from __future__ import annotations
@@ -79,14 +80,15 @@ class CropCaptureLog:
 
 
 # Never deleted by the cleanup, whatever the settings say.
-PROTECTED = ("calibragem_recorte", "data/cards.db", "data/run.db", "vision.toml")
+PROTECTED = ("calibragem_recorte", "cards_to_improve", "benchmarks", "data/cards.db", "data/run.db", "vision.toml")
 
 
-def cleanup_after_run(dirs: list[str], root: Path = PROJECT_ROOT, store=None) -> dict:
+def cleanup_after_run(dirs: list[str], root: Path = PROJECT_ROOT, store=None, keep: tuple = ()) -> dict:
     """Delete the contents of the temporary folders (inside the project only) and stale *.tmp files
-    in data/, then compact run.db's journal. Returns what was freed (for the log)."""
+    in data/, then compact run.db's journal. keep: more paths never to delete (on top of PROTECTED).
+    Returns what was freed (for the log)."""
     root = root.resolve()
-    protected = [(root / p).resolve() for p in PROTECTED]
+    protected = [project_path(p, root).resolve() for p in (*PROTECTED, *(k for k in keep if k))]
     freed, files = 0, 0
 
     def remove(path: Path) -> None:

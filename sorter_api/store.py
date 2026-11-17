@@ -74,9 +74,29 @@ CREATE TABLE IF NOT EXISTS local_cards (
     scanned_at       TEXT NOT NULL,
     error_message    TEXT,
     owner_id         INTEGER,                   -- = local_run.started_by (PostgreSQL users.id)
+    identify_s       REAL,                      -- first photo -> decision, retries included (benchmark.py)
+    total_s          REAL,                      -- start of the feed -> end of the drop
+    first_try        INTEGER,                   -- 1 = read at the first try, no failsafe; NULL = not measured
+    fallbacks        TEXT,                      -- why not first-try: "retry orientation_reread ..."
     UNIQUE (run_uuid, card_number)
 );
 CREATE INDEX IF NOT EXISTS idx_local_cards_name ON local_cards(card_name);
+
+-- Card-time statistics of each finished run (benchmark.py): groups general / first_try,
+-- times identify_s / total_s, in seconds.
+CREATE TABLE IF NOT EXISTS run_benchmark (
+    run_uuid    TEXT NOT NULL REFERENCES local_run(local_uuid),
+    grp         TEXT NOT NULL,                  -- general | first_try
+    metric      TEXT NOT NULL,                  -- identify_s | total_s
+    n           INTEGER NOT NULL,
+    mean        REAL,
+    median      REAL,
+    mode        REAL,                           -- most common time rounded to 0.1 s (tie: the shortest)
+    mode_count  INTEGER,
+    min         REAL,
+    max         REAL,
+    PRIMARY KEY (run_uuid, grp, metric)
+);
 
 CREATE TABLE IF NOT EXISTS app_token (
     token      TEXT PRIMARY KEY,
@@ -86,11 +106,12 @@ CREATE TABLE IF NOT EXISTS app_token (
 """
 
 # Columns added after the first version of run.db: added in place to an existing file.
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 ADDED_COLUMNS = {
     "local_run": {"started_by": "INTEGER", "owner_name": "TEXT", "remote_run_id": "INTEGER",
                   "last_sync_error": "TEXT", "synced_at": "TEXT", "next_sync_at": "TEXT"},
-    "local_cards": {"owner_id": "INTEGER"},
+    "local_cards": {"owner_id": "INTEGER", "identify_s": "REAL", "total_s": "REAL", "first_try": "INTEGER",
+                    "fallbacks": "TEXT"},
 }
 # Indexes on those columns: created after the columns exist.
 LATE_INDEXES = """
@@ -105,7 +126,8 @@ SYNC_CARD_COLUMNS = ("card_number", "scan_status", "bin", "card_identifier", "ca
                      "confidence", "attempts", "scanned_at", "error_message")
 CARD_COLUMNS = ("card_identifier", "scan_status", "bin", "match_method", "confidence", "attempts",
                 "card_name", "set_code", "collector_number", "color_identity", "type_line", "mana_cost",
-                "rarity", "error_message")
+                "rarity", "error_message", "identify_s", "total_s", "first_try", "fallbacks")
+BENCHMARK_STATS = ("n", "mean", "median", "mode", "mode_count", "min", "max")
 
 
 @dataclass(frozen=True)
@@ -143,6 +165,10 @@ class ScanRecord:
     mana_cost: str | None = None
     rarity: str | None = None
     error_message: str | None = None
+    identify_s: float | None = None        # card times (benchmark.py); None = not measured
+    total_s: float | None = None
+    first_try: int | None = None
+    fallbacks: str | None = None
 
 
 class RunStore:
@@ -328,7 +354,37 @@ class RunStore:
             counts[key] = counts.get(key, 0) + 1
         statuses = {s: sum(c["scan_status"] == s for c in cards) for s in ("identified", "unidentified", "face_down")}
         return {"run": run, "bin_counts": counts, "scan_counts": statuses,
-                "cards": [_card_dict(c) for c in cards]}
+                "benchmark": self.get_benchmark(run_id), "cards": [_card_dict(c) for c in cards]}
+
+    # ------------------------------------------------------- benchmark
+
+    def save_benchmark(self, run_id: str, bench: dict) -> None:
+        """benchmark.run_benchmark() of a finished run (replaces a previous one of the same run)."""
+        rows = [(run_id, group, metric, *(bench[group][metric][k] for k in BENCHMARK_STATS))
+                for group in ("general", "first_try") for metric in ("identify_s", "total_s")]
+        with self._lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                self._conn.execute("DELETE FROM run_benchmark WHERE run_uuid = ?", (run_id,))
+                self._conn.executemany(
+                    f"INSERT INTO run_benchmark (run_uuid, grp, metric, {', '.join(BENCHMARK_STATS)}) "
+                    f"VALUES (?, ?, ?, {', '.join('?' * len(BENCHMARK_STATS))})", rows)
+                self._conn.execute("COMMIT")
+            except Exception:
+                self._conn.execute("ROLLBACK")
+                raise
+
+    def get_benchmark(self, run_id: str) -> dict | None:
+        """{"general": {"identify_s": {n, mean, median, mode, mode_count, min, max}, "total_s": ...},
+        "first_try": ...} or None (run without measured cards, or from before the benchmark)."""
+        with self._lock:
+            rows = self._conn.execute("SELECT * FROM run_benchmark WHERE run_uuid = ?", (run_id,)).fetchall()
+        if not rows:
+            return None
+        bench: dict = {}
+        for r in rows:
+            bench.setdefault(r["grp"], {})[r["metric"]] = {k: r[k] for k in BENCHMARK_STATS}
+        return bench
 
     # ------------------------------------------------------- inventory
 

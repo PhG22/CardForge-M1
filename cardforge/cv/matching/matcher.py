@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Optional
+from typing import Iterable, Optional
 
 from rapidfuzz import fuzz
 
@@ -34,6 +34,7 @@ class MatchResult:
     needs_review: bool = False
     name_key: Optional[str] = None
     name_score: int = 0
+    printed_name_match: bool = False   # o título bateu com o nome impresso traduzido (ex.: pt), não o inglês
 
 
 class CardMatcher:
@@ -76,14 +77,17 @@ class CardMatcher:
                         return printed
         return None
 
-    def cross_check(self, ocr_name: str, official_name: str) -> bool:
-        """O nome lido confirma a impressão encontrada por set + número?"""
-        a, b = compact(ocr_name), compact(official_name)
+    def cross_check(self, ocr_name: str, official_name: str, printed_names: Iterable[str] = ()) -> bool:
+        """
+        O nome lido confirma a impressão encontrada por set + número? Vale o nome inglês ou o nome
+        impresso dessa mesma impressão noutro idioma ("Chicote do Espadachim" = LCI 283 em pt).
+        """
+        a = compact(ocr_name)
         if not a:
             return True  # nada lido no título: não há como contradizer
         # Cartas de várias faces: basta bater com uma face.
-        faces = [compact(f) for f in official_name.split(" // ")] + [b]
-        return any(a in f or f in a or fuzz.ratio(a, f) >= self.cfg.cross_check_cutoff for f in faces if f)
+        names = {compact(n) for name in (official_name, *printed_names) for n in (name, *name.split(" // "))}
+        return any(a in f or f in a or fuzz.ratio(a, f) >= self.cfg.cross_check_cutoff for f in names if f)
 
     def match(self, fields: ExtractedFields, info: CollectorInfo, layout: CardLayout) -> MatchResult:
         set_query = info.set_code.lower()
@@ -97,6 +101,10 @@ class CardMatcher:
         if printed is not None:
             if self.cross_check(fields.name, printed.name):
                 return MatchResult(printed, MatchMethod.SET_NUMBER, 100, False, name_key, name_score)
+            if printed.printed_names and self.cross_check(fields.name, "", printed.printed_names):
+                # Título em português (ou outro idioma do cards.db) desta mesma impressão.
+                return MatchResult(printed, MatchMethod.SET_NUMBER, 100, False, name_key, name_score,
+                                   printed_name_match=True)
             if name_key:
                 by_name = self.repo.find_latest_print_by_name(name_key, set_query if info.has_set else "")
                 if by_name is not None and by_name.name == printed.name:

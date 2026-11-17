@@ -71,6 +71,11 @@ class Settings:
     identify_delay_s: float = 2.0       # vision=off only
     light_base_level: int = 60          # chamber LEDs, % (needs the optional LIGHT command on A1)
     light_step: int = 20                # added before each retry (RNF09)
+    # Card database (data/cards.db) check when the service starts (card_db_update.py): updated from
+    # Scryfall before the machine is ready when there are new cards; no internet = the local one.
+    # auto = with the camera on the real machine (not with --simulate); on; off.
+    card_db_update: str = "auto"
+    card_db_update_wait_s: float = 30.0  # at boot: how long to wait for a configured Wi-Fi to connect
 
     # --- RGB status LED on the Pi GPIO (status_led.py)
     led: str = "auto"                   # auto = GPIO on the Pi, in memory with --simulate; gpio; off
@@ -81,6 +86,12 @@ class Settings:
     project_root: str = ""              # empty = the folder that holds sorter_api/
     crop_captures_dir: str = "calibragem_recorte"   # fixed-crop calibration pictures, kept for debugging
     cleanup_dirs: str = "data/tmp,capturas,relatorios"  # emptied at the end of every run ("" = no cleanup)
+    # Cards whose identification (photos + vision, retries included) takes longer than this go to
+    # cards_to_improve/ with their pictures and results (slow_cards.py). 0 = off.
+    slow_card_s: float = 3.0
+    slow_cards_dir: str = "cards_to_improve"
+    slow_cards_max_mb: float = 1000.0   # above this the slow cards are kept without pictures
+    benchmark_dir: str = "benchmarks"   # card-time statistics of every run (benchmark.py)
 
     # --- runs
     max_cards_per_run: int = MAX_CARDS_PER_RUN   # RNF27; lower only for bench tests, never above 250

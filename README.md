@@ -27,9 +27,18 @@ App mobile (Flutter) ──HTTP──► Raspberry Pi: python -m sorter_api ─�
 
 ## O main loop
 
-**Ao ligar** (RF08): assim que o serviço sobe, a base faz o homing sozinha, em segundo plano (o estado fica
-`manual` enquanto isso; um Start nesse meio-tempo é recusado com `HOMING`). Se o A2 não responder, o serviço sobe
-mesmo assim e o Start faz o homing. `MTG_HOME_ON_POWER_ON=0` desliga isso (bancada).
+**Ao ligar**, em segundo plano (a API já responde; o LED fica branco até o fim):
+1. **Base de cartas**: o serviço pergunta à Scryfall se há cartas novas (2 requisições pequenas,
+   [`card_db_update.py`](sorter_api/card_db_update.py)). Se há, atualiza o `data/cards.db` **antes de liberar a
+   máquina**, com o LED **branco piscando** (no Pi 3B, alguns minutos; o banco antigo segue em uso até o novo
+   ficar pronto). Atualizado, sem internet ou Scryfall fora do ar: segue com o banco local. Um Start nesse
+   meio-tempo é recusado com `CARD_DB_UPDATING`. No boot, com Wi-Fi configurado mas ainda conectando, espera
+   até 30 s por ele (`MTG_CARD_DB_UPDATE_WAIT_S`); sem Wi-Fi configurado, não espera. "Cartas novas" = edição
+   nova ou cartas novas numa edição (a Scryfall regera o arquivo todo dia por causa de preços: isso não conta),
+   ou o banco com mais de 30 dias.
+2. **Homing** (RF08): a base faz o homing sozinha (o estado fica `manual` enquanto isso; um Start nesse
+   meio-tempo é recusado com `HOMING`). Se o A2 não responder, o serviço sobe mesmo assim e o Start faz o homing.
+   `MTG_HOME_ON_POWER_ON=0` desliga isso (bancada).
 
 **Homing em até 5 s** (RF08): o Pi guarda a última posição da base (`data/base_position.json`) e, ao fim de cada
 run, estaciona a base no bin 3 (em cima da fita). Com a posição conhecida, o `a2_base.ino` 1.1 vai rápido até logo
@@ -73,19 +82,24 @@ Firebase: só o servidor de vocês.
 
 **Ritmo** (RNF22): `GET /run/status` traz `timing`: cartas por minuto da run, segundos por carta, o mesmo só das
 cartas sem retentativa (o número que o RNF22 cobra) e a foto mais lenta (RF02). Cada carta também gera uma linha
-no log com o tempo de cada fase (alimentar, foto, identificar, girar, soltar).
+no log com o tempo de cada fase (alimentar, foto, identificar, girar, soltar). **Ao fim de cada run** o serviço
+grava o benchmark do tempo por carta — média, mediana, moda, mínimo e máximo, de todas as cartas e só das lidas de
+primeira, sem failsafe (`benchmarks/`, `run.db`, `GET /runs/{id}`) — e guarda em `cards_to_improve/` a foto
+original, o recorte anotado, o resultado e os tempos de cada carta que levou mais de 3 s para ser identificada
+([PASSO_A_PASSO](docs/PASSO_A_PASSO.md), parte E4/E5).
 
 **Stop**: termina a carta em andamento — se já foi identificada vai para o seu bin, senão para o bin 6 — registra,
 fecha o flap e para os motores. Nenhuma carta fica na máquina.
 
 **Armazenamento**: as fotos de cada carta ficam só na memória; no cartão SD vai apenas a linha da carta em
-`run.db` (SQLite, uma transação por carta). **Ao fim da run** (pilha vazia, Stop, 250 cartas ou falha), o
+`run.db` (SQLite, uma transação por carta) — e as fotos das cartas lentas, em `cards_to_improve/`. **Ao fim da run** (pilha vazia, Stop, 250 cartas ou falha), o
 `SyncWorker` ([`sync.py`](sorter_api/sync.py)) envia a run com todas as cartas ao servidor, que grava tudo no
 PostgreSQL em uma transação; o envio é idempotente (`local_uuid`) e, se o servidor estiver fora do ar, é
 repetido com espera crescente (10 s, 20 s, 40 s… até 15 min), também depois de religar o Pi. Nada durante a
 run depende da rede. Ao fim de cada run, o serviço esvazia as pastas temporárias (`data/tmp`, `capturas`, `relatorios` — as
 saídas dos comandos de bancada), apaga downloads interrompidos (`data/*.tmp`) e compacta o journal do `run.db`. O
-código, o `vision.toml`, o `cards.db`, o `run.db` e as fotos de `calibragem_recorte/` nunca são apagados.
+código, o `vision.toml`, o `cards.db`, o `run.db`, as fotos de `calibragem_recorte/`, `cards_to_improve/` e
+`benchmarks/` nunca são apagados.
 
 **Resultados** (RF22): só depois do fim da run. O app lê do servidor, com o login do usuário: histórico em
 `GET /runs`, resultado em `GET /runs/{id}` (contagem por cor + todas as cartas), coleção em `GET /cards` (a coleção
@@ -104,10 +118,15 @@ o app monta o arquivo CSV ou TXT, RF24 / RFC 4180). No próprio Pi,
    python3 -m venv --system-site-packages .venv
    .venv/bin/pip install -r requirements.txt
    ```
-3. **Banco de cartas** (uma vez, precisa de internet; depois tudo funciona offline):
+3. **Banco de cartas**: o `data/cards.db` do repositório já vem pronto, com os nomes em inglês e em português, e o
+   serviço o atualiza sozinho ao ligar quando há cartas novas (acima). Para atualizar à mão (precisa de internet;
+   ~480 MB da Scryfall, alguns minutos no Pi; depois tudo funciona offline):
    ```bash
    .venv/bin/python -m cardforge.cv sync
    ```
+   Os nomes em português vêm do bulk `all_cards` (campos `lang` e `printed_name`), lido em streaming sem ir para o
+   disco; com eles o título lido numa carta brasileira confirma a carta como o nome inglês
+   ([docs/VISION.md](docs/VISION.md)). `--langs ""` = só inglês.
 4. **Firmware**: grave `firmware/a1_top/a1_top.ino` no Arduino de cima e `firmware/a2_base/a2_base.ino` no da base
    (detalhes de pinos em [docs/PROTOCOL.md](docs/PROTOCOL.md)).
 5. **Teste manual**:
@@ -216,6 +235,11 @@ As da comunicação RS-485 e da mecânica estão em [`sorter_api/config.py`](sor
 | `MTG_APP_USERNAME` / `MTG_APP_PASSWORD` | `admin` / *(vazia)* | Só **sem** servidor: login do app no próprio Pi. Senha vazia = qualquer credencial é aceita (só para testes) |
 | `MTG_CROP_CAPTURES_DIR` | `calibragem_recorte` | Onde ficam as fotos usadas para calibrar o recorte fixo (nunca apagadas automaticamente) |
 | `MTG_CLEANUP_DIRS` | `data/tmp,capturas,relatorios` | Pastas esvaziadas ao fim de cada run (`""` = não limpar) |
+| `MTG_CARD_DB_UPDATE` | `auto` | Confere a base de cartas na Scryfall ao ligar e atualiza antes de liberar a máquina se houver cartas novas: `auto` (com a câmera, fora do `--simulate`), `on`, `off` |
+| `MTG_CARD_DB_UPDATE_WAIT_S` | `30` | No boot, quanto esperar por um Wi-Fi configurado que ainda está conectando antes de desistir da checagem |
+| `MTG_SLOW_CARD_S` | `3.0` | Cartas cuja identificação (fotos + visão, com as novas capturas) passa disso vão para `cards_to_improve/` com fotos e resultados (`0` = desliga) |
+| `MTG_SLOW_CARDS_DIR` / `MTG_SLOW_CARDS_MAX_MB` | `cards_to_improve` / `1000` | Pasta das cartas lentas / acima disso as cartas lentas ficam só com o `resultado.json` |
+| `MTG_BENCHMARK_DIR` | `benchmarks` | Benchmark do tempo por carta de cada run (CSV com todas as runs + um JSON por run) |
 | `MTG_LED` | `auto` | LED de status no GPIO do Pi: `auto` (GPIO no Pi, em memória com `--simulate`), `gpio`, `off` |
 | `MTG_LED_PINS` | `17,22,27` | GPIO (BCM) do vermelho, verde e azul = pinos físicos 11, 15 e 13; catodo comum no pino 9 |
 | `MTG_NETWORK_MONITOR` | `auto` | Mostra Setup / No Network (azul) consultando o NetworkManager (`nmcli`); `on` / `off` |
@@ -228,7 +252,8 @@ seguindo o Apêndice B dos requisitos:
 
 | Estado | LED | Quando |
 |---|---|---|
-| Starting | branco fixo | do momento em que o Pi é ligado até o serviço estar no ar e a base homed (RF08). Acrescentado ao Apêndice B: os requisitos não definem um estado de inicialização |
+| Starting | branco fixo | do momento em que o Pi é ligado até o serviço estar no ar, a base de cartas conferida e a base homed (RF08). Acrescentado ao Apêndice B: os requisitos não definem um estado de inicialização |
+| Updating | branco piscando 1 Hz | ao ligar, enquanto a base de cartas (`data/cards.db`) é atualizada pela Scryfall. Acrescentado ao Apêndice B |
 | Idle | verde fixo | ligado e pronto (Wi-Fi conectado, homing feito), run terminada |
 | Running | verde piscando 1 Hz | run em andamento |
 | Feed Jam | vermelho fixo | run pausada por falha (atolamento, carta presa, base); também módulo sem resposta |
@@ -239,8 +264,9 @@ seguindo o Apêndice B dos requisitos:
 
 Os estados de rede (azul) só aparecem com a máquina parada; o estado da máquina tem prioridade.
 
-Sequência ao ligar: **branco** (o Pi está iniciando) → **azul fixo** (pronto para parear pelo app e configurar
-o Wi-Fi) · **azul piscando** (Wi-Fi configurado mas fora de alcance) · **verde** (Wi-Fi conectado, pronto para Start).
+Sequência ao ligar: **branco** (o Pi está iniciando; **branco piscando** enquanto baixa uma atualização da base
+de cartas) → **azul fixo** (pronto para parear pelo app e configurar o Wi-Fi) · **azul piscando** (Wi-Fi
+configurado mas fora de alcance) · **verde** (Wi-Fi conectado, pronto para Start).
 Depois da configuração pelo Bluetooth o LED passa de azul para verde em até ~2 s, sem reiniciar.
 
 Para o branco aparecer já no primeiro segundo, antes do Linux subir, acrescente em `/boot/firmware/config.txt`
@@ -368,7 +394,10 @@ sorter_api/                 main loop + API (FastAPI, uvicorn)
   app_compat.py             rotas que o app mobile usa
   calibration_api.py        calibração da câmera pela rede (+ static/calibration.html)
   status_led.py             LED de status RGB no GPIO do Pi e estado da rede
+  card_db_update.py         ao ligar: confere/atualiza o cards.db pela Scryfall antes de liberar a máquina
   housekeeping.py           fotos da calibração do recorte e limpeza do SD ao fim de cada run
+  benchmark.py              tempo por carta de cada run: média, mediana, moda, mín., máx. (geral e first-try)
+  slow_cards.py             cards_to_improve/: fotos e resultados das cartas que levaram > 3 s
   api.py, events.py         REST + WebSocket
   modules.py, bus.py, protocol.py, sim.py   A1/A2, RS-485, simulador
 cardforge_server/           servidor: cadastro/login, POST /sync/runs, runs, coleção, exportação (FastAPI + PostgreSQL)
@@ -379,9 +408,14 @@ cardforge/                  visão computacional (cv; recorte fixo em cv/detecti
 firmware/                   a1_top, a2_base e testes de bancada da base
 deploy/                     sorter-api.service, cardforge-server.service, docker-compose.postgres.yml
 docs/                       PASSO_A_PASSO.md, API.md, SERVER.md, PROTOCOL.md, VISION.md
+CHANGELOG.md                histórico das mudanças, por data
 tests/                      test_api, test_protocol, test_integration, test_vision, test_calibration,
-                            test_fixed_crop, test_status_led, test_housekeeping, test_server, test_sync
+                            test_fixed_crop, test_status_led, test_housekeeping, test_server, test_sync,
+                            test_printed_names (nomes em português), test_run_metrics (benchmark, cards_to_improve),
+                            test_card_db_update (atualização da base de cartas ao ligar)
 deprecated/                 prova de conceito da visão (só referência, pode ser apagada)
 calibragem_recorte/         fotos da calibração do recorte (criada pelo serviço; fora do git)
+cards_to_improve/           cartas lentas de cada run, para estudo (criada pelo serviço; fora do git)
+benchmarks/                 benchmark do tempo por carta de cada run (criada pelo serviço; fora do git)
 vision.toml, data/cards.db  configuração e banco de cartas da visão
 ```

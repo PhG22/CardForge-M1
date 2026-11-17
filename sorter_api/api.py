@@ -4,7 +4,7 @@
     POST /run/stop        finish the card in progress, close the flap, stop the motors
                           (?immediate=true: stop the motors right now)
     POST /run/resume      continue a run paused by a fault (re-homes the base first)
-    GET  /run/status      current state + current/last run
+    GET  /run/status      current state + current/last run (+ card database check at power-on)
     GET  /runs            past runs (run.db)
     GET  /runs/{id}       results of a finished run: per-bin counts + every card (RF22)
     GET  /inventory/export.csv   every sorted card, RFC 4180 CSV (RF24)
@@ -44,6 +44,7 @@ from .bus import BusError, GpioDirectionPin, RS485Bus, RtsDirectionPin, SerialPo
 from .config import Settings
 from .app_compat import create_app_router
 from .calibration_api import create_calibration_router
+from .card_db_update import CardDbUpdater
 from .controller import (HardwareFault, ManualRefused, NoActiveRun, NotPaused, SorterController, StartRefused,
                          _describe_fault)
 from .bus import ModuleError, ModuleNotResponding
@@ -132,6 +133,18 @@ def build_identifier(settings: Settings, vision=None):
                             settings.light_step), vision
 
 
+def build_card_db_updater(settings: Settings, vision_module, status_led, monitor) -> CardDbUpdater | None:
+    """MTG_CARD_DB_UPDATE: check (and update) data/cards.db when the service starts.
+    auto = on the real machine with the camera (not with --simulate); on; off."""
+    mode = settings.card_db_update
+    if mode == "off" or vision_module is None or not hasattr(vision_module, "update_database"):
+        return None
+    if mode == "auto" and (settings.simulate or settings.vision != "camera"):
+        return None
+    return CardDbUpdater(vision_module, status_led, settings.card_db_update_wait_s,
+                         network_probe=monitor.probe if monitor is not None else None)
+
+
 def create_app(settings: Settings | None = None, serial_port: SerialPort | None = None,
                vision=None, server_client: ServerClient | None = None) -> FastAPI:
     """vision: a cardforge.cv.VisionModule (or test double) to use instead of MTG_VISION.
@@ -196,6 +209,9 @@ def create_app(settings: Settings | None = None, serial_port: SerialPort | None 
                                       status_led, on_run_finished=worker.notify if worker else None)
         if isinstance(identifier, VisionIdentifier):
             identifier.set_light = controller.set_chamber_light
+        # Card database: checked (and updated if there are new cards) before the machine is ready
+        updater = build_card_db_updater(settings, vision_module, status_led, monitor)
+        app.state.card_db_updater = updater
         app.state.controller = controller
         app.state.events = hub
         app.state.sim_world = sim_world
@@ -210,7 +226,7 @@ def create_app(settings: Settings | None = None, serial_port: SerialPort | None 
         app.state.crop_frame_size = None
         if server is None and not settings.app_password:
             log.warning("MTG_APP_PASSWORD is empty: the app can sign in with any username and password")
-        await asyncio.to_thread(controller.power_on)
+        await asyncio.to_thread(controller.power_on, updater.run if updater is not None else None)
         if worker is not None:
             worker.start()                 # also uploads runs left over from before a reboot
             log.info("runs are uploaded to the CardForge server at %s", server.base_url)
@@ -223,6 +239,8 @@ def create_app(settings: Settings | None = None, serial_port: SerialPort | None 
         try:
             yield
         finally:
+            if updater is not None:
+                updater.cancel()
             await asyncio.to_thread(controller.shutdown)
             if worker is not None:
                 await asyncio.to_thread(worker.stop)
@@ -335,7 +353,13 @@ def create_app(settings: Settings | None = None, serial_port: SerialPort | None 
 
     @app.get("/run/status")
     def run_status(request: Request):
-        return controller_of(request).snapshot()
+        snapshot = controller_of(request).snapshot()
+        snapshot["card_db"] = card_db_status(request)
+        return snapshot
+
+    def card_db_status(request: Request) -> dict | None:
+        updater = getattr(request.app.state, "card_db_updater", None)
+        return updater.status() if updater is not None else None
 
     @app.get("/hardware/status")
     def hardware_status(request: Request):
@@ -447,7 +471,8 @@ def create_app(settings: Settings | None = None, serial_port: SerialPort | None 
     @app.get("/health")
     def health(request: Request):
         return {"ok": True, "simulate": settings.simulate, "bottom_enabled": settings.bottom_enabled,
-                "server": request.app.state.server is not None}
+                "server": request.app.state.server is not None,
+                "startup": controller_of(request).startup_phase, "card_db": card_db_status(request)}
 
     @app.get("/sync/status", tags=["results"])
     def sync_status(request: Request):

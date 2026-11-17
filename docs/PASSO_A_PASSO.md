@@ -24,7 +24,7 @@ seguir.
 | | `sim.py` | A1 e A2 simulados (testes e uso sem hardware) |
 | | `config.py` | todas as variáveis `MTG_*` |
 | **Visão computacional** | [`cardforge/cv/`](../cardforge/cv/) | recorte, OCR, identificação ([docs/VISION.md](VISION.md)); `capture/camera.py` (Picamera2 / rpicam-still), `calibration.py` (medidas) |
-| **Banco de cartas** | [`cardforge/data/`](../cardforge/data/), `data/cards.db` | espelho local do Scryfall, criado por `python -m cardforge.cv sync` |
+| **Banco de cartas** | [`cardforge/data/`](../cardforge/data/), `data/cards.db` | espelho local do Scryfall com os nomes em inglês **e em português**, criado por `python -m cardforge.cv sync` |
 | **Configuração da visão e da câmera** | [`vision.toml`](../vision.toml) | limiares, câmera (IMX219), luz; a calibração grava aqui |
 | **Firmware** | [`firmware/`](../firmware/) | `a1_top` (módulo de cima: rolo, flap, IR da pilha e da plataforma), `a2_base` (base: motor, homing); `a2_homing_test` e `a2_tray_move_test` são testes de bancada só da base |
 | **Protocolo RS-485** | [docs/PROTOCOL.md](PROTOCOL.md) | quadros, comandos, códigos de erro; 5.1 = comando `LIGHT` que falta no firmware |
@@ -39,6 +39,8 @@ seguir.
 | **Prova de conceito antiga** | [`deprecated/`](../deprecated/) | só referência; pode ser apagada |
 | **Fotos da calibração do recorte** | `calibragem_recorte/` (criada na primeira medição) | cada foto usada para medir o recorte fixo: original, anotada, `medicoes.csv` e o recorte salvo |
 | **Arquivos de sistema do Pi** | [`sorter_api/housekeeping.py`](../sorter_api/housekeeping.py) | guarda as fotos da calibração e limpa os temporários ao fim de cada run |
+| **Benchmark de cada run** | [`sorter_api/benchmark.py`](../sorter_api/benchmark.py), `benchmarks/` (criada na 1.ª run) | média, mediana, moda, mínimo e máximo do tempo por carta, geral e first-try (parte E4) |
+| **Cartas lentas** | [`sorter_api/slow_cards.py`](../sorter_api/slow_cards.py), `cards_to_improve/` (criada na 1.ª carta lenta) | foto original, recorte anotado, resultado e tempos de cada carta que levou mais de 3 s para ser identificada (parte E5) |
 
 ---
 
@@ -58,11 +60,14 @@ Windows: `.venv\Scripts\activate`. Linux/macOS: `source .venv/bin/activate`. Dep
 pip install -r requirements.txt
 ```
 
-O `data/cards.db` já vem no repositório. Para atualizá-lo (precisa de internet, ~1 min):
+O `data/cards.db` já vem no repositório, com os nomes em inglês e em português. Para atualizá-lo (precisa de
+internet; baixa ~80 MB do `default_cards` e lê ~400 MB do `all_cards` em streaming, sem gravar no disco):
 
 ```bash
 python -m cardforge.cv sync
 ```
+
+`--langs ""` faz o banco só com os nomes em inglês (download de ~80 MB); `--langs pt,es` acrescenta outro idioma.
 
 ### A2. Rodar os testes
 
@@ -258,7 +263,12 @@ python3 -m venv --system-site-packages .venv
 .venv/bin/python -m cardforge.cv sync
 ```
 
-O último comando cria/atualiza o `data/cards.db` (precisa de internet só agora; depois tudo funciona offline).
+O último comando cria/atualiza o `data/cards.db` (precisa de internet só agora; depois tudo funciona offline). Ele
+baixa ~480 MB da Scryfall (o bulk de todos os idiomas, para os nomes em português) e leva alguns minutos no Pi 3B;
+o banco do repositório já vem pronto, então rode-o só para atualizar as cartas — e nem isso é preciso no dia a
+dia: **o serviço confere a Scryfall toda vez que sobe** e atualiza o banco antes de liberar a máquina quando há
+cartas novas (LED branco piscando; parte C1b). Alternativa: rode o `sync` no PC e
+copie o resultado com `scp data/cards.db raspad@<ip-do-pi>:/home/raspad/CardForge-M1/data/` (pare o serviço antes).
 
 ```bash
 .venv/bin/python -m pytest -q
@@ -314,9 +324,15 @@ sensor solto lê "vazio"). Com uma carta em algum bin, `curl -X POST <ip-do-pi>:
 
 ### C1b. LED de status
 
-Ao subir o serviço o LED fica **branco fixo** (iniciando: carregando a visão e fazendo o homing da base) e depois
-**verde fixo** (pronto), **azul fixo** (nenhum Wi-Fi configurado: pareie pelo app) ou **azul piscando** (Wi-Fi
-configurado, fora de alcance). Confira os outros estados: Start com um bin ocupado → **amarelo fixo**;
+Ao subir o serviço o LED fica **branco fixo** (iniciando: carregando a visão, conferindo a base de cartas na
+Scryfall e fazendo o homing da base) e depois **verde fixo** (pronto), **azul fixo** (nenhum Wi-Fi configurado:
+pareie pelo app) ou **azul piscando** (Wi-Fi configurado, fora de alcance). Se a Scryfall tem cartas novas, o
+LED fica **branco piscando** enquanto o `data/cards.db` é atualizado (alguns minutos no Pi 3B; um Start nesse
+meio-tempo responde 409 `CARD_DB_UPDATING`) e a máquina só fica pronta depois. Sem internet ou com a Scryfall fora
+do ar, a máquina sobe normalmente com o banco local. O resultado aparece em `curl localhost:8000/health`
+(`card_db.result`: `up_to_date`, `updated`, `offline`, `unreachable` ou `failed`) e no log
+(`journalctl -u sorter-api | grep "card database"`). Para testar a atualização, apague a impressão digital do
+banco e reinicie o serviço: `sqlite3 data/cards.db "update db_metadata set value='x' where key='sets_fingerprint'"`. Confira os outros estados: Start com um bin ocupado → **amarelo fixo**;
 uma run → **verde piscando**; trave o alimentador durante uma run → **vermelho fixo** (Resume volta ao verde
 piscando). Desconecte o Wi-Fi com a máquina parada (`sudo nmcli radio wifi off`) → **azul piscando** em até 2 s
 (`sudo nmcli radio wifi on` para voltar). LED apagado ou cor trocada: confira a fiação (COM no pino 9, vermelho 11,
@@ -460,6 +476,64 @@ por minuto. Para ver onde vai o tempo: `journalctl -u sorter-api | grep "card [0
 `feed_s`, `capture_s`, `identify_s`, `move_s`, `drop_s` e `total_s`. Os tempos ajustáveis do lado do Pi são
 `MTG_FLAP_SETTLE_S` (0,5) e `MTG_CARD_FALL_S` (0,5).
 
+### E4. Benchmark de cada run (geral e first-try)
+
+Ao fim de **toda** run (pilha vazia, Stop, limite de 250 ou falha) o serviço calcula, para dois tempos por carta:
+
+* `identify_s` — a identificação: da primeira foto à decisão, com as novas capturas (RF29) incluídas;
+* `total_s` — o ciclo inteiro da carta: do início da alimentação ao fim da queda (RNF22);
+
+a **média, mediana, moda, mínimo e máximo** em dois grupos:
+
+* `general` — todas as cartas processadas na run;
+* `first_try` — só as lidas de primeira, sem nenhum failsafe: identificadas (ou dadas como viradas) na 1.ª captura,
+  com o mínimo de OCR (sem reler o título a 180°, sem o OCR de layout, sem a checagem de verso depois de uma
+  identificação falhada) e alimentadas na 1.ª puxada (RF05).
+
+A moda é o tempo mais comum arredondado a 0,1 s (empate: o menor; `mode_count` = quantas cartas têm esse tempo).
+Cada carta que não foi first-try diz por quê em `fallbacks`: `retry`, `orientation_reread`, `layout_ocr`,
+`face_down_after_identify`, `not_identified`, `vision_error`, `feed_retry`.
+
+Onde fica:
+
+| Onde | O quê |
+|---|---|
+| `benchmarks/benchmark_runs.csv` | uma linha por run × grupo × tempo — todas as runs no mesmo arquivo, fácil de comparar no Excel |
+| `benchmarks/<data>-<hora>_<run8>.json` | o mesmo, mais quantas cartas foram first-try, a contagem de cada `fallback` e os tempos de cada carta |
+| `run.db`, tabela `run_benchmark` | o mesmo, por run; aparece em `GET /runs/<id>` (`benchmark`) |
+| `run.db`, `local_cards` | `identify_s`, `total_s`, `first_try` e `fallbacks` de cada carta (também em `GET /runs/<id>`) |
+| `GET /run/status` → `timing` | `first_try_cards` e o `benchmark` da run atual (ou da última), ao vivo |
+
+O log do fim da run resume: `run ... benchmark: general n=50 identify mean 2.31 s median 1.98 s ...`. Para trazer
+para o PC: `scp -r raspad@<ip-do-pi>:/home/raspad/CardForge-M1/benchmarks .`
+
+### E5. `cards_to_improve/`: as cartas que demoram
+
+Toda carta cuja identificação passa de **3 s** (`MTG_SLOW_CARD_S`) é guardada para estudo:
+
+```
+cards_to_improve/20261117-143212_3d5b829a/      uma pasta por run (só se teve carta lenta)
+  card_007/
+    captura_1_original.jpg                      foto da câmera de cada captura, em resolução cheia
+    captura_1_recorte_anotado.jpg               a carta recortada com as ROIs lidas, status e confiança
+    captura_2_original.jpg ...                  (uma por captura, RF29)
+    resultado.json                              tempos (alimentação, cada captura: luz, foto, reconhecimento,
+                                                chamadas de OCR; base, queda, total), o que cada captura leu
+                                                e com que carta bateu, o destino final, first-try e o porquê
+  indice.csv                                    uma linha por carta lenta (ordene por identify_s no Excel)
+  resumo.json                                   a run, o limite usado, quantas cartas, MB gastos, as 5 mais lentas
+```
+
+As fotos são gravadas por uma thread de prioridade mínima enquanto a base gira e a carta cai (a CPU está livre
+nessa hora); o índice e o resumo, no fim da run. A pasta nunca é apagada pela limpeza do fim da run: apague as runs
+antigas à mão depois de estudá-las. Passando de `MTG_SLOW_CARDS_MAX_MB` (1000 MB), as cartas lentas seguintes
+ficam só com o `resultado.json`. `MTG_SLOW_CARD_S=0` desliga. Para trazer para o PC:
+`scp -r raspad@<ip-do-pi>:/home/raspad/CardForge-M1/cards_to_improve .`
+
+Para estudar uma carta no PC, rode a visão de novo na foto original (usa o recorte fixo do `vision.toml`):
+`python -m cardforge.cv identify cards_to_improve/<run>/card_007/captura_1_original.jpg`. O `debug` do resultado
+mostra o que pesou: `ocr_calls`, `score_rotated` (releu o título a 180°), `layout_ocr_skipped`, `title_score`.
+
 ---
 
 ## Parte F — Uso normal
@@ -515,11 +589,15 @@ continuam como visão local da máquina.
 | Sintoma | Causa provável / o que fazer |
 |---|---|
 | `MODULE_OFFLINE` (503) no Start | Arduino sem energia, cabo A/B invertido, baud diferente, porta serial errada (`MTG_SERIAL_PORT`) |
-| `CARD_DB_MISSING` no Start | Falta `data/cards.db`: `.venv/bin/python -m cardforge.cv sync` |
+| `CARD_DB_MISSING` no Start | Falta `data/cards.db`: `git pull` (o repositório traz o banco) ou `.venv/bin/python -m cardforge.cv sync`; com internet, reiniciar o serviço também o cria |
+| `CARD_DB_UPDATING` no Start / LED branco piscando | O serviço está baixando cartas novas da Scryfall ao ligar. Espere o LED ficar verde; o andamento está em `curl localhost:8000/run/status` (`card_db.progress`) |
+| A base de cartas nunca se atualiza ao ligar | `curl localhost:8000/health` → `card_db.result`: `offline` (Wi-Fi não conectou em 30 s: aumente `MTG_CARD_DB_UPDATE_WAIT_S`), `unreachable` (sem internet / Scryfall fora do ar) ou `failed` (veja o log). `MTG_CARD_DB_UPDATE=off` desliga a checagem |
 | `CROP_NOT_CALIBRATED` no Start | Salve o recorte fixo na página `/calibration` (parte D, passo 1) |
 | `TRAYS_NOT_EMPTY` sem cartas nos bins | Sensor IR do bin desalinhado (vendo a parede) ou fio trocado: confira bin a bin (parte C1) |
 | Muitas cartas `CROP_FAILED` ou lidas tortas | Câmera ou plataforma mudaram de lugar: refaça o recorte fixo (parte D, passo 1). As fotos usadas estão em `calibragem_recorte/` |
 | Sumiram arquivos de `capturas/` ou `relatorios/` | Ao fim de cada run o serviço esvazia as pastas temporárias (`MTG_CLEANUP_DIRS`); copie o que quiser guardar antes, ou use outro nome de pasta (ex.: `relatorios_ref`) |
+| Cartas em português lentas ou no bin 6 | `cards.db` sem os nomes em português: `sqlite3 data/cards.db "select * from db_metadata"` deve mostrar `printed_langs = pt` e `schema_version = 2`. Senão, `git pull` ou `.venv/bin/python -m cardforge.cv sync`, e reinicie o serviço |
+| Cartão SD enchendo | `cards_to_improve/` guarda fotos de resolução cheia das cartas lentas: apague as runs já estudadas, baixe `MTG_SLOW_CARDS_MAX_MB` ou desligue com `MTG_SLOW_CARD_S=0` |
 | Run pausada com `FEED_TIMEOUT` | Carta presa no alimentador ou pilha vazia com o IR da pilha dizendo o contrário. Libere e use Resume |
 | Run pausada com `DROP_FAILED` | Carta presa na plataforma: retire-a (ela não é registrada) e use Resume |
 | Muitas cartas no bin 6 | Calibração (parte D): brilho, foco, enquadramento. Veja `attention` nos eventos e os motivos em `/runs/<id>` |

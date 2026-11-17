@@ -108,6 +108,13 @@ class VisionConfig:
     # carta inglesa, aceita set+número quando os tipos da linha de tipo batem ("Criatura" = Creature).
     # false = comportamento estrito do design CV-AD-04 (SET_NUMBER_NAME_MISMATCH -> needs_review).
     accept_localized_cards: bool = True
+    # Idiomas cujos nomes impressos (Scryfall: lang + printed_name) o sync grava no cards.db, para o
+    # título lido em português confirmar a carta como o nome inglês. [] = só inglês (sync mais rápido:
+    # sem o bulk all_cards, ~400 MB).
+    printed_name_langs: tuple[str, ...] = ("pt",)
+    # O sync refaz o banco quando há cartas/edições novas na Scryfall; e também quando ele fica mais velho
+    # que isto, para pegar nomes em português acrescentados depois do lançamento. 0 = só com cartas novas.
+    db_max_age_days: float = 30.0
     camera: CameraConfig = field(default_factory=CameraConfig)
     crop: CropConfig = field(default_factory=CropConfig)
     face_down: FaceDownConfig = field(default_factory=FaceDownConfig)

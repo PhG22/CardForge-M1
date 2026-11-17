@@ -8,7 +8,10 @@ Settings: MTG_LED_PINS = "17,22,27" (BCM numbers, in R,G,B order), MTG_LED = aut
     OFF               off                      no power / service stopped
     STARTING          solid white              power-on until the machine is ready: set by the Pi firmware
                                                (config.txt "gpio=17,22,27=op,dh") before Linux boots, then
-                                               by this service while it loads and homes the base (RF08)
+                                               by this service while it loads, checks the card database
+                                               and homes the base (RF08)
+    UPDATING          white, 1 Hz              the card database (cards.db) is being updated from Scryfall
+                                               at power-on (card_db_update.py); not in Appendix B
     IDLE              solid green              ready, no run (Wi-Fi connected, homing done)
     RUNNING           green, 1 Hz              run in progress
     FEED_JAM          solid red                run paused by a fault (jam, stuck card, base...);
@@ -20,10 +23,12 @@ Settings: MTG_LED_PINS = "17,22,27" (BCM numbers, in R,G,B order), MTG_LED = aut
     SETUP             solid blue               no Wi-Fi configured yet (Bluetooth setup, RF40)
     NO_NETWORK        blue, 1 Hz               Wi-Fi configured but not connected
 
-Priority: STARTING (until ready() is called, once the service is up and the power-on homing
-is over) > machine state (set by the run controller) > network state, which only shows while
-the machine is idle. So after power-on the LED goes white -> blue (no Wi-Fi yet: pair over
-Bluetooth) or blinking blue (Wi-Fi configured, not connected) or green (ready to start).
+Priority: UPDATING (while the card database updates) > STARTING (until ready() is called, once
+the service is up, the card database checked and the power-on homing over) > machine state (set
+by the run controller) > network state, which only shows while the machine is idle. So after
+power-on the LED goes white (-> blinking white while a card database update downloads -> white)
+-> blue (no Wi-Fi yet: pair over Bluetooth) or blinking blue (Wi-Fi configured, not connected)
+or green (ready to start).
 """
 
 from __future__ import annotations
@@ -44,6 +49,7 @@ YELLOW = (1, 0.55, 0)           # red + less green: pure R+G looks orange-green 
 PATTERNS: dict[str, tuple[tuple[float, float, float], Optional[float]]] = {
     "OFF": (OFF_COLOR, None),
     "STARTING": (WHITE, None),
+    "UPDATING": (WHITE, 1.0),
     "IDLE": (GREEN, None),
     "RUNNING": (GREEN, 1.0),
     "FEED_JAM": (RED, None),
@@ -102,6 +108,7 @@ class StatusLed:
         self._activity = "IDLE"              # set by the run controller
         self._network = NET_OK               # set by NetworkMonitor
         self._starting = True                # until ready(): the machine is still booting
+        self._updating = False               # the card database is being updated (blinking white)
         self.mode: Optional[str] = None      # what the LED shows now
         self.history: list[str] = []         # every mode shown (diagnostics, tests)
         self._refresh()
@@ -126,13 +133,21 @@ class StatusLed:
             self._starting = False
             self._refresh()
 
+    def set_updating(self, updating: bool) -> None:
+        """Card database update in progress (power-on): blinking white, above everything else."""
+        with self._lock:
+            self._updating = updating
+            self._refresh()
+
     @property
     def starting(self) -> bool:
         return self._starting
 
     def _refresh(self) -> None:
         mode = self._activity
-        if self._starting:
+        if self._updating:
+            mode = "UPDATING"
+        elif self._starting:
             mode = "STARTING"
         elif mode == "IDLE" and self._network != NET_OK:
             mode = "SETUP" if self._network == NET_SETUP else "NO_NETWORK"
