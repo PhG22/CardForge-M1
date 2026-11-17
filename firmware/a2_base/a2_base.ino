@@ -71,8 +71,9 @@ const uint8_t IR_CONFIRM  = 3;
 // Tray "has cards" sensors, tray 1..6. NO_PIN = not wired (reported as empty).
 // Inputs with pull-up: an unplugged sensor reads HIGH = empty instead of floating.
 const uint8_t NO_PIN = 255;
-// const uint8_t TRAY_IR_PINS[6] = {10, 8, 11, 7, 9, 12};
-  const uint8_t TRAY_IR_PINS[6] = {NO_PIN, NO_PIN, NO_PIN, NO_PIN, NO_PIN, NO_PIN};
+const uint8_t TRAY_IR_PINS[6] = {10, 8, 11, 7, 9, 12};
+// Bench without the tray sensors: use this line instead (every tray reads empty).
+// const uint8_t TRAY_IR_PINS[6] = {NO_PIN, NO_PIN, NO_PIN, NO_PIN, NO_PIN, NO_PIN};
 const int     TRAY_IR_ACTIVE  = LOW;
 const unsigned long TRAY_SAMPLE_MS = 5;  // 3 equal samples 5 ms apart -> new stable value
 
