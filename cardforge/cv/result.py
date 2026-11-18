@@ -41,6 +41,9 @@ class IdentificationResult:
     # Diagnóstico (não persistido): imagem retificada, estratégia de contorno, nitidez, etc.
     rectified: Optional["np.ndarray"] = field(default=None, repr=False)
     debug: dict = field(default_factory=dict, repr=False)
+    # Foto da câmera que gerou este resultado (só em VisionModule.identify; referência, não cópia).
+    # O loop da máquina a usa para o dataset cards_to_improve e a descarta logo depois.
+    frame: Optional["np.ndarray"] = field(default=None, repr=False)
 
     @property
     def identified(self) -> bool:

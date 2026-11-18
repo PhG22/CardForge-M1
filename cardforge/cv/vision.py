@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from typing import Optional
+from typing import Iterable, Optional
 
 import numpy as np
 
@@ -46,12 +46,22 @@ class VisionModule:
         return self.recognizer is not None
 
     def start(self, open_camera: bool = True) -> None:
-        """Arranque do serviço (CV-SD-04): modelos de OCR, banco local, índices em memória e câmara."""
+        """
+        Arranque do serviço (CV-SD-04): modelos de OCR, banco local, índices em memória e câmara.
+        Sem cards.db a câmara é configurada mesmo assim (DatabaseUnavailable sobe depois): a
+        atualização do banco na subida do serviço pode criá-lo em seguida (update_database()).
+        """
         with self._lock:
-            self._open_database()
+            missing = None
+            try:
+                self._open_database()
+            except DatabaseUnavailable as exc:
+                missing = exc
             if open_camera:
                 self.camera.configure()
                 self._use_sensor_crop()
+            if missing is not None:
+                raise missing
 
     @property
     def sensor(self):
@@ -89,6 +99,7 @@ class VisionModule:
             capture_ms = int((time.perf_counter() - t0) * 1000)
             result = self.recognizer.recognize(frame)
             result.debug["capture_ms"] = capture_ms          # RF02 / RF15: the photo itself
+            result.frame = getattr(frame, "image", frame)    # para o cards_to_improve (cartas lentas)
             return result
 
     def recognize(self, frame: Frame | np.ndarray) -> IdentificationResult:
@@ -102,27 +113,45 @@ class VisionModule:
         with self._lock:
             self._open_database()
 
-    def update_database(self, force: bool = False) -> SyncReport:
+    def sync_service(self, printed_langs: Optional[Iterable[str]] = None, **kw) -> ScryfallSyncService:
+        """O ScryfallSyncService deste banco, com os idiomas e a idade máxima do vision.toml."""
+        langs = self.cfg.printed_name_langs if printed_langs is None else printed_langs
+        kw.setdefault("max_age_days", self.cfg.db_max_age_days)
+        return ScryfallSyncService(self.cfg.db_path, printed_langs=langs, **kw)
+
+    def update_database(self, force: bool = False, printed_langs: Optional[Iterable[str]] = None,
+                        service: Optional[ScryfallSyncService] = None, check=None) -> SyncReport:
         """
         Atualiza o espelho do Scryfall (CV-SD-04). Deve ser chamado só sem run ativa;
-        se falhar, o cards.db anterior continua em uso.
+        se falhar, o cards.db anterior continua em uso. `printed_langs` (padrão: printed_name_langs
+        do vision.toml) = idiomas cujos nomes impressos também entram no banco. `check`: um
+        service.check() já feito. O download e a construção do banco novo (minutos no Pi) correm
+        SEM o lock: a câmera e a identificação seguem com o banco atual; só a troca do arquivo e a
+        reabertura o seguram.
         """
-        with self._lock:
-            service = ScryfallSyncService(self.cfg.db_path)
+        service = service or self.sync_service(printed_langs)
+        swapping = False
 
-            def close_repo() -> None:
-                if self.repo is not None:
-                    self.repo.close()
+        def swap_in() -> None:                # logo antes do os.replace: o banco novo está pronto
+            nonlocal swapping
+            self._lock.acquire()
+            swapping = True
+            if self.repo is not None:
+                self.repo.close()
 
-            try:
-                report = service.sync(force=force, before_replace=close_repo)
-            except Exception:
-                if self.repo is not None and self.repo.conn is None:
-                    self._open_database()  # a troca não aconteceu: volta ao banco anterior
-                raise
+        try:
+            report = service.sync(force=force, before_replace=swap_in, check=check)
             if report.updated or self.repo is None:
-                self._open_database()
+                with self._lock:
+                    self._open_database()
             return report
+        except Exception:
+            if swapping and self.repo is not None and self.repo.conn is None:
+                self._open_database()      # a troca não aconteceu: volta ao banco anterior
+            raise
+        finally:
+            if swapping:
+                self._lock.release()
 
     # ------------------------------------------------ calibração com a máquina montada
 

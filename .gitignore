@@ -12,4 +12,7 @@ relatorios/
 capturas/
 # fotos da calibração do recorte: ficam só no Pi (veja docs/PASSO_A_PASSO.md, parte D)
 # calibragem_recorte/
+# cartas lentas e benchmark de cada run: ficam no Pi (docs/PASSO_A_PASSO.md, parte E4/E5)
+cards_to_improve/
+benchmarks/
 *.patch

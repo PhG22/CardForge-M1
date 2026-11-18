@@ -49,10 +49,12 @@ from pathlib import Path
 from .bus import BusError, ModuleError, ModuleNotResponding
 from .config import MAX_CARDS_PER_RUN, Settings
 from .events import EventHub
-from .housekeeping import PROJECT_ROOT, cleanup_after_run
+from .benchmark import BenchmarkFiles, run_benchmark, summary_text
+from .housekeeping import PROJECT_ROOT, cleanup_after_run, project_path
 from .identifier import FACE_DOWN, IDENTIFIED, CardIdentifier, Identification
 from .modules import HOME_TRAY, VIBRATE_MAX_MS, BottomModule, ModuleState, TopModule
 from .protocol import FrameError
+from .slow_cards import SlowCardRecorder
 from .sorting import OVERFLOW_TRAY
 from .status_led import MemoryLedDriver, StatusLed
 from .store import Owner, RunStore, ScanRecord
@@ -149,8 +151,10 @@ class RunTiming:
     nominal_total_s: float = 0.0
     slowest_capture_s: float | None = None
     last_card: dict | None = None
+    first_try_cards: int = 0          # no retry and no failsafe at all (benchmark.py)
+    per_card: list = field(default_factory=list)   # times of every card: the run benchmark
 
-    def add(self, phases: dict, attempts: int) -> None:
+    def add(self, phases: dict, attempts: int, fallbacks: tuple[str, ...] = (), scan_status: str = "") -> None:
         total = phases["total_s"]
         self.cards += 1
         self.total_s += total
@@ -161,6 +165,15 @@ class RunTiming:
         if capture is not None:
             self.slowest_capture_s = max(self.slowest_capture_s or 0.0, capture)
         self.last_card = phases
+        first_try = not fallbacks
+        self.first_try_cards += first_try
+        self.per_card.append({"card": phases.get("card"), "identify_s": phases.get("identify_s"),
+                              "total_s": total, "attempts": attempts, "scan_status": scan_status,
+                              "first_try": first_try, "fallbacks": list(fallbacks)})
+
+    def benchmark(self) -> dict:
+        """Mean, median, mode, min and max of the card times: all cards and first-try only."""
+        return run_benchmark(self.per_card)
 
     @staticmethod
     def _rate(cards: int, seconds: float) -> float | None:
@@ -177,6 +190,8 @@ class RunTiming:
             "nominal_cards_per_min": self._rate(self.nominal_cards, self.nominal_total_s),
             "slowest_capture_s": self.slowest_capture_s,
             "last_card": self.last_card,
+            "first_try_cards": self.first_try_cards,
+            "benchmark": self.benchmark() if self.per_card else None,
         }
 
     def summary(self) -> str | None:
@@ -249,9 +264,15 @@ class SorterController:
         # Does the A1 firmware support the optional commands? (turned off on ERR BAD_CMD)
         self._optional_ok = {"LIGHT": True, "VIBRATE": True}
         self._power_on_homing = threading.Event()   # set while the base homes after the service start (RF08)
+        self._startup_phase: str | None = None      # "card_db" / "homing" during the power-on sequence
         self._homing_thread: threading.Thread | None = None
         self._saved_steps: int | None = None        # last base position written to base_state_file
         self._timing = RunTiming()                  # of the current or last run (RNF22, RF02)
+        root = Path(settings.project_root) if settings.project_root else PROJECT_ROOT
+        # Cards that took > slow_card_s to identify: pictures + results for later study (slow_cards.py)
+        self._slow_cards = SlowCardRecorder(project_path(settings.slow_cards_dir, root), settings.slow_card_s,
+                                            settings.slow_cards_max_mb)
+        self._benchmark_files = BenchmarkFiles(project_path(settings.benchmark_dir, root))
         if store is not None:
             n = store.recover_interrupted(utc_now())
             if n:
@@ -272,6 +293,8 @@ class SorterController:
         with self._lock:
             snapshot = {
                 "state": self._state.value,
+                # power-on sequence still running: "card_db" (card database check/update), "homing"
+                "startup": self._startup_phase,
                 "run": self._run.to_dict() if self._run else None,
                 # RNF22 / RF02: general run-status figures, no card identity (RF23).
                 "timing": self._timing.to_dict(),
@@ -304,6 +327,8 @@ class SorterController:
         launch the sorting loop in the background and return.
         owner: the app user the run and its cards belong to (None without a server)."""
         with self._lock:
+            if self._startup_phase == "card_db":
+                raise StartRefused(409, [Problem("CARD_DB_UPDATING", CARD_DB_UPDATING_MESSAGE)])
             if self._state is not ControllerState.IDLE:
                 if self._power_on_homing.is_set():
                     raise StartRefused(409, [Problem(
@@ -332,6 +357,7 @@ class SorterController:
                 self.store.create_run(run.run_id, run.started_at, owner)
             self._run = run
             self._timing = RunTiming()
+            self._slow_cards.start_run(run.run_id, run.started_at)
             self._launch(run)
         self.events.publish({"type": "run_started", "run": run.to_dict()})
         return run
@@ -571,24 +597,51 @@ class SorterController:
                 result[name] = {"online": False, "enabled": True, "error": str(exc)}
         return result
 
-    def power_on(self) -> None:
-        """Service start: chamber light to its base level and (RF08) homing of the base in the
-        background, so the service answers at once. Start also homes again before every run.
-        The status LED stays STARTING (white) until the power-on homing is over, then shows Idle
-        (RF16, Appendix B: "power-on, homing complete") or, while there is no Wi-Fi, Setup /
+    def power_on(self, before_ready: Callable[[], object] | None = None) -> None:
+        """Service start: chamber light to its base level, then in the background, so the service
+        answers at once: `before_ready` (the card database check and update, card_db_update.py)
+        and, after it, the RF08 homing of the base. Start also homes again before every run.
+        Start is refused until both are over (CARD_DB_UPDATING, HOMING), and the status LED stays
+        STARTING (white; blinking white while the card database updates) until then, then shows
+        Idle (RF16, Appendix B: "power-on, homing complete") or, while there is no Wi-Fi, Setup /
         No Network (RF41)."""
         self._led("IDLE")                          # shown once the LED leaves STARTING
         try:
             self._light(self.s.light_base_level)
         except (BusError, FrameError) as exc:
             log.warning("modules not reachable at power-on: %s", exc)
-        if self.s.bottom_enabled and self.s.home_on_power_on:
-            self._power_on_homing.set()
-            self._homing_thread = threading.Thread(target=self._home_at_power_on, name="power-on-homing",
-                                                   daemon=True)
-            self._homing_thread.start()
-        else:
+        home = self.s.bottom_enabled and self.s.home_on_power_on
+        if before_ready is None and not home:
             self.led.ready()
+            return
+        if before_ready is not None:
+            self._startup_phase = "card_db"
+        else:
+            self._startup_phase = "homing"
+            self._power_on_homing.set()
+        self._homing_thread = threading.Thread(target=self._power_on_sequence, args=(before_ready, home),
+                                               name="power-on", daemon=True)
+        self._homing_thread.start()
+
+    def _power_on_sequence(self, before_ready: Callable[[], object] | None, home: bool) -> None:
+        try:
+            if before_ready is not None:
+                try:
+                    before_ready()
+                except Exception:                  # never keep the machine from starting
+                    log.exception("power-on: card database check failed; using the local card database")
+            if home:
+                self._power_on_homing.set()
+                self._startup_phase = "homing"
+                self._home_at_power_on()
+        finally:
+            self._startup_phase = None
+            self._power_on_homing.clear()
+            self.led.ready()                       # homed or not: Start homes again and reports any fault
+
+    @property
+    def startup_phase(self) -> str | None:
+        return self._startup_phase
 
     def _home_at_power_on(self) -> None:
         started = time.monotonic()
@@ -604,9 +657,6 @@ class SorterController:
         except (BusError, FrameError, HardwareFault) as exc:
             code, message = _describe_fault(exc)
             log.warning("base not homed at power-on (%s: %s); Start will home it", code, message)
-        finally:
-            self._power_on_homing.clear()
-            self.led.ready()                   # homed or not: Start homes again and reports any fault
 
     @property
     def homing_at_power_on(self) -> bool:
@@ -619,6 +669,7 @@ class SorterController:
             pass
         if self._homing_thread is not None:
             self._homing_thread.join(timeout=3.0)
+        self._slow_cards.close()
 
     # ------------------------------------------------------- start sequence
 
@@ -813,6 +864,8 @@ class SorterController:
             raise HardwareFault("FEED_FAILED", "Feeding finished but no card is on the platform.")
         fed = time.monotonic()
         phases["feed_s"] = round(fed - began, 2)
+        if top.feed_attempt is not None:            # RF05: 2 = the first pull did not bring a card
+            phases["feed_attempt"] = top.feed_attempt
 
         # 2. Take pictures and identify it. A normal stop ends the retries early;
         #    _clear_out() then sends the card to its tray (or to the overflow tray).
@@ -827,13 +880,27 @@ class SorterController:
             phases["capture_s"] = round(identify_started - fed + capture_ms / 1000, 2)
         if self._stop_requested.is_set():
             raise StopRequested()
+        # Slow card (> slow_card_s): its pictures go to cards_to_improve/ while the base turns.
+        # Any other card lets go of its pictures now (a full camera picture is ~24 MB of RAM).
+        slow = self._slow_cards.add_card(card_number, result, phases["identify_s"])
+        if slow is None:
+            for capture in result.trace:
+                capture.drop_images()
 
         # 3. Turn the base so the target tray is under the platform, 4. drop the card.
         tray = self._route_and_drop(result.tray, phases)
-        self._record(run, card_number, result, tray)
         phases["total_s"] = round(time.monotonic() - began, 2)
-        self._timing.add(phases, result.attempts)
-        log.info("card %d: %s", card_number, ", ".join(f"{k} {v}" for k, v in phases.items() if k != "card"))
+        fallbacks = result.fallbacks + (("feed_retry",) if phases.get("feed_attempt", 1) > 1 else ())
+        timing = {"identify_s": phases["identify_s"], "total_s": phases["total_s"],
+                  "first_try": not fallbacks, "fallbacks": fallbacks}
+        self._record(run, card_number, result, tray, timing=timing)
+        self._timing.add(phases, result.attempts, fallbacks, result.scan_status)
+        self._slow_cards.finish_card(slow, {
+            **timing, "fallbacks": list(fallbacks), "phases": phases,
+            "outcome": {"scan_status": result.scan_status, "tray": tray, "attempts": result.attempts,
+                        "card_identifier": result.card_identifier, **result.details}})
+        log.info("card %d: %s%s", card_number, ", ".join(f"{k} {v}" for k, v in phases.items() if k != "card"),
+                 f" (not first-try: {' '.join(fallbacks)})" if fallbacks else "")
         if phases.get("capture_s") is not None and phases["capture_s"] > CAPTURE_ROUTINE_LIMIT_S:
             log.warning("card %d: capture routine took %.2f s (RF02 limit %.1f s)", card_number,
                         phases["capture_s"], CAPTURE_ROUTINE_LIMIT_S)
@@ -854,15 +921,20 @@ class SorterController:
         return tray if s.bottom_enabled else None
 
     def _record(self, run: RunInfo, card_number: int, result: Identification, tray: int | None,
-                error_message: str | None = None) -> None:
-        """The card left the platform: one record in run.db (RNF20), then a progress event."""
+                error_message: str | None = None, timing: dict | None = None) -> None:
+        """The card left the platform: one record in run.db (RNF20), then a progress event.
+        timing: identify_s, total_s, first_try, fallbacks (cards that went all the way through)."""
         details = dict(result.details)
         if error_message:
             details["error_message"] = error_message
         if self.store is not None:
+            timing = timing or {}
             self.store.save_scan(run.run_id, card_number, utc_now(), ScanRecord(
                 scan_status=result.scan_status, bin=tray, card_identifier=result.card_identifier,
-                attempts=result.attempts, **{k: v for k, v in details.items() if k in _RECORD_FIELDS}))
+                attempts=result.attempts, identify_s=timing.get("identify_s"), total_s=timing.get("total_s"),
+                first_try=None if "first_try" not in timing else int(timing["first_try"]),
+                fallbacks=" ".join(timing["fallbacks"]) if "fallbacks" in timing else None,
+                **{k: v for k, v in details.items() if k in _RECORD_FIELDS}))
         self._in_progress = None
         with self._lock:
             run.cards_processed = card_number
@@ -1122,6 +1194,7 @@ class SorterController:
         if self.store is not None:
             self.store.update_run(run.run_id, status=status.value, stopped_at=stopped_at,
                                   error_code=error_code, message=message)
+        self._save_run_reports(run, status, stopped_at)
         if self._on_run_finished is not None:
             try:
                 self._on_run_finished()
@@ -1142,15 +1215,38 @@ class SorterController:
         self.events.publish({"type": "run_finished", "run": run.to_dict(), "message": message,
                              "last_run_check": self.last_run_check()})
 
+    def _save_run_reports(self, run: RunInfo, status: RunStatus, stopped_at: str) -> None:
+        """End of a run: the card-time benchmark (run.db + benchmarks/) and the index of the slow
+        cards (cards_to_improve/). Never fails the run."""
+        info = {"run_id": run.run_id, "started_at": run.started_at, "stopped_at": stopped_at,
+                "status": status.value, "cards_processed": run.cards_processed}
+        cards = list(self._timing.per_card)
+        if cards:
+            try:
+                bench = run_benchmark(cards)
+                if self.store is not None:
+                    self.store.save_benchmark(run.run_id, bench)
+                path = self._benchmark_files.write(info, bench, cards)
+                log.info("run %s benchmark: %s (%s)", run.run_id, summary_text(bench), path)
+            except Exception as exc:
+                log.warning("could not save the benchmark of run %s: %s", run.run_id, exc)
+        try:
+            self._slow_cards.end_run(info)
+        except Exception as exc:
+            log.warning("could not finish cards_to_improve for run %s: %s", run.run_id, exc)
+
     def _cleanup(self) -> None:
         """End of a run: free the SD card (temporary pictures/reports, run.db journal)."""
         try:
             root = Path(self.s.project_root) if self.s.project_root else PROJECT_ROOT
             dirs = [d for d in self.s.cleanup_dirs.split(",") if d.strip()]
-            cleanup_after_run(dirs, root, self.store)
+            cleanup_after_run(dirs, root, self.store, keep=(self.s.slow_cards_dir, self.s.benchmark_dir))
         except Exception as exc:              # never fail a run because of the cleanup
             log.warning("cleanup after run failed: %s", exc)
 
+
+CARD_DB_UPDATING_MESSAGE = ("The machine is checking for card database updates (the status LED blinks white "
+                            "while it downloads one). Try again when the LED turns green.")
 
 _RECORD_FIELDS = {"match_method", "confidence", "card_name", "set_code", "collector_number", "color_identity",
                   "type_line", "mana_cost", "rarity", "error_message"}

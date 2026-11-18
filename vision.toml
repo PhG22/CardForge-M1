@@ -25,6 +25,9 @@ name_cutoff = 85
 set_cutoff = 85
 cross_check_cutoff = 70
 accept_localized_cards = true        # false = estrito ao design CV-AD-04 (cartas não inglesas vão para revisão)
+printed_name_langs = ["pt"]          # nomes impressos baixados no sync (all_cards, ~400 MB em streaming);
+                                     # [] = só inglês. Mudou? rode "python -m cardforge.cv sync" de novo
+db_max_age_days = 30                 # refaz o cards.db se tiver mais que isso, mesmo sem cartas novas (0 = não)
 
 [camera]                             # calibre em http://<ip-do-pi>:8000/calibration
 backend = "picamera2"                # "picamera2" (padrão) ou "rpicam" (chama rpicam-still a cada foto)

@@ -31,10 +31,15 @@ def normalize_number(number: str) -> str:
 _PRINT_SELECT = """
     SELECT p.print_id, o.name, o.mana_cost, o.type_line, p.rarity, p.set_code,
            p.collector_number_raw, p.layout,
-           (SELECT GROUP_CONCAT(color_code, '') FROM oracle_color oc WHERE oc.oracle_id = o.oracle_id)
+           (SELECT GROUP_CONCAT(color_code, '') FROM oracle_color oc WHERE oc.oracle_id = o.oracle_id),
+           {printed_names}
     FROM card_print p
     JOIN oracle_card o ON o.oracle_id = p.oracle_id
 """
+# Nomes impressos da mesma edição + número noutros idiomas (schema 2). Um cards.db antigo (schema 1)
+# continua funcionando, só sem eles, até o próximo "python -m cardforge.cv sync".
+_PRINTED_NAMES = """(SELECT GROUP_CONCAT(printed_name, char(10)) FROM card_print_name pn
+            WHERE pn.set_code = p.set_code AND pn.collector_number_norm = p.collector_number_norm)"""
 
 
 _PRIMARY_SET_TYPES = ", ".join(f"'{t}'" for t in (
@@ -50,6 +55,8 @@ class SqliteCardRepository:
     def __init__(self, path: str | os.PathLike):
         self.path = Path(path)
         self.conn: Optional[sqlite3.Connection] = None
+        self.has_printed_names = False
+        self._select = _PRINT_SELECT.format(printed_names="NULL")
         self.open()
 
     def open(self) -> None:
@@ -64,6 +71,9 @@ class SqliteCardRepository:
         if count == 0:
             conn.close()
             raise DatabaseUnavailable(f"card database empty: {self.path}")
+        self.has_printed_names = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'card_print_name'").fetchone() is not None
+        self._select = _PRINT_SELECT.format(printed_names=_PRINTED_NAMES if self.has_printed_names else "NULL")
         self.conn = conn
 
     def close(self) -> None:
@@ -87,11 +97,12 @@ class SqliteCardRepository:
             collector_number=row[6] or "",
             layout=row[7] or "",
             color_identity=frozenset(row[8] or ""),
+            printed_names=tuple(row[9].split("\n")) if row[9] else (),
         )
 
     def find_print(self, set_code: str, number: str) -> Optional[CardRecord]:
         row = self.conn.execute(
-            _PRINT_SELECT + " WHERE p.set_code = ? AND p.collector_number_norm = ?",
+            self._select + " WHERE p.set_code = ? AND p.collector_number_norm = ?",
             (set_code.lower(), normalize_number(number)),
         ).fetchone()
         return self._to_record(row) if row else None
@@ -102,7 +113,7 @@ class SqliteCardRepository:
         e coleções "normais" a reimpressões especiais (The List, Secret Lair...).
         """
         row = self.conn.execute(
-            _PRINT_SELECT
+            self._select
             + " JOIN card_name n ON n.oracle_id = p.oracle_id"
             + " LEFT JOIN mtg_set s ON s.set_code = p.set_code"
             + " WHERE n.name_key = ?"

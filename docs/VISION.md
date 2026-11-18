@@ -58,7 +58,8 @@ venv/bin/pip install -r requirements.txt
 ## Uso
 
 ```bash
-python -m cardforge.cv sync                    # cria/atualiza data/cards.db (precisa de internet, ~20 s + download)
+python -m cardforge.cv sync                    # cria/atualiza data/cards.db com nomes em inglês e português
+python -m cardforge.cv sync --langs ""         # só inglês (sem o bulk all_cards, ~400 MB)
 python -m cardforge.cv identify foto.jpg        # identifica imagens e imprime JSON (--detect: fotos de fora da máquina)
 python -m cardforge.cv batch input_cartas --detect --out relatorios   # fotos da PoC: detecção de bordas
 python -m cardforge.cv batch fotos_ref --truth gabarito.csv     # fotos da máquina (recorte fixo): acurácia RNF18
@@ -142,7 +143,62 @@ run ativa; se falhar, o banco anterior continua em uso.
    saneamento do OCR: o `CardMatcher` tenta os candidatos de edição × número até achar uma impressão que
    exista em `card_print` (consulta indexada, ~0,05 ms cada), e uma combinação inventada por uma troca de
    caractere simplesmente não existe. Divergências ficam com `needs_review` abaixo de 90 % e viram
-   `LOW_CONFIDENCE` (o controle recaptura e, no fim, manda para o bin 6).
+   `LOW_CONFIDENCE` (o controle recaptura e, no fim, manda para o bin 6). O nome lido vale em **inglês ou em
+   português** (próxima seção).
+
+## Nomes em português (Scryfall `lang` + `printed_name`)
+
+O `sync` grava também o nome impresso das cartas em português, para o título lido na carta brasileira
+("Chicote do Espadachim") valer tanto quanto o nome inglês ("Swashbuckler's Whip"):
+
+* **Download**: além do `default_cards` (~80 MB, uma impressão por carta em inglês), o `sync` lê o bulk
+  `all_cards` (~400 MB, todas as impressões em todos os idiomas) **em streaming**: nada dele vai para o cartão
+  SD, e só as linhas com `"lang":"pt"` passam pelo `json.loads` (as outras são descartadas por uma busca de
+  bytes). No PC leva ~25 s no total; no Pi 3B conte alguns minutos, a maior parte é a rede. Os idiomas vêm de
+  `printed_name_langs` no `vision.toml` (padrão `["pt"]`) ou de `--langs`; `[]` / `--langs ""` = só inglês.
+* **`cards.db` (schema 2)**: `card_print_name` guarda o nome impresso de cada impressão traduzida (a carta em
+  português tem a mesma edição e número da inglesa: `U 0263 LCI · PT` = LCI 263), e `card_name` ganha os nomes
+  traduzidos com `lang = 'pt'`. Um nome traduzido nunca toma o lugar de um nome inglês igual de outra carta; se
+  duas cartas têm a mesma tradução, fica a que tem mais impressões com esse nome. Um `cards.db` antigo (schema 1)
+  continua funcionando, só sem os nomes em português, até o próximo `sync` (que o reconstrói sozinho: o schema e
+  os idiomas entram na verificação de "já atualizado").
+* **Na identificação**:
+  * o cross-check de set + número aceita o nome inglês **ou** o nome impresso daquela impressão (de qualquer
+    face) → `SET_NUMBER` 100 %, com `debug.printed_name_match = true`;
+  * sem set/número legível, o título em português acha a carta pelo `NameIndex` (`NAME_EXACT`/`NAME_FUZZY`),
+    preferindo a edição lida;
+  * a orientação também usa o índice: um título em português agora pontua 100 e não provoca mais a releitura
+    a 180° (uma chamada de OCR a menos), nem o OCR de layout.
+  * `SET_NUMBER_LOCALIZED` continua valendo para os outros idiomas e para impressões em português que o Scryfall
+    não tem.
+* **Custo**: índice de nomes de 40 mil para 66 mil nomes, +4,6 MB de RAM; busca fuzzy +1,5 ms no PC (só roda quando
+  o título não bate exato).
+
+### Quando o banco está "atualizado"
+
+O `sync` (e a checagem que o serviço da máquina faz toda vez que sobe, `sorter_api/card_db_update.py`) só refaz o
+`cards.db` quando muda algo que a identificação usa. A Scryfall regera os arquivos de bulk todo dia por causa de
+preços, imagens e legalidades: comparar a data do arquivo faria o Pi baixar ~480 MB quase toda vez que fosse
+ligado. `ScryfallSyncService.check()` faz 2 requisições pequenas (índice dos bulks e lista de edições) e pede
+atualização quando:
+
+* a impressão digital das edições físicas mudou — código + `card_count` de cada edição não digital
+  (`sets_fingerprint` no `db_metadata`): edição nova, cartas novas numa edição, The List / Secret Lair;
+* o schema do banco ou os idiomas (`printed_name_langs`) mudaram;
+* o banco local tem mais de `db_max_age_days` (30) dias — pega nomes em português que a Scryfall acrescenta
+  depois do lançamento; `0` desliga.
+
+`python -m cardforge.cv sync --force` refaz o banco de qualquer jeito.
+
+Medido nas 10 fotos de `calibragem_recorte/` (máquina, IMX219 a 1640×1232, recorte fixo; 7 cartas em português):
+
+| `cards.db` | Identificadas | Chamadas de OCR (total) | Tempo por foto (PC, mediana) | Na 1.ª captura, sem failsafe |
+| --- | --- | --- | --- | --- |
+| só inglês | 3/10 (as 3 inglesas) | 24 | 603 ms | 3/10 |
+| inglês + português | 9/10 | 11 | 190 ms | 9/10 |
+
+A que sobrou (*Aspirante Pataférrea* lida "AspiranfePafaferrea", sem linha de info) fica em 89 % no fuzzy, 1 ponto
+abaixo do limiar: é o tipo de carta que o `cards_to_improve/` da máquina vai juntar para estudo.
 
 ## Resultados no conjunto de fotos da PoC (63 imagens de `input_cartas`)
 
@@ -194,7 +250,7 @@ referência, fotografe-o **na máquina** e rode `batch --truth`.
 | Validação do quadrilátero | proporção | + retangularidade ≥ 0,85, sem encostar na borda do frame, proporção por média dos lados | Evita quads "puxados" até o canto da imagem pela sombra |
 | ROIs de Nome/Info | PoC (y 30–85, x 30–300) | Nome y 22–105, Info x 10–320 | O título e o 1.º caractere da edição eram cortados quando o recorte vinha um pouco deslocado |
 | Orientação | só título | + linha de info válida | Corrige rotações erradas e evita uma chamada de OCR a mais em cartas não inglesas |
-| Nomes indexados | nome + faces | + `flavor_name` (Universes Beyond) | Ex.: *The Mechanist, Tactical Tinkerer* = Lita, Mechanical Engineer |
+| Nomes indexados | nome + faces | + `flavor_name` (Universes Beyond) + nome impresso em português (`printed_name`, bulk `all_cards`) | Ex.: *The Mechanist, Tactical Tinkerer* = Lita, Mechanical Engineer; *Chicote do Espadachim* = Swashbuckler's Whip |
 | Escolha da impressão por nome | mais recente | edição lida pelo OCR primeiro; evita The List / Secret Lair | Inventário mais fiel quando o número não foi lido |
 | Classificação de layout | sempre (1 OCR) | só quando a leitura com as ROIs padrão não identificou a carta | ~−40 % de tempo, resultados idênticos nas 63 fotos. Desligável com `skip_layout_when_identified = false` |
 | `MatchMethod` | — | + `SET_NUMBER_LOCALIZED` | Rastreabilidade do caso acima |
@@ -210,7 +266,7 @@ referência, fotografe-o **na máquina** e rode `batch --truth`.
 | RF39 | `FaceDownDetector` → `FACE_DOWN` em três testes (cor antes do OCR, título ausente nas duas orientações, cor depois de uma identificação falhada). A confiança do resultado é a própria assinatura de cor (≥ 75 %), não 0 % |
 | RNF15 | Pipeline 100 % local (OpenCV + RapidOCR/ONNX + SQLite); `requests` só é importado pelo `sync` |
 | RNF16 | Scryfall como única fonte, via espelho local |
-| RNF18 / RNF22 | Ferramentas de medição em `batch` (acurácia com gabarito, tempo por captura) |
+| RNF18 / RNF22 | Ferramentas de medição em `batch` (acurácia com gabarito, tempo por captura); na máquina, benchmark de cada run e `cards_to_improve/` ([PASSO_A_PASSO](PASSO_A_PASSO.md), parte E) |
 | RF33 (opcional) | Não implementado (custo de mana vem do banco, não do OCR) |
 
 ## Próximos passos

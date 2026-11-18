@@ -22,6 +22,8 @@ class CardRecord:
     set_code: str = ""
     collector_number: str = ""
     layout: str = ""
+    # Nomes impressos desta impressão noutros idiomas (cards.db com nomes em pt): ("Chicote do Espadachim",)
+    printed_names: tuple[str, ...] = ()
 
     @property
     def color_identity_str(self) -> str:
@@ -39,4 +41,5 @@ class CardRecord:
     def to_dict(self) -> dict:
         d = asdict(self)
         d["color_identity"] = self.color_identity_str
+        d["printed_names"] = list(self.printed_names)
         return d

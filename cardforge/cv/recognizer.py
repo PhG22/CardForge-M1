@@ -135,6 +135,8 @@ class _Attempt:
         return self.match.name_score
 
     def to_result(self, rectified: np.ndarray, debug: dict) -> IdentificationResult:
+        if getattr(self.match, "printed_name_match", False):
+            debug["printed_name_match"] = True     # título lido no idioma da carta (nome pt do cards.db)
         return IdentificationResult(
             status=IdentificationStatus.IDENTIFIED if self.identified else IdentificationStatus.LOW_CONFIDENCE,
             card=self.match.card,
