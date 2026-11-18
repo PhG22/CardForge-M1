@@ -8,6 +8,58 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 numbers yet, so entries are grouped by the date the changes reached `Integration_branch`; the short hashes point
 to the commits.
 
+## 2026-11-18
+
+### Changed
+
+- **The card database is no longer updated at power-on.** An update can take minutes on a slow connection and
+  held the machine until it ended. Now the service only **checks** Scryfall when it starts (2 small requests,
+  in the background): the machine is ready and sorts as usual, and the status LED no longer blinks during the
+  check. The update happens only when the user starts it from the app.
+- Settings renamed for this: `MTG_CARD_DB_UPDATE` → `MTG_CARD_DB_CHECK` (check at power-on: `auto`, `on`,
+  `off`) and `MTG_CARD_DB_UPDATE_WAIT_S` → `MTG_CARD_DB_CHECK_WAIT_S`.
+
+### Added
+
+- **Card database API** (`sorter_api/card_db_update.py`, docs/API.md "Card database"):
+  - `GET /card-db`: is an update available; is a check or an update running, with its progress.
+  - `POST /card-db/check`: check Scryfall now.
+  - `POST /card-db/update` (`?force=true`): start the update in the background.
+  - `POST /card-db/update/cancel`: stop it; the local database is kept.
+
+  The same status is `card_db` in `GET /run/status` and in the WebSocket's first snapshot, and a `card_db` event
+  goes out when a check or an update starts or ends, and about once a second while an update runs.
+
+  While an update runs:
+  - the status LED blinks white;
+  - Start is refused (`409 CARD_DB_UPDATING`);
+  - the update itself is refused while a run is active (`409 RUN_ACTIVE`).
+- **Update progress and ETA.** The sync reports each block downloaded and each 1,000 cards built, and can be
+  cancelled. `progress` gives:
+  - the stage (Portuguese names, card list, building, finishing);
+  - the overall fraction (it never goes backwards);
+  - MB downloaded out of the total, and the speed;
+  - the time left, from the speed so far and how long the last build took on this machine.
+
+  `cards.db` now records `build_seconds`, `build_machine` and `default_cards_lines` for this.
+- **App** (`cardforgeapp/`):
+  - A **Card database** panel on Machine control:
+    - shows whether the cards are up to date or an update is available (with its size), and the local database's
+      date and number of printings;
+    - while updating: a progress bar with the stage, %, MB and time left, and **Cancel update**;
+    - **Check for updates**, **Update now** (with a confirmation that states the size and that the machine can't
+      sort meanwhile) and **Update anyway**.
+  - Alerts: "Card database update available" (once per version of Scryfall's data), "Card database updated" and
+    "Card database update failed".
+  - A line on the Home machine card while an update is available or running.
+  - Start is disabled during an update, and the `CARD_DB_UPDATING` refusal has its own text, in English and
+    Portuguese.
+  - The in-app demo machine (`USE_MOCK_MACHINE`) simulates the whole flow.
+- Tests:
+  - Python `test_card_db_update.py`: 26 tests (check at power-on, update on request, progress / ETA, cancel,
+    the routes); 243 passed, 4 skipped.
+  - App `card_db_test.dart`: 12 tests (JSON, controller, screens in English and Portuguese).
+
 ## 2026-11-17
 
 ### Added

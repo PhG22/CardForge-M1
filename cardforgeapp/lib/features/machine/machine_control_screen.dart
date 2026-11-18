@@ -10,7 +10,8 @@ import 'api/machine_api_models.dart';
 import 'machine_controller.dart';
 
 /// Machine control: connection to the machine over Wi-Fi, start / stop a
-/// run, live progress, and diagnostics for testing the hardware.
+/// run, live progress, the card database (updates from Scryfall), and
+/// diagnostics for testing the hardware.
 /// The logic lives in [MachineController]; this widget only draws it.
 class MachineControlScreen extends StatelessWidget {
   const MachineControlScreen({super.key});
@@ -84,6 +85,10 @@ class MachineControlScreen extends StatelessWidget {
       case MachineConnection.connecting || MachineConnection.online:
         return [
           _RunPanel(controller: controller),
+          if (controller.isOnline && controller.cardDb != null) ...[
+            const SizedBox(height: 16),
+            _CardDbPanel(controller: controller),
+          ],
           if (controller.isOnline) ...[
             const SizedBox(height: 16),
             _DiagnosticsPanel(controller: controller),
@@ -570,6 +575,160 @@ class _ProblemsBox extends StatelessWidget {
         ],
       ),
     );
+  }
+}
+
+// --------------------------------------------------------- card database
+
+/// The machine's card database: up to date or an update available, a check
+/// or an update in progress (progress bar, MB, time left), and the user's
+/// buttons: check for updates, update now (or anyway), cancel.
+class _CardDbPanel extends StatelessWidget {
+  const _CardDbPanel({required this.controller});
+
+  final MachineController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    final l10n = context.l10n;
+    final text = Theme.of(context).textTheme;
+    final scheme = Theme.of(context).colorScheme;
+    final db = controller.cardDb!;
+    final progress = db.progress;
+    final error = controller.cardDbError;
+    final local = l10n.cardDbLocalLine(db);
+    final available = db.updateAvailable == true;
+    final lastUpdate = db.lastUpdate;
+    final muted = text.bodySmall?.copyWith(color: scheme.onSurfaceVariant);
+    final working = controller.isSendingCardDbCommand || db.isChecking;
+
+    return MagicPanel(
+      key: const ValueKey('card-db-panel'),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            children: [
+              Icon(
+                available
+                    ? Icons.system_update_alt_rounded
+                    : Icons.style_outlined,
+                color: available ? MagicColors.gold : MagicColors.goldSoft,
+              ),
+              const SizedBox(width: 12),
+              Expanded(child: Text(l10n.cardDbTitle, style: text.titleMedium)),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Text(l10n.cardDbStatusLine(db), style: text.bodyMedium),
+          if (local.isNotEmpty) ...[
+            const SizedBox(height: 4),
+            Text(local, style: muted),
+          ],
+          if (db.isUpdating) ...[
+            const SizedBox(height: 16),
+            LinearProgressIndicator(
+              key: const ValueKey('card-db-progress'),
+              value: progress == null || progress.fraction <= 0
+                  ? null
+                  : progress.fraction,
+            ),
+            const SizedBox(height: 8),
+            Text(
+              l10n.cardDbProgressLine(progress),
+              key: const ValueKey('card-db-progress-text'),
+              style: muted,
+            ),
+          ] else if (db.isChecking) ...[
+            const SizedBox(height: 16),
+            const LinearProgressIndicator(),
+          ] else if (lastUpdate != null) ...[
+            const SizedBox(height: 8),
+            Text(l10n.cardDbLastUpdate(lastUpdate), style: muted),
+          ],
+          if (error != null) ...[
+            const SizedBox(height: 12),
+            Text(l10n.cardDbError(error), style: TextStyle(color: scheme.error)),
+          ],
+          const SizedBox(height: 16),
+          if (db.isUpdating)
+            OutlinedButton.icon(
+              key: const ValueKey('card-db-cancel'),
+              onPressed: controller.canCancelCardDbUpdate
+                  ? controller.cancelCardDbUpdate
+                  : null,
+              icon: const Icon(Icons.close_rounded),
+              label: Text(l10n.cardDbCancel),
+            )
+          else ...[
+            if (available) ...[
+              FilledButton.icon(
+                key: const ValueKey('card-db-update'),
+                onPressed: controller.canUpdateCardDb
+                    ? () => _confirmUpdate(context)
+                    : null,
+                icon: const Icon(Icons.download_rounded),
+                label: Text(l10n.cardDbUpdateNow),
+              ),
+              if (controller.isBusy || controller.isPaused) ...[
+                const SizedBox(height: 6),
+                Text(l10n.cardDbBusyHint,
+                    style: muted, textAlign: TextAlign.center),
+              ],
+              const SizedBox(height: 12),
+            ],
+            OutlinedButton.icon(
+              key: const ValueKey('card-db-check'),
+              onPressed:
+                  controller.canCheckCardDb ? controller.checkCardDb : null,
+              icon: working
+                  ? const SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(Icons.refresh_rounded),
+              label: Text(l10n.cardDbCheck),
+            ),
+            if (!available)
+              TextButton(
+                key: const ValueKey('card-db-update-anyway'),
+                onPressed: controller.canUpdateCardDb
+                    ? () => _confirmUpdate(context, force: true)
+                    : null,
+                child: Text(l10n.cardDbUpdateAnyway),
+              ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  /// The update downloads hundreds of MB and keeps the machine from sorting
+  /// for minutes: the user confirms it first.
+  Future<void> _confirmUpdate(BuildContext context, {bool force = false}) async {
+    final l10n = context.l10n;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        backgroundColor: MagicColors.surface,
+        title: Text(l10n.cardDbConfirmTitle),
+        content: Text(
+            l10n.cardDbConfirmBody(controller.cardDb?.lastCheck?.downloadMb)),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: Text(l10n.cancel),
+          ),
+          TextButton(
+            key: const ValueKey('card-db-confirm'),
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: Text(l10n.cardDbUpdate),
+          ),
+        ],
+      ),
+    );
+    if (confirmed == true) await controller.updateCardDb(force: force);
   }
 }
 

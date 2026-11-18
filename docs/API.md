@@ -46,7 +46,7 @@ within 8 s instead.
 | 409 | `CROP_NOT_CALIBRATED` | `vision.toml` `[crop] mode = "fixed"` without corners: save the fixed crop on `/calibration` |
 | 409 | `RUN_ACTIVE` | A run is already starting / running / stopping / paused |
 | 409 | `HOMING` | The base is still homing after the service started (RF08): try again in a few seconds |
-| 409 | `CARD_DB_UPDATING` | The service just started and is checking Scryfall for new cards, or downloading them (status LED blinking white): try again when the LED turns green |
+| 409 | `CARD_DB_UPDATING` | A card database update the user started is running (status LED blinking white): wait for it, or `POST /card-db/update/cancel` |
 | 409 | `START_CANCELLED` | `/run/stop` was called during the start checks |
 | 503 | `MODULE_OFFLINE` | A1 or A2 did not answer (`module` says which) |
 | 500 | `HOME_TIMEOUT`, `PROTOCOL_ERROR`, … | Hardware fault during preparation |
@@ -223,20 +223,8 @@ or to catch up after the WebSocket was disconnected.
 ```
 `state`: `idle` · `starting` · `running` · `stopping` · `paused` · `manual` (a base test move, or the homing
 right after the service starts: with `MTG_HOME_ON_POWER_ON=1`, the default, the base homes by itself at power-on, RF08)
-`startup`: `null` once the machine is ready; right after the service starts, `card_db` (checking Scryfall for new
-cards and, if there are any, updating `data/cards.db`; Start answers 409 `CARD_DB_UPDATING`) and then `homing`.
-`card_db` (`null` when the check is off, e.g. with the simulator) — the card database check at power-on:
-```json
-"card_db": { "phase": "done", "progress": null, "result": "updated", "reason": "new cards or sets on Scryfall",
-             "message": "updated (110960 prints, 66442 names, …)", "seconds": 212.4,
-             "finished_at": "2026-11-17T18:26:13+00:00",
-             "local": { "bulk_updated_at": "2026-11-17T10:06:30.623+00:00", "printed_langs": "pt",
-                        "schema_version": "2", "localized_names": "26041" } }
-```
-`phase`: `pending` · `waiting_network` (boot: Wi-Fi configured, not connected yet; up to `MTG_CARD_DB_UPDATE_WAIT_S`)
-· `checking` · `updating` (`progress`: `{"stage": "all_cards", "fraction": 0.42}`) · `done`.
-`result`: `up_to_date` · `updated` · `offline` (no network) · `unreachable` (no internet / Scryfall down) ·
-`failed` (see the log). In every case but `updated` the machine runs with the local `data/cards.db`.
+`startup`: `"homing"` while the base homes right after the service started, else `null`.
+`card_db`: the card database, see [Card database](#card-database) (`null` without one, `MTG_VISION=off`).
 `run.status`: `running` · `paused` · `completed` · `failed` · `cancelled`.
 When it is `paused` or `failed`, `run.error_code` and `run.message` say why.
 `run.current_tray` is `null` while the run is active (RF23).
@@ -294,6 +282,7 @@ Connect once and keep the socket open. Each message is one JSON object:
 | `fault` | **The run paused. Alert the user** (RF27) | `fault` (error code), `time`, `message`, `run` |
 | `run_resumed` | `/run/resume` succeeded | `run` |
 | `run_finished` | **Run ended. Notify the user** | `run` (with `status` completed / failed / cancelled), `message`, `last_run_check` (RNF19) |
+| `card_db` | A card database check or update started or ended (with `update_available: true`: **tell the user an update is available**), and about once a second while an update runs | `card_db` ([Card database](#card-database)) |
 
 Example `run_finished` messages: `"Stack is empty: 37 card(s) processed. 7.4 cards/min (8.1 s per card)."`,
 `"Feed jam: no card reached the platform after 2 pull attempts (jam or empty stack)."`,
@@ -314,6 +303,47 @@ Returns the live STATUS of both modules, for a debug or maintenance screen:
 ```
 `feed_attempt` (a1_top 1.1): the pull attempt of the current or last FEED, 1 or 2 (RF05).
 `vibrating` (a1_top 1.2): the platform vibration motor is on (`null` with older firmware).
+
+## Card database
+
+The machine identifies cards against `data/cards.db`, its copy of Scryfall. At power-on it only **checks**
+Scryfall for new cards (2 small requests, in the background: the machine is ready as usual). The app tells the
+user when an update is available, and **the user starts it**: it downloads ~480 MB and builds the new database in
+the background (minutes on the Pi 3B), with its progress and ETA. The old database stays in use until the new one
+is ready; a failure or a cancel keeps it. While updating, the status LED blinks white and Start answers
+409 `CARD_DB_UPDATING`.
+
+| Call | Answer |
+|---|---|
+| `GET /card-db` | the status below |
+| `POST /card-db/check` | **202** `{started: true, card_db}` (a few seconds; the result comes on the WebSocket) · **200** `{started: false}` when a check or an update is already running |
+| `POST /card-db/update` (`?force=true`: even when up to date) | **202** `{started: true, card_db}` · **409** `RUN_ACTIVE` (a run is starting, running, stopping or paused; a base move) · `CARD_DB_UPDATING` · `CARD_DB_CHECKING` |
+| `POST /card-db/update/cancel` | **200** `{cancelling: true, card_db}` · **409** `NOT_UPDATING` |
+| any of them without vision (`MTG_VISION=off`) | **409** `CARD_DB_UNAVAILABLE` |
+
+```json
+{ "phase": "updating",
+  "update_available": true,
+  "last_check": { "result": "update_available", "reason": "new cards or sets on Scryfall", "at": "2026-11-18T12:00:00+00:00",
+                  "seconds": 1.2, "download_mb": 489, "remote_updated_at": "2026-11-18T10:06:30.623+00:00",
+                  "message": "…" },
+  "last_update": null,
+  "progress": { "stage": "all_cards", "fraction": 0.42, "stage_fraction": 0.5, "downloaded_mb": 204.0,
+                "download_mb": 489.0, "speed_mb_s": 2.1, "eta_s": 130, "elapsed_s": 95 },
+  "local": { "bulk_updated_at": "2026-11-17T10:06:30.623+00:00", "built_at": "2026-11-17T18:26:02Z",
+             "printed_langs": "pt", "schema_version": "2", "cards": 110960 } }
+```
+* `phase`: `idle` · `checking` · `updating`. `update_available`: `null` until a check reached Scryfall.
+* `last_check.result`: `up_to_date` · `update_available` · `offline` (no network; at boot it waits up to
+  `MTG_CARD_DB_CHECK_WAIT_S` for a configured Wi-Fi) · `unreachable` (no internet / Scryfall down) · `failed`.
+* `last_update.result`: `updated` · `up_to_date` (nothing to download) · `cancelled` · `unreachable` · `failed`
+  (+ `message`, `at`, `seconds`). In every case but `updated` the machine kept its database.
+* `progress.stage`: `checking` → `all_cards` (Portuguese names) → `default_cards` (the card list) → `building` →
+  `finishing`. `fraction` (0–1, the whole update; never goes backwards) and `eta_s` come from the download speed
+  so far and the time the last build took on this machine; `eta_s` is `null` until it can tell.
+
+The same object is `card_db` in `GET /run/status`, in the WebSocket's first `snapshot`, and in the `card_db`
+event, sent when a check or an update starts or ends and about once a second while an update runs.
 
 ## GET /health
 

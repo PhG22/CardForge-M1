@@ -5,6 +5,7 @@
 // (or a safe default) instead of crashing the screen.
 
 int? _int(Object? v) => v is int ? v : (v is num ? v.toInt() : null);
+double? _double(Object? v) => v is num ? v.toDouble() : null;
 String? _str(Object? v) => v is String ? v : null;
 bool? _bool(Object? v) => v is bool ? v : null;
 DateTime? _date(Object? v) => v is String ? DateTime.tryParse(v) : null;
@@ -181,17 +182,169 @@ class LastRunCheck {
   final RunInfo? run;
 }
 
+/// What the machine's card database is doing (`card_db.phase`).
+enum CardDbPhase { idle, checking, updating, unknown }
+
+CardDbPhase _cardDbPhase(Object? v) => switch (v) {
+      'idle' => CardDbPhase.idle,
+      'checking' => CardDbPhase.checking,
+      'updating' => CardDbPhase.updating,
+      _ => CardDbPhase.unknown,
+    };
+
+/// The result of a check or of an update of the card database
+/// (`card_db.last_check` / `card_db.last_update`).
+class CardDbResult {
+  const CardDbResult({
+    required this.result,
+    this.reason,
+    this.message,
+    this.at,
+    this.downloadMb,
+    this.remoteUpdatedAt,
+  });
+
+  factory CardDbResult.fromJson(Map<String, Object?> json) => CardDbResult(
+        result: _str(json['result']) ?? 'unknown',
+        reason: _str(json['reason']),
+        message: _str(json['message']),
+        at: _date(json['at']),
+        downloadMb: _double(json['download_mb']),
+        remoteUpdatedAt: _str(json['remote_updated_at']),
+      );
+
+  /// A check: `up_to_date`, `update_available`, `offline` (no network),
+  /// `unreachable` (no internet / Scryfall down) or `failed`.
+  /// An update: `updated`, `up_to_date`, `cancelled`, `unreachable` or `failed`.
+  final String result;
+
+  /// Why an update is needed, e.g. "new cards or sets on Scryfall" (English).
+  final String? reason;
+
+  /// The machine's own message (English).
+  final String? message;
+
+  /// When it ended (machine clock, UTC).
+  final DateTime? at;
+
+  /// A check: how much an update downloads, in MB.
+  final double? downloadMb;
+
+  /// A check: date of Scryfall's data, to tell one available update from the next.
+  final String? remoteUpdatedAt;
+}
+
+/// An update in progress (`card_db.progress`), for the progress bar.
+class CardDbProgress {
+  const CardDbProgress({
+    required this.stage,
+    required this.fraction,
+    this.stageFraction,
+    this.downloadedMb,
+    this.downloadMb,
+    this.speedMbPerSecond,
+    this.etaSeconds,
+    this.elapsedSeconds,
+  });
+
+  factory CardDbProgress.fromJson(Map<String, Object?> json) => CardDbProgress(
+        stage: _str(json['stage']) ?? 'checking',
+        fraction: (_double(json['fraction']) ?? 0).clamp(0.0, 1.0),
+        stageFraction: _double(json['stage_fraction']),
+        downloadedMb: _double(json['downloaded_mb']),
+        downloadMb: _double(json['download_mb']),
+        speedMbPerSecond: _double(json['speed_mb_s']),
+        etaSeconds: _int(json['eta_s']),
+        elapsedSeconds: _int(json['elapsed_s']),
+      );
+
+  /// `checking`, `all_cards` (Portuguese names), `default_cards` (the card
+  /// list), `building` (the new database) or `finishing`.
+  final String stage;
+
+  /// The whole update, 0 to 1. Never goes backwards.
+  final double fraction;
+
+  /// The current stage, 0 to 1 (null when it has no size).
+  final double? stageFraction;
+  final double? downloadedMb;
+  final double? downloadMb;
+  final double? speedMbPerSecond;
+
+  /// Seconds left (null until the machine can tell).
+  final int? etaSeconds;
+  final int? elapsedSeconds;
+}
+
+/// The machine's card database (`card_db` in GET /run/status, GET /card-db
+/// and the `card_db` event): is an update available, is one running.
+/// Null on machines without a card database (no camera) or older software.
+class CardDbStatus {
+  const CardDbStatus({
+    this.phase = CardDbPhase.idle,
+    this.updateAvailable,
+    this.lastCheck,
+    this.lastUpdate,
+    this.progress,
+    this.localBuiltAt,
+    this.localCards,
+  });
+
+  factory CardDbStatus.fromJson(Map<String, Object?> json) {
+    final check = _map(json['last_check']);
+    final update = _map(json['last_update']);
+    final progress = _map(json['progress']);
+    final local = _map(json['local']) ?? const <String, Object?>{};
+    return CardDbStatus(
+      phase: _cardDbPhase(json['phase']),
+      updateAvailable: _bool(json['update_available']),
+      lastCheck: check == null ? null : CardDbResult.fromJson(check),
+      lastUpdate: update == null ? null : CardDbResult.fromJson(update),
+      progress: progress == null ? null : CardDbProgress.fromJson(progress),
+      localBuiltAt: _date(local['built_at']) ?? _date(local['bulk_updated_at']),
+      localCards: _int(local['cards']),
+    );
+  }
+
+  final CardDbPhase phase;
+
+  /// True: Scryfall has new cards, the user can update. Null: never checked
+  /// (no internet since the machine started).
+  final bool? updateAvailable;
+  final CardDbResult? lastCheck;
+  final CardDbResult? lastUpdate;
+
+  /// While updating.
+  final CardDbProgress? progress;
+
+  /// When the machine's card database was built.
+  final DateTime? localBuiltAt;
+
+  /// Card prints in it.
+  final int? localCards;
+
+  bool get isChecking => phase == CardDbPhase.checking;
+  bool get isUpdating => phase == CardDbPhase.updating;
+}
+
 /// GET /run/status (also the `snapshot` event).
 class MachineSnapshot {
-  const MachineSnapshot({required this.state, this.run, this.lastRunCheck});
+  const MachineSnapshot({
+    required this.state,
+    this.run,
+    this.lastRunCheck,
+    this.cardDb,
+  });
 
   factory MachineSnapshot.fromJson(Map<String, Object?> json) {
     final run = _map(json['run']);
     final check = _map(json['last_run_check']);
+    final cardDb = _map(json['card_db']);
     return MachineSnapshot(
       state: _controllerState(json['state']),
       run: run == null ? null : RunInfo.fromJson(run),
       lastRunCheck: check == null ? null : LastRunCheck.fromJson(check),
+      cardDb: cardDb == null ? null : CardDbStatus.fromJson(cardDb),
     );
   }
 
@@ -200,6 +353,9 @@ class MachineSnapshot {
 
   /// RNF19, see [LastRunCheck]. Null before the first run and during a run.
   final LastRunCheck? lastRunCheck;
+
+  /// The card database, see [CardDbStatus]. Null without one.
+  final CardDbStatus? cardDb;
 }
 
 /// One reason why POST /run/start refused to start.
@@ -449,6 +605,11 @@ sealed class MachineEvent {
         );
       case 'run_resumed' when run != null:
         return RunResumedEvent(RunInfo.fromJson(run));
+      case 'card_db':
+        final status = _map(json['card_db']);
+        return status == null
+            ? UnknownMachineEvent(_str(json['type']))
+            : CardDbEvent(CardDbStatus.fromJson(status));
       default:
         return UnknownMachineEvent(_str(json['type']));
     }
@@ -509,6 +670,13 @@ class FaultEvent extends MachineEvent {
 class RunResumedEvent extends MachineEvent {
   const RunResumedEvent(this.run);
   final RunInfo run;
+}
+
+/// The card database changed: a check ended (maybe with an update
+/// available), an update started, advanced (about once a second) or ended.
+class CardDbEvent extends MachineEvent {
+  const CardDbEvent(this.status);
+  final CardDbStatus status;
 }
 
 class UnknownMachineEvent extends MachineEvent {

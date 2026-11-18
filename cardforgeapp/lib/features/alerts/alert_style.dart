@@ -13,6 +13,9 @@ IconData alertIcon(AlertType type) => switch (type) {
       AlertType.doubleFeed => Icons.layers_outlined,
       AlertType.connectionLost => Icons.link_off_rounded,
       AlertType.machineLinked => Icons.link_rounded,
+      AlertType.cardDbUpdateAvailable => Icons.system_update_alt_rounded,
+      AlertType.cardDbUpdated => Icons.library_add_check_outlined,
+      AlertType.cardDbUpdateFailed => Icons.sync_problem_rounded,
     };
 
 Color alertColor(AlertSeverity severity) => switch (severity) {

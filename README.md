@@ -27,18 +27,21 @@ App mobile (Flutter) ──HTTP──► Raspberry Pi: python -m sorter_api ─�
 
 ## O main loop
 
-**Ao ligar**, em segundo plano (a API já responde; o LED fica branco até o fim):
-1. **Base de cartas**: o serviço pergunta à Scryfall se há cartas novas (2 requisições pequenas,
-   [`card_db_update.py`](sorter_api/card_db_update.py)). Se há, atualiza o `data/cards.db` **antes de liberar a
-   máquina**, com o LED **branco piscando** (no Pi 3B, alguns minutos; o banco antigo segue em uso até o novo
-   ficar pronto). Atualizado, sem internet ou Scryfall fora do ar: segue com o banco local. Um Start nesse
-   meio-tempo é recusado com `CARD_DB_UPDATING`. No boot, com Wi-Fi configurado mas ainda conectando, espera
-   até 30 s por ele (`MTG_CARD_DB_UPDATE_WAIT_S`); sem Wi-Fi configurado, não espera. "Cartas novas" = edição
-   nova ou cartas novas numa edição (a Scryfall regera o arquivo todo dia por causa de preços: isso não conta),
-   ou o banco com mais de 30 dias.
-2. **Homing** (RF08): a base faz o homing sozinha (o estado fica `manual` enquanto isso; um Start nesse
-   meio-tempo é recusado com `HOMING`). Se o A2 não responder, o serviço sobe mesmo assim e o Start faz o homing.
-   `MTG_HOME_ON_POWER_ON=0` desliga isso (bancada).
+**Ao ligar** (RF08): assim que o serviço sobe, a base faz o homing sozinha, em segundo plano (o estado fica
+`manual` enquanto isso; um Start nesse meio-tempo é recusado com `HOMING`). Se o A2 não responder, o serviço sobe
+mesmo assim e o Start faz o homing. `MTG_HOME_ON_POWER_ON=0` desliga isso (bancada).
+
+**Base de cartas** ([`card_db_update.py`](sorter_api/card_db_update.py)): ao ligar, o serviço só **confere** na
+Scryfall se há cartas novas (2 requisições pequenas, em paralelo: a máquina fica pronta e ordena normalmente).
+Se há, o app avisa o usuário (alerta e aviso na Home e no Controle da máquina), e **o usuário decide quando
+atualizar**: no app, **Atualizar agora** baixa ~480 MB e monta o novo `data/cards.db` em segundo plano, com barra
+de progresso, MB baixados e tempo restante; dá para cancelar. Enquanto atualiza, o LED pisca em branco e um Start
+é recusado com `CARD_DB_UPDATING`; durante uma run a atualização é recusada. O banco antigo segue em uso até o
+novo ficar pronto, então nada fica pela metade (sem internet, falha ou cancelamento: fica o banco local). O app
+também tem **Procurar atualizações**. No boot, com Wi-Fi configurado mas ainda conectando, a checagem espera até
+30 s por ele (`MTG_CARD_DB_CHECK_WAIT_S`); sem Wi-Fi configurado, não espera. "Cartas novas" = edição nova ou
+cartas novas numa edição (a Scryfall regera o arquivo todo dia por causa de preços: isso não conta), ou o banco
+com mais de 30 dias.
 
 **Homing em até 5 s** (RF08): o Pi guarda a última posição da base (`data/base_position.json`) e, ao fim de cada
 run, estaciona a base no bin 3 (em cima da fita). Com a posição conhecida, o `a2_base.ino` 1.1 vai rápido até logo
@@ -235,8 +238,8 @@ As da comunicação RS-485 e da mecânica estão em [`sorter_api/config.py`](sor
 | `MTG_APP_USERNAME` / `MTG_APP_PASSWORD` | `admin` / *(vazia)* | Só **sem** servidor: login do app no próprio Pi. Senha vazia = qualquer credencial é aceita (só para testes) |
 | `MTG_CROP_CAPTURES_DIR` | `calibragem_recorte` | Onde ficam as fotos usadas para calibrar o recorte fixo (nunca apagadas automaticamente) |
 | `MTG_CLEANUP_DIRS` | `data/tmp,capturas,relatorios` | Pastas esvaziadas ao fim de cada run (`""` = não limpar) |
-| `MTG_CARD_DB_UPDATE` | `auto` | Confere a base de cartas na Scryfall ao ligar e atualiza antes de liberar a máquina se houver cartas novas: `auto` (com a câmera, fora do `--simulate`), `on`, `off` |
-| `MTG_CARD_DB_UPDATE_WAIT_S` | `30` | No boot, quanto esperar por um Wi-Fi configurado que ainda está conectando antes de desistir da checagem |
+| `MTG_CARD_DB_CHECK` | `auto` | Confere a base de cartas na Scryfall ao ligar (só confere; quem atualiza é o usuário, pelo app): `auto` (com a câmera, fora do `--simulate`), `on`, `off` |
+| `MTG_CARD_DB_CHECK_WAIT_S` | `30` | No boot, quanto a checagem espera por um Wi-Fi configurado que ainda está conectando |
 | `MTG_SLOW_CARD_S` | `3.0` | Cartas cuja identificação (fotos + visão, com as novas capturas) passa disso vão para `cards_to_improve/` com fotos e resultados (`0` = desliga) |
 | `MTG_SLOW_CARDS_DIR` / `MTG_SLOW_CARDS_MAX_MB` | `cards_to_improve` / `1000` | Pasta das cartas lentas / acima disso as cartas lentas ficam só com o `resultado.json` |
 | `MTG_BENCHMARK_DIR` | `benchmarks` | Benchmark do tempo por carta de cada run (CSV com todas as runs + um JSON por run) |
@@ -253,7 +256,7 @@ seguindo o Apêndice B dos requisitos:
 | Estado | LED | Quando |
 |---|---|---|
 | Starting | branco fixo | do momento em que o Pi é ligado até o serviço estar no ar, a base de cartas conferida e a base homed (RF08). Acrescentado ao Apêndice B: os requisitos não definem um estado de inicialização |
-| Updating | branco piscando 1 Hz | ao ligar, enquanto a base de cartas (`data/cards.db`) é atualizada pela Scryfall. Acrescentado ao Apêndice B |
+| Updating | branco piscando 1 Hz | enquanto a base de cartas (`data/cards.db`) é atualizada pela Scryfall, numa atualização que o usuário iniciou no app. Acrescentado ao Apêndice B |
 | Idle | verde fixo | ligado e pronto (Wi-Fi conectado, homing feito), run terminada |
 | Running | verde piscando 1 Hz | run em andamento |
 | Feed Jam | vermelho fixo | run pausada por falha (atolamento, carta presa, base); também módulo sem resposta |
@@ -264,9 +267,8 @@ seguindo o Apêndice B dos requisitos:
 
 Os estados de rede (azul) só aparecem com a máquina parada; o estado da máquina tem prioridade.
 
-Sequência ao ligar: **branco** (o Pi está iniciando; **branco piscando** enquanto baixa uma atualização da base
-de cartas) → **azul fixo** (pronto para parear pelo app e configurar o Wi-Fi) · **azul piscando** (Wi-Fi
-configurado mas fora de alcance) · **verde** (Wi-Fi conectado, pronto para Start).
+Sequência ao ligar: **branco** (o Pi está iniciando) → **azul fixo** (pronto para parear pelo app e configurar
+o Wi-Fi) · **azul piscando** (Wi-Fi configurado mas fora de alcance) · **verde** (Wi-Fi conectado, pronto para Start).
 Depois da configuração pelo Bluetooth o LED passa de azul para verde em até ~2 s, sem reiniciar.
 
 Para o branco aparecer já no primeiro segundo, antes do Linux subir, acrescente em `/boot/firmware/config.txt`
@@ -395,7 +397,7 @@ sorter_api/                 main loop + API (FastAPI, uvicorn)
   app_compat.py             rotas que o app mobile usa
   calibration_api.py        calibração da câmera pela rede (+ static/calibration.html)
   status_led.py             LED de status RGB no GPIO do Pi e estado da rede
-  card_db_update.py         ao ligar: confere/atualiza o cards.db pela Scryfall antes de liberar a máquina
+  card_db_update.py         base de cartas: confere a Scryfall ao ligar; atualiza quando o usuário pede (app)
   housekeeping.py           fotos da calibração do recorte e limpeza do SD ao fim de cada run
   benchmark.py              tempo por carta de cada run: média, mediana, moda, mín., máx. (geral e first-try)
   slow_cards.py             cards_to_improve/: fotos e resultados das cartas que levaram > 3 s

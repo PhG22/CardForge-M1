@@ -266,8 +266,8 @@ python3 -m venv --system-site-packages .venv
 O último comando cria/atualiza o `data/cards.db` (precisa de internet só agora; depois tudo funciona offline). Ele
 baixa ~480 MB da Scryfall (o bulk de todos os idiomas, para os nomes em português) e leva alguns minutos no Pi 3B;
 o banco do repositório já vem pronto, então rode-o só para atualizar as cartas — e nem isso é preciso no dia a
-dia: **o serviço confere a Scryfall toda vez que sobe** e atualiza o banco antes de liberar a máquina quando há
-cartas novas (LED branco piscando; parte C1b). Alternativa: rode o `sync` no PC e
+dia: **o serviço confere a Scryfall toda vez que sobe** e o app avisa quando há cartas novas; a atualização é
+iniciada pelo app (parte C1c). Alternativa: rode o `sync` no PC e
 copie o resultado com `scp data/cards.db raspad@<ip-do-pi>:/home/raspad/CardForge-M1/data/` (pare o serviço antes).
 
 ```bash
@@ -323,17 +323,31 @@ vez, e confira que só aquele número aparece (ex.: carta no bin 4 → `[4]`). N
 sensor solto lê "vazio"). Com uma carta em algum bin, `curl -X POST <ip-do-pi>:8000/run/start` deve responder 409
 `TRAYS_NOT_EMPTY` listando o bin.
 
+### C1c. Base de cartas: avisos e atualização pelo app
+
+Ao subir, o serviço só **confere** na Scryfall se há cartas novas (em segundo plano; a máquina fica pronta como
+sempre). Se há, o app avisa: um alerta ("Atualização da base de cartas disponível"), uma linha no card da máquina
+na Home e o painel **Base de cartas** no Controle da máquina, que diz o tamanho do download. Para testar:
+
+1. Faça a máquina achar que há cartas novas e reinicie o serviço:
+   `sqlite3 data/cards.db "update db_metadata set value='x' where key='sets_fingerprint'"` e
+   `sudo systemctl restart sorter-api`. Em alguns segundos o app avisa (`curl localhost:8000/card-db` →
+   `update_available: true`).
+2. No app, **Atualizar agora** e confirme. A barra mostra a etapa (nomes em português, lista de cartas, montagem
+   do banco), a porcentagem, os MB baixados e o tempo restante; o LED pisca em branco e um Start responde
+   409 `CARD_DB_UPDATING`. **Cancelar atualização** para tudo e mantém o banco atual.
+3. No fim, o app avisa "Base de cartas atualizada" e o LED volta ao verde. **Procurar atualizações** confere de
+   novo quando quiser.
+
+Durante uma run a atualização é recusada (409 `RUN_ACTIVE`). Sem internet ou com a Scryfall fora do ar, a máquina
+segue com o banco local. Log: `journalctl -u sorter-api | grep "card database"`.
+
 ### C1b. LED de status
 
-Ao subir o serviço o LED fica **branco fixo** (iniciando: carregando a visão, conferindo a base de cartas na
-Scryfall e fazendo o homing da base) e depois **verde fixo** (pronto), **azul fixo** (nenhum Wi-Fi configurado:
-pareie pelo app) ou **azul piscando** (Wi-Fi configurado, fora de alcance). Se a Scryfall tem cartas novas, o
-LED fica **branco piscando** enquanto o `data/cards.db` é atualizado (alguns minutos no Pi 3B; um Start nesse
-meio-tempo responde 409 `CARD_DB_UPDATING`) e a máquina só fica pronta depois. Sem internet ou com a Scryfall fora
-do ar, a máquina sobe normalmente com o banco local. O resultado aparece em `curl localhost:8000/health`
-(`card_db.result`: `up_to_date`, `updated`, `offline`, `unreachable` ou `failed`) e no log
-(`journalctl -u sorter-api | grep "card database"`). Para testar a atualização, apague a impressão digital do
-banco e reinicie o serviço: `sqlite3 data/cards.db "update db_metadata set value='x' where key='sets_fingerprint'"`. Confira os outros estados: Start com um bin ocupado → **amarelo fixo**;
+Ao subir o serviço o LED fica **branco fixo** (iniciando: carregando a visão e fazendo o homing da base) e depois
+**verde fixo** (pronto), **azul fixo** (nenhum Wi-Fi configurado: pareie pelo app) ou **azul piscando** (Wi-Fi
+configurado, fora de alcance). Durante uma atualização da base de cartas (parte C1c) ele pisca em **branco**.
+Confira os outros estados: Start com um bin ocupado → **amarelo fixo**;
 uma run → **verde piscando**; trave o alimentador durante uma run → **vermelho fixo** (Resume volta ao verde
 piscando). Desconecte o Wi-Fi com a máquina parada (`sudo nmcli radio wifi off`) → **azul piscando** em até 2 s
 (`sudo nmcli radio wifi on` para voltar). LED apagado ou cor trocada: confira a fiação (COM no pino 9, vermelho 11,
@@ -591,8 +605,8 @@ continuam como visão local da máquina.
 |---|---|
 | `MODULE_OFFLINE` (503) no Start | Arduino sem energia, cabo A/B invertido, baud diferente, porta serial errada (`MTG_SERIAL_PORT`) |
 | `CARD_DB_MISSING` no Start | Falta `data/cards.db`: `git pull` (o repositório traz o banco) ou `.venv/bin/python -m cardforge.cv sync`; com internet, reiniciar o serviço também o cria |
-| `CARD_DB_UPDATING` no Start / LED branco piscando | O serviço está baixando cartas novas da Scryfall ao ligar. Espere o LED ficar verde; o andamento está em `curl localhost:8000/run/status` (`card_db.progress`) |
-| A base de cartas nunca se atualiza ao ligar | `curl localhost:8000/health` → `card_db.result`: `offline` (Wi-Fi não conectou em 30 s: aumente `MTG_CARD_DB_UPDATE_WAIT_S`), `unreachable` (sem internet / Scryfall fora do ar) ou `failed` (veja o log). `MTG_CARD_DB_UPDATE=off` desliga a checagem |
+| `CARD_DB_UPDATING` no Start / LED branco piscando | Uma atualização da base de cartas iniciada no app está em andamento. Acompanhe ou cancele no Controle da máquina (`curl localhost:8000/card-db` → `progress`) |
+| O app nunca avisa de atualização | `curl localhost:8000/card-db` → `last_check.result`: `offline` (Wi-Fi não conectou em 30 s no boot: aumente `MTG_CARD_DB_CHECK_WAIT_S`), `unreachable` (sem internet / Scryfall fora do ar) ou `failed` (veja o log). **Procurar atualizações** no app confere de novo. `MTG_CARD_DB_CHECK=off` desliga a checagem ao ligar |
 | `CROP_NOT_CALIBRATED` no Start | Salve o recorte fixo na página `/calibration` (parte D, passo 1) |
 | `TRAYS_NOT_EMPTY` sem cartas nos bins | Sensor IR do bin desalinhado (vendo a parede) ou fio trocado: confira bin a bin (parte C1) |
 | Muitas cartas `CROP_FAILED` ou lidas tortas | Câmera ou plataforma mudaram de lugar: refaça o recorte fixo (parte D, passo 1). As fotos usadas estão em `calibragem_recorte/` |

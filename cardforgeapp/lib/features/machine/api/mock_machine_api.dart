@@ -11,13 +11,21 @@ import 'machine_api_models.dart';
 /// first run pauses with a feed jam before that card, to try the fault alert
 /// and Resume. For the real thing (or the API's own simulator:
 /// `python -m sorter_api --simulate`) use `USE_MOCK_MACHINE=false`.
+///
+/// Its card database has an update available, which downloads in
+/// [cardDbUpdateTicks] steps of [cardDbTick], to try the progress bar.
 class MockMachineApi implements MachineApi {
   MockMachineApi({
     this.stackSize = 12,
     this.cardInterval = const Duration(milliseconds: 1500),
     this.latency = const Duration(milliseconds: 300),
     this.jamAtCard = 5,
+    this.cardDbTick = const Duration(milliseconds: 500),
+    this.cardDbUpdateTicks = 40,
   });
+
+  final Duration cardDbTick;
+  final int cardDbUpdateTicks;
 
   final int stackSize;
   final Duration cardInterval;
@@ -37,7 +45,115 @@ class MockMachineApi implements MachineApi {
 
   Future<void> _wait([int times = 1]) => Future<void>.delayed(latency * times);
 
-  MachineSnapshot get _snapshot => MachineSnapshot(state: _state, run: _run);
+  MachineSnapshot get _snapshot =>
+      MachineSnapshot(state: _state, run: _run, cardDb: _cardDb);
+
+  // --------------------------------------------------------- card database
+
+  static const double _downloadMb = 489;
+  CardDbPhase _dbPhase = CardDbPhase.idle;
+  bool _dbAvailable = true;
+  CardDbResult? _dbLastUpdate;
+  int _dbTick = 0;
+  Timer? _dbTimer;
+
+  CardDbStatus get _cardDb => CardDbStatus(
+        phase: _dbPhase,
+        updateAvailable: _dbAvailable,
+        lastCheck: CardDbResult(
+          result: _dbAvailable ? 'update_available' : 'up_to_date',
+          reason: _dbAvailable ? 'new cards or sets on Scryfall' : null,
+          downloadMb: _downloadMb,
+          remoteUpdatedAt: '2026-11-18T10:00:00+00:00',
+        ),
+        lastUpdate: _dbLastUpdate,
+        progress: _dbPhase == CardDbPhase.updating ? _dbProgress() : null,
+        localBuiltAt: DateTime.utc(2026, 11, 17, 18, 26),
+        localCards: 110960,
+      );
+
+  CardDbProgress _dbProgress() {
+    final fraction = _dbTick / cardDbUpdateTicks;
+    final stage = switch (fraction) {
+      < 0.05 => 'checking',
+      < 0.55 => 'all_cards',
+      < 0.65 => 'default_cards',
+      < 0.95 => 'building',
+      _ => 'finishing',
+    };
+    final downloaded = (fraction / 0.65).clamp(0.0, 1.0) * _downloadMb;
+    final left = (cardDbUpdateTicks - _dbTick) * cardDbTick.inMilliseconds;
+    return CardDbProgress(
+      stage: stage,
+      fraction: fraction,
+      downloadedMb: downloaded,
+      downloadMb: _downloadMb,
+      etaSeconds: (left / 1000).round(),
+      elapsedSeconds: (_dbTick * cardDbTick.inMilliseconds / 1000).round(),
+    );
+  }
+
+  void _publishCardDb() => _events.add(CardDbEvent(_cardDb));
+
+  @override
+  Future<CardDbStatus> cardDbStatus() async {
+    await _wait();
+    return _cardDb;
+  }
+
+  @override
+  Future<CardDbStatus> checkCardDb() async {
+    await _wait();
+    if (_dbPhase != CardDbPhase.idle) return _cardDb;
+    _dbPhase = CardDbPhase.checking;
+    Timer(latency * 4, () {
+      _dbPhase = CardDbPhase.idle;
+      _publishCardDb();
+    });
+    return _cardDb;
+  }
+
+  @override
+  Future<CardDbStatus> updateCardDb({bool force = false}) async {
+    await _wait();
+    if (_dbPhase == CardDbPhase.updating) {
+      throw const MachineApiException(MachineApiFailure.conflict,
+          statusCode: 409, code: 'CARD_DB_UPDATING');
+    }
+    if (_state != ControllerState.idle) {
+      throw const MachineApiException(MachineApiFailure.conflict,
+          statusCode: 409, code: 'RUN_ACTIVE');
+    }
+    _dbPhase = CardDbPhase.updating;
+    _dbTick = 0;
+    _dbTimer = Timer.periodic(cardDbTick, (_) {
+      _dbTick++;
+      if (_dbTick >= cardDbUpdateTicks) {
+        _dbTimer?.cancel();
+        _dbPhase = CardDbPhase.idle;
+        _dbAvailable = false;
+        _dbLastUpdate = CardDbResult(
+            result: 'updated', at: DateTime.now().toUtc());
+      }
+      _publishCardDb();
+    });
+    return _cardDb;
+  }
+
+  @override
+  Future<CardDbStatus> cancelCardDbUpdate() async {
+    await _wait();
+    if (_dbPhase != CardDbPhase.updating) {
+      throw const MachineApiException(MachineApiFailure.conflict,
+          statusCode: 409, code: 'NOT_UPDATING');
+    }
+    _dbTimer?.cancel();
+    _dbPhase = CardDbPhase.idle;
+    _dbLastUpdate =
+        CardDbResult(result: 'cancelled', at: DateTime.now().toUtc());
+    _publishCardDb();
+    return _cardDb;
+  }
 
   @override
   Future<MachineHealth> health() async {
@@ -53,6 +169,18 @@ class MockMachineApi implements MachineApi {
 
   @override
   Future<RunInfo> startRun() async {
+    if (_dbPhase == CardDbPhase.updating) {
+      throw const MachineApiException(
+        MachineApiFailure.conflict,
+        statusCode: 409,
+        code: 'CARD_DB_UPDATING',
+        problems: [
+          StartProblem(
+              code: 'CARD_DB_UPDATING',
+              message: 'The machine is updating its card database.'),
+        ],
+      );
+    }
     if (_state != ControllerState.idle) {
       throw const MachineApiException(
         MachineApiFailure.conflict,

@@ -44,7 +44,8 @@ class EventHub:
             self._listeners.append(listener)
 
     def publish(self, event: dict) -> None:
-        log.info("event %s", event.get("type"))
+        # card_db: progress of a card database update, about once a second while it runs
+        log.log(logging.DEBUG if event.get("type") == "card_db" else logging.INFO, "event %s", event.get("type"))
         with self._lock:
             listeners = list(self._listeners)
         for listener in listeners:

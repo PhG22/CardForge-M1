@@ -364,6 +364,8 @@ class PtStrings extends AppStrings {
         'HOME_TIMEOUT' => 'A base não chegou à posição inicial a tempo.',
         'HOMING' => 'A base está fazendo o homing depois de ligar. '
             'Tente de novo em alguns segundos.',
+        'CARD_DB_UPDATING' => 'A máquina está atualizando a base de cartas. '
+            'Espere terminar ou cancele em Controle da máquina.',
         'SIGN_IN_REQUIRED' =>
           'Sua sessão expirou. Entre novamente para iniciar uma ordenação.',
         'SERVER_UNREACHABLE' =>
@@ -462,6 +464,130 @@ class PtStrings extends AppStrings {
   @override
   String get unfinishedRunHome =>
       'A última ordenação não terminou corretamente. Toque para iniciar outra.';
+  @override
+  String get cardDbTitle => 'Base de cartas';
+  @override
+  String cardDbStatusLine(CardDbStatus db) {
+    if (db.isUpdating) {
+      return 'Atualizando a base de cartas. A máquina volta a ordenar quando '
+          'terminar.';
+    }
+    if (db.isChecking) return 'Procurando cartas novas na Scryfall…';
+    if (db.updateAvailable == true) {
+      final size = db.lastCheck?.downloadMb;
+      return 'Atualização disponível: a Scryfall tem cartas novas'
+          '${size == null ? '' : ' (cerca de ${size.round()} MB para baixar)'}.';
+    }
+    return switch (db.lastCheck?.result) {
+      'offline' => 'Não verificada: a máquina está sem rede. Ela usa as '
+          'cartas que já tem.',
+      'unreachable' => 'Não foi possível falar com a Scryfall. A máquina usa '
+          'as cartas que já tem.',
+      'failed' =>
+        'A última verificação falhou. A máquina usa as cartas que já tem.',
+      _ => db.updateAvailable == false ? 'Atualizada.' : 'Ainda não verificada.',
+    };
+  }
+  @override
+  String cardDbLocalLine(CardDbStatus db) {
+    final built = db.localBuiltAt;
+    final cards = db.localCards;
+    return [
+      if (built != null) 'Cartas de ${dateTime(built.toLocal())}',
+      if (cards != null) '${_grouped(cards)} impressões',
+    ].join(' · ');
+  }
+  String _grouped(int n) => n.toString().replaceAllMapped(
+      RegExp(r'\B(?=(\d{3})+(?!\d))'), (_) => '.');
+  @override
+  String cardDbStage(String stage) => switch (stage) {
+        'checking' => 'Verificando a Scryfall',
+        'all_cards' => 'Baixando os nomes em português',
+        'default_cards' => 'Baixando a lista de cartas',
+        'building' => 'Montando a nova base',
+        'finishing' => 'Finalizando',
+        _ => 'Atualizando',
+      };
+  @override
+  String cardDbProgressLine(CardDbProgress? progress) {
+    if (progress == null) return 'Começando…';
+    final done = progress.downloadedMb;
+    final total = progress.downloadMb;
+    final downloading =
+        progress.stage == 'all_cards' || progress.stage == 'default_cards';
+    return [
+      '${cardDbStage(progress.stage)}…',
+      '${(progress.fraction * 100).round()}%',
+      if (downloading && done != null && total != null && total > 0)
+        '${done.round()} de ${total.round()} MB',
+      _timeLeft(progress.etaSeconds),
+    ].join(' · ');
+  }
+  String _timeLeft(int? seconds) {
+    if (seconds == null) return 'calculando o tempo restante';
+    if (seconds < 60) return 'menos de um minuto restante';
+    final minutes = (seconds / 60).round();
+    return minutes == 1
+        ? 'cerca de 1 minuto restante'
+        : 'cerca de $minutes minutos restantes';
+  }
+  @override
+  String get cardDbCheck => 'Procurar atualizações';
+  @override
+  String get cardDbUpdateNow => 'Atualizar agora';
+  @override
+  String get cardDbUpdateAnyway => 'Atualizar mesmo assim';
+  @override
+  String get cardDbCancel => 'Cancelar atualização';
+  @override
+  String get cardDbConfirmTitle => 'Atualizar a base de cartas?';
+  @override
+  String cardDbConfirmBody(double? downloadMb) =>
+      'A máquina baixa '
+      '${downloadMb == null ? 'cerca de 500 MB' : 'cerca de ${downloadMb.round()} MB'} '
+      'da Scryfall e monta uma nova base de cartas. Leva alguns minutos, e a '
+      'máquina não ordena até terminar. Você pode cancelar a qualquer momento: '
+      'as cartas atuais ficam até as novas estarem prontas.';
+  @override
+  String get cardDbUpdate => 'Atualizar';
+  @override
+  String cardDbLastUpdate(CardDbResult update) => switch (update.result) {
+        'updated' => 'Última atualização concluída'
+            '${update.at == null ? '' : ' em ${dateTime(update.at!.toLocal())}'}.',
+        'up_to_date' =>
+          'Nada a atualizar: as cartas já estavam em dia.',
+        'cancelled' =>
+          'A última atualização foi cancelada. A máquina manteve as cartas.',
+        'unreachable' => 'A última atualização não conseguiu falar com a '
+            'Scryfall. A máquina manteve as cartas.',
+        _ => 'A última atualização falhou. A máquina manteve as cartas.',
+      };
+  @override
+  String cardDbError(MachineApiException error) => switch (error.code) {
+        'RUN_ACTIVE' => 'A máquina está ocupada. Atualize a base de cartas '
+            'quando não houver ordenação em andamento.',
+        'CARD_DB_CHECKING' => 'A máquina está procurando atualizações. Tente '
+            'de novo em alguns segundos.',
+        'CARD_DB_UPDATING' => 'Já há uma atualização em andamento.',
+        'NOT_UPDATING' => 'Nenhuma atualização em andamento.',
+        'CARD_DB_UNAVAILABLE' =>
+          'Esta máquina não tem base de cartas (a câmera está desligada).',
+        _ => machineApiError(error),
+      };
+  @override
+  String get cardDbBusyHint => 'Você pode atualizar quando a ordenação terminar.';
+  @override
+  String? cardDbHome(CardDbStatus db) {
+    if (db.isUpdating) {
+      final progress = db.progress;
+      return 'Atualizando a base de cartas'
+          '${progress == null ? '' : ' (${(progress.fraction * 100).round()}%)'}…';
+    }
+    if (db.updateAvailable == true) {
+      return 'Há uma atualização da base de cartas. Toque para atualizar.';
+    }
+    return null;
+  }
   @override
   String get diagnostics => 'Diagnóstico';
   @override
@@ -750,6 +876,10 @@ class PtStrings extends AppStrings {
         AlertType.doubleFeed => 'Alimentação dupla detectada',
         AlertType.connectionLost => 'Conexão perdida',
         AlertType.machineLinked => 'Máquina vinculada',
+        AlertType.cardDbUpdateAvailable =>
+          'Atualização da base de cartas disponível',
+        AlertType.cardDbUpdated => 'Base de cartas atualizada',
+        AlertType.cardDbUpdateFailed => 'Falha ao atualizar a base de cartas',
       };
   @override
   String alertMessage(MachineAlert alert) {
@@ -774,6 +904,12 @@ class PtStrings extends AppStrings {
       AlertType.connectionLost =>
         'Contato com $name perdido. O app continua tentando reconectar.',
       AlertType.machineLinked => '$name agora está vinculada à sua conta.',
+      AlertType.cardDbUpdateAvailable => '$name pode baixar cartas novas da '
+          'Scryfall. Abra o controle da máquina para atualizar a base de '
+          'cartas.',
+      AlertType.cardDbUpdated => '$name agora conhece as cartas mais recentes.',
+      AlertType.cardDbUpdateFailed => '$name não conseguiu atualizar a base de '
+          'cartas e continua com as cartas que tinha. Tente de novo mais tarde.',
     };
   }
 }

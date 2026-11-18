@@ -18,6 +18,12 @@ class FakeMachineApi implements MachineApi {
   bool bottomEnabled;
   MachineSnapshot snapshot;
 
+  /// What the card database commands answer (the machine's `card_db`).
+  CardDbStatus cardDb = const CardDbStatus(updateAvailable: false);
+
+  /// When set, the next card database command throws it.
+  MachineApiException? cardDbError;
+
   /// When set, the next startRun throws it.
   MachineApiException? startError;
 
@@ -166,6 +172,48 @@ class FakeMachineApi implements MachineApi {
     return BaseMoveResult(
       base: BaseStatus(online: true, homed: true, position: tray),
     );
+  }
+
+  @override
+  Future<CardDbStatus> cardDbStatus() async {
+    _check('cardDbStatus');
+    return cardDb;
+  }
+
+  @override
+  Future<CardDbStatus> checkCardDb() => _cardDbCall(
+      'checkCardDb', const CardDbStatus(phase: CardDbPhase.checking));
+
+  @override
+  Future<CardDbStatus> updateCardDb({bool force = false}) => _cardDbCall(
+        force ? 'updateCardDb(force)' : 'updateCardDb',
+        CardDbStatus(
+          phase: CardDbPhase.updating,
+          updateAvailable: cardDb.updateAvailable,
+          lastCheck: cardDb.lastCheck,
+          progress: const CardDbProgress(stage: 'checking', fraction: 0),
+        ),
+      );
+
+  @override
+  Future<CardDbStatus> cancelCardDbUpdate() => _cardDbCall(
+        'cancelCardDbUpdate',
+        CardDbStatus(
+          updateAvailable: cardDb.updateAvailable,
+          lastCheck: cardDb.lastCheck,
+          lastUpdate: const CardDbResult(result: 'cancelled'),
+        ),
+      );
+
+  Future<CardDbStatus> _cardDbCall(String call, CardDbStatus next) async {
+    _check(call);
+    final error = cardDbError;
+    if (error != null) {
+      cardDbError = null;
+      throw error;
+    }
+    cardDb = next;
+    return next;
   }
 
   @override

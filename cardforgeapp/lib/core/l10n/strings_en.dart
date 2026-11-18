@@ -362,6 +362,8 @@ class EnStrings extends AppStrings {
         'HOME_TIMEOUT' => 'The base could not reach its home position in time.',
         'HOMING' =>
           'The base is homing after power-on. Try again in a few seconds.',
+        'CARD_DB_UPDATING' => 'The machine is updating its card database. '
+            'Wait for it to finish, or cancel it in Machine control.',
         'SIGN_IN_REQUIRED' =>
           'Your session expired. Sign in again to start a run.',
         'SERVER_UNREACHABLE' =>
@@ -453,6 +455,126 @@ class EnStrings extends AppStrings {
   @override
   String get unfinishedRunHome =>
       "The last run didn't finish correctly. Tap to start a new one.";
+  @override
+  String get cardDbTitle => 'Card database';
+  @override
+  String cardDbStatusLine(CardDbStatus db) {
+    if (db.isUpdating) {
+      return 'Updating the card database. The machine can sort again when '
+          'it ends.';
+    }
+    if (db.isChecking) return 'Checking Scryfall for new cards…';
+    if (db.updateAvailable == true) {
+      final size = db.lastCheck?.downloadMb;
+      return 'Update available: Scryfall has new cards'
+          '${size == null ? '' : ' (about ${size.round()} MB to download)'}.';
+    }
+    return switch (db.lastCheck?.result) {
+      'offline' =>
+        'Not checked: the machine has no network. It uses the cards it has.',
+      'unreachable' =>
+        "Couldn't reach Scryfall. The machine uses the cards it has.",
+      'failed' => 'The last check failed. The machine uses the cards it has.',
+      _ => db.updateAvailable == false ? 'Up to date.' : 'Not checked yet.',
+    };
+  }
+  @override
+  String cardDbLocalLine(CardDbStatus db) {
+    final built = db.localBuiltAt;
+    final cards = db.localCards;
+    return [
+      if (built != null) 'Cards from ${dateTime(built.toLocal())}',
+      if (cards != null) '${_grouped(cards)} printings',
+    ].join(' · ');
+  }
+  String _grouped(int n) => n.toString().replaceAllMapped(
+      RegExp(r'\B(?=(\d{3})+(?!\d))'), (_) => ',');
+  @override
+  String cardDbStage(String stage) => switch (stage) {
+        'checking' => 'Checking Scryfall',
+        'all_cards' => 'Downloading the Portuguese names',
+        'default_cards' => 'Downloading the card list',
+        'building' => 'Building the new database',
+        'finishing' => 'Finishing',
+        _ => 'Updating',
+      };
+  @override
+  String cardDbProgressLine(CardDbProgress? progress) {
+    if (progress == null) return 'Starting…';
+    final done = progress.downloadedMb;
+    final total = progress.downloadMb;
+    final downloading =
+        progress.stage == 'all_cards' || progress.stage == 'default_cards';
+    return [
+      '${cardDbStage(progress.stage)}…',
+      '${(progress.fraction * 100).round()}%',
+      if (downloading && done != null && total != null && total > 0)
+        '${done.round()} of ${total.round()} MB',
+      _timeLeft(progress.etaSeconds),
+    ].join(' · ');
+  }
+  String _timeLeft(int? seconds) {
+    if (seconds == null) return 'estimating the time left';
+    if (seconds < 60) return 'less than a minute left';
+    final minutes = (seconds / 60).round();
+    return minutes == 1 ? 'about 1 minute left' : 'about $minutes minutes left';
+  }
+  @override
+  String get cardDbCheck => 'Check for updates';
+  @override
+  String get cardDbUpdateNow => 'Update now';
+  @override
+  String get cardDbUpdateAnyway => 'Update anyway';
+  @override
+  String get cardDbCancel => 'Cancel update';
+  @override
+  String get cardDbConfirmTitle => 'Update the card database?';
+  @override
+  String cardDbConfirmBody(double? downloadMb) =>
+      'The machine downloads '
+      '${downloadMb == null ? 'about 500 MB' : 'about ${downloadMb.round()} MB'} '
+      'from Scryfall and builds a new card database. It takes a few minutes, '
+      "and the machine can't sort until it ends. You can cancel it at any "
+      'time: the current cards stay until the new ones are ready.';
+  @override
+  String get cardDbUpdate => 'Update';
+  @override
+  String cardDbLastUpdate(CardDbResult update) => switch (update.result) {
+        'updated' => 'Last update finished'
+            '${update.at == null ? '' : ' on ${dateTime(update.at!.toLocal())}'}.',
+        'up_to_date' => 'Nothing to update: the cards were already up to date.',
+        'cancelled' =>
+          'The last update was cancelled. The machine kept its cards.',
+        'unreachable' => "The last update couldn't reach Scryfall. The machine "
+            'kept its cards.',
+        _ => 'The last update failed. The machine kept its cards.',
+      };
+  @override
+  String cardDbError(MachineApiException error) => switch (error.code) {
+        'RUN_ACTIVE' => 'The machine is busy. Update the card database when '
+            'no run is active.',
+        'CARD_DB_CHECKING' =>
+          'The machine is checking for updates. Try again in a few seconds.',
+        'CARD_DB_UPDATING' => 'An update is already running.',
+        'NOT_UPDATING' => 'No update is running.',
+        'CARD_DB_UNAVAILABLE' =>
+          'This machine has no card database (the camera is off).',
+        _ => machineApiError(error),
+      };
+  @override
+  String get cardDbBusyHint => 'You can update when the run ends.';
+  @override
+  String? cardDbHome(CardDbStatus db) {
+    if (db.isUpdating) {
+      final progress = db.progress;
+      return 'Updating the card database'
+          '${progress == null ? '' : ' (${(progress.fraction * 100).round()}%)'}…';
+    }
+    if (db.updateAvailable == true) {
+      return 'A card database update is available. Tap to update.';
+    }
+    return null;
+  }
   @override
   String get diagnostics => 'Diagnostics';
   @override
@@ -739,6 +861,9 @@ class EnStrings extends AppStrings {
         AlertType.doubleFeed => 'Double feed detected',
         AlertType.connectionLost => 'Connection lost',
         AlertType.machineLinked => 'Machine linked',
+        AlertType.cardDbUpdateAvailable => 'Card database update available',
+        AlertType.cardDbUpdated => 'Card database updated',
+        AlertType.cardDbUpdateFailed => 'Card database update failed',
       };
   @override
   String alertMessage(MachineAlert alert) {
@@ -761,6 +886,11 @@ class EnStrings extends AppStrings {
       AlertType.connectionLost =>
         'Lost contact with $name. The app keeps trying to reconnect.',
       AlertType.machineLinked => '$name is now linked to your account.',
+      AlertType.cardDbUpdateAvailable => '$name can download new cards from '
+          'Scryfall. Open machine control to update its card database.',
+      AlertType.cardDbUpdated => '$name now knows the newest cards.',
+      AlertType.cardDbUpdateFailed => "$name couldn't update its card "
+          'database and keeps the cards it had. Try again later.',
     };
   }
 }

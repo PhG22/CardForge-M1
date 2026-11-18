@@ -4,7 +4,11 @@
     POST /run/stop        finish the card in progress, close the flap, stop the motors
                           (?immediate=true: stop the motors right now)
     POST /run/resume      continue a run paused by a fault (re-homes the base first)
-    GET  /run/status      current state + current/last run (+ card database check at power-on)
+    GET  /run/status      current state + current/last run (+ card_db: card database updates)
+    GET  /card-db         card database: update available?, check / update in progress, progress, ETA
+    POST /card-db/check   check Scryfall for new cards now (also done at power-on)
+    POST /card-db/update  download and build the new card database (?force=true: even if up to date)
+    POST /card-db/update/cancel   stop the update; the local card database is kept
     GET  /runs            past runs (run.db)
     GET  /runs/{id}       results of a finished run: per-bin counts + every card (RF22)
     GET  /inventory/export.csv   every sorted card, RFC 4180 CSV (RF24)
@@ -15,7 +19,8 @@
     GET  /health          liveness check
     GET  /sync/status     upload of finished runs to the CardForge server (sync.py)
     POST /sync/now        try the uploads now instead of waiting for the next retry
-    WS   /ws/events       run_started / card_sorted / attention / fault / run_finished notifications
+    WS   /ws/events       run_started / card_sorted / attention / fault / run_finished notifications,
+                          card_db (card database check / update and its progress)
 
     With MTG_SERVER_URL (a CardForge server, docs/SERVER.md): /run/start needs the app
     user's token (Authorization: Bearer ...), and finished runs are uploaded to the server.
@@ -44,7 +49,7 @@ from .bus import BusError, GpioDirectionPin, RS485Bus, RtsDirectionPin, SerialPo
 from .config import Settings
 from .app_compat import create_app_router
 from .calibration_api import create_calibration_router
-from .card_db_update import CardDbUpdater
+from .card_db_update import CardDbBusy, CardDbManager
 from .controller import (HardwareFault, ManualRefused, NoActiveRun, NotPaused, SorterController, StartRefused,
                          _describe_fault)
 from .bus import ModuleError, ModuleNotResponding
@@ -136,16 +141,20 @@ def build_identifier(settings: Settings, vision=None):
                             settings.light_step), vision
 
 
-def build_card_db_updater(settings: Settings, vision_module, status_led, monitor) -> CardDbUpdater | None:
-    """MTG_CARD_DB_UPDATE: check (and update) data/cards.db when the service starts.
-    auto = on the real machine with the camera (not with --simulate); on; off."""
-    mode = settings.card_db_update
-    if mode == "off" or vision_module is None or not hasattr(vision_module, "update_database"):
+def build_card_db_manager(settings: Settings, vision_module, status_led, controller, hub,
+                          monitor) -> CardDbManager | None:
+    """The card database check / update (card_db_update.py): whenever the vision uses a cards.db."""
+    if vision_module is None or not (hasattr(vision_module, "update_database")
+                                     and hasattr(vision_module, "sync_service")):
         return None
-    if mode == "auto" and (settings.simulate or settings.vision != "camera"):
-        return None
-    return CardDbUpdater(vision_module, status_led, settings.card_db_update_wait_s,
+    return CardDbManager(vision_module, status_led, controller, hub, wait_s=settings.card_db_check_wait_s,
                          network_probe=monitor.probe if monitor is not None else None)
+
+
+def check_card_db_at_power_on(settings: Settings) -> bool:
+    """MTG_CARD_DB_CHECK: auto = on the real machine with the camera (not with --simulate); on; off."""
+    mode = settings.card_db_check
+    return mode == "on" or (mode == "auto" and not settings.simulate and settings.vision == "camera")
 
 
 def create_app(settings: Settings | None = None, serial_port: SerialPort | None = None,
@@ -212,9 +221,11 @@ def create_app(settings: Settings | None = None, serial_port: SerialPort | None 
                                       status_led, on_run_finished=worker.notify if worker else None)
         if isinstance(identifier, VisionIdentifier):
             identifier.set_light = controller.set_chamber_light
-        # Card database: checked (and updated if there are new cards) before the machine is ready
-        updater = build_card_db_updater(settings, vision_module, status_led, monitor)
-        app.state.card_db_updater = updater
+        # Card database: checked at power-on (in the background); updated when the user asks (the app)
+        card_db = build_card_db_manager(settings, vision_module, status_led, controller, hub, monitor)
+        app.state.card_db = card_db
+        if card_db is not None:
+            controller.card_db_status = card_db.status
         app.state.controller = controller
         app.state.events = hub
         app.state.sim_world = sim_world
@@ -229,7 +240,9 @@ def create_app(settings: Settings | None = None, serial_port: SerialPort | None 
         app.state.crop_frame_size = None
         if server is None and not settings.app_password:
             log.warning("MTG_APP_PASSWORD is empty: the app can sign in with any username and password")
-        await asyncio.to_thread(controller.power_on, updater.run if updater is not None else None)
+        await asyncio.to_thread(controller.power_on)
+        if card_db is not None and check_card_db_at_power_on(settings):
+            card_db.start_check(wait_for_network=True)   # only a check: the machine does not wait for it
         if worker is not None:
             worker.start()                 # also uploads runs left over from before a reboot
             log.info("runs are uploaded to the CardForge server at %s", server.base_url)
@@ -242,8 +255,8 @@ def create_app(settings: Settings | None = None, serial_port: SerialPort | None 
         try:
             yield
         finally:
-            if updater is not None:
-                updater.cancel()
+            if card_db is not None:
+                await asyncio.to_thread(card_db.close)
             await asyncio.to_thread(controller.shutdown)
             if worker is not None:
                 await asyncio.to_thread(worker.stop)
@@ -356,13 +369,61 @@ def create_app(settings: Settings | None = None, serial_port: SerialPort | None 
 
     @app.get("/run/status")
     def run_status(request: Request):
-        snapshot = controller_of(request).snapshot()
-        snapshot["card_db"] = card_db_status(request)
-        return snapshot
+        return controller_of(request).snapshot()
 
-    def card_db_status(request: Request) -> dict | None:
-        updater = getattr(request.app.state, "card_db_updater", None)
-        return updater.status() if updater is not None else None
+    # ------------------------------------------------- card database (card_db_update.py)
+
+    def card_db_of(request: Request) -> CardDbManager | None:
+        return getattr(request.app.state, "card_db", None)
+
+    def no_card_db() -> JSONResponse:
+        return JSONResponse(status_code=409, content={
+            "code": "CARD_DB_UNAVAILABLE",
+            "message": "This machine identifies no cards (MTG_VISION=off): it has no card database."})
+
+    @app.get("/card-db", tags=["card database"])
+    def card_db_status(request: Request):
+        """Is there an update? Check or update in progress, with its progress and ETA."""
+        card_db = card_db_of(request)
+        return no_card_db() if card_db is None else card_db.status()
+
+    @app.post("/card-db/check", tags=["card database"])
+    def card_db_check(request: Request):
+        """Check Scryfall for new cards, in the background (a few seconds). The result comes on the
+        WebSocket (card_db) and in GET /card-db."""
+        card_db = card_db_of(request)
+        if card_db is None:
+            return no_card_db()
+        started = card_db.start_check()
+        return JSONResponse(status_code=202 if started else 200,
+                            content={"started": started, "card_db": card_db.status()})
+
+    @app.post("/card-db/update", tags=["card database"])
+    def card_db_update(request: Request, force: bool = False):
+        """Download and build the new card database, in the background (minutes on the Pi 3B). The
+        progress and ETA come on the WebSocket (card_db, about once a second) and in GET /card-db.
+        Start is refused until it ends. 409 while a run is active."""
+        card_db = card_db_of(request)
+        if card_db is None:
+            return no_card_db()
+        try:
+            card_db.start_update(force=force)
+        except (CardDbBusy, ManualRefused) as exc:
+            return JSONResponse(status_code=409, content={"code": exc.code, "message": exc.message,
+                                                          "card_db": card_db.status()})
+        return JSONResponse(status_code=202, content={"started": True, "card_db": card_db.status()})
+
+    @app.post("/card-db/update/cancel", tags=["card database"])
+    def card_db_cancel(request: Request):
+        """Stop the update in progress: the local card database is kept."""
+        card_db = card_db_of(request)
+        if card_db is None:
+            return no_card_db()
+        if not card_db.cancel_update():
+            return JSONResponse(status_code=409, content={"code": "NOT_UPDATING",
+                                                          "message": "No card database update is running.",
+                                                          "card_db": card_db.status()})
+        return {"cancelling": True, "card_db": card_db.status()}
 
     @app.get("/hardware/status")
     def hardware_status(request: Request):
@@ -475,7 +536,8 @@ def create_app(settings: Settings | None = None, serial_port: SerialPort | None 
     def health(request: Request):
         return {"ok": True, "simulate": settings.simulate, "bottom_enabled": settings.bottom_enabled,
                 "server": request.app.state.server is not None,
-                "startup": controller_of(request).startup_phase, "card_db": card_db_status(request)}
+                "startup": controller_of(request).startup_phase,
+                "card_db": card_db_of(request).status() if card_db_of(request) is not None else None}
 
     @app.get("/sync/status", tags=["results"])
     def sync_status(request: Request):

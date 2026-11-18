@@ -43,6 +43,22 @@ abstract class MachineApi {
   /// POST /base/goto/{tray}
   Future<BaseMoveResult> gotoTray(int tray);
 
+  /// GET /card-db: is a card database update available, is one running.
+  Future<CardDbStatus> cardDbStatus();
+
+  /// POST /card-db/check: ask Scryfall for new cards now. The result comes as
+  /// a [CardDbEvent] a few seconds later.
+  Future<CardDbStatus> checkCardDb();
+
+  /// POST /card-db/update (`?force=true`: even when up to date): download and
+  /// build the new card database in the background; its progress comes as
+  /// [CardDbEvent]s. Refused (409 RUN_ACTIVE) while a run is active.
+  Future<CardDbStatus> updateCardDb({bool force = false});
+
+  /// POST /card-db/update/cancel: stop the update; the machine keeps its
+  /// current card database.
+  Future<CardDbStatus> cancelCardDbUpdate();
+
   /// WS /ws/events. The first event is a [SnapshotEvent]. The stream ends
   /// (or errors) when the connection drops; listen again to reconnect.
   Stream<MachineEvent> events();
@@ -144,6 +160,35 @@ class HttpMachineApi implements MachineApi {
         await _request('POST', '/base/goto/$tray',
             timeout: AppConfig.machineMoveTimeout),
       );
+
+  @override
+  Future<CardDbStatus> cardDbStatus() async =>
+      CardDbStatus.fromJson(await _request('GET', '/card-db'));
+
+  @override
+  Future<CardDbStatus> checkCardDb() async =>
+      _cardDb(await _request('POST', '/card-db/check'));
+
+  @override
+  Future<CardDbStatus> updateCardDb({bool force = false}) async => _cardDb(
+        await _request(
+          'POST',
+          '/card-db/update',
+          query: force ? const {'force': 'true'} : null,
+        ),
+      );
+
+  @override
+  Future<CardDbStatus> cancelCardDbUpdate() async =>
+      _cardDb(await _request('POST', '/card-db/update/cancel'));
+
+  CardDbStatus _cardDb(Map<String, Object?> json) {
+    final status = json['card_db'];
+    if (status is! Map) {
+      throw const MachineApiException(MachineApiFailure.badResponse);
+    }
+    return CardDbStatus.fromJson(status.cast<String, Object?>());
+  }
 
   @override
   Stream<MachineEvent> events() {

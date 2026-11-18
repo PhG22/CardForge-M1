@@ -158,6 +158,23 @@ abstract class AppStrings {
   String unfinishedRunSuggestion(LastRunCheck check);
   String get startNewRun;
   String get unfinishedRunHome;
+  // Card database (Scryfall) on the machine: updates the user starts
+  String get cardDbTitle;
+  String cardDbStatusLine(CardDbStatus db);
+  String cardDbLocalLine(CardDbStatus db);
+  String cardDbStage(String stage);
+  String cardDbProgressLine(CardDbProgress? progress);
+  String get cardDbCheck;
+  String get cardDbUpdateNow;
+  String get cardDbUpdateAnyway;
+  String get cardDbCancel;
+  String get cardDbConfirmTitle;
+  String cardDbConfirmBody(double? downloadMb);
+  String get cardDbUpdate;
+  String cardDbLastUpdate(CardDbResult update);
+  String cardDbError(MachineApiException error);
+  String get cardDbBusyHint;
+  String? cardDbHome(CardDbStatus db);
   String get diagnostics;
   String get refresh;
   String get topModule;

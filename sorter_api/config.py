@@ -77,11 +77,12 @@ class Settings:
     identify_delay_s: float = 2.0       # vision=off only
     light_base_level: int = 60          # chamber LEDs, % (needs the optional LIGHT command on A1)
     light_step: int = 20                # added before each retry (RNF09)
-    # Card database (data/cards.db) check when the service starts (card_db_update.py): updated from
-    # Scryfall before the machine is ready when there are new cards; no internet = the local one.
-    # auto = with the camera on the real machine (not with --simulate); on; off.
-    card_db_update: str = "auto"
-    card_db_update_wait_s: float = 30.0  # at boot: how long to wait for a configured Wi-Fi to connect
+    # Card database (data/cards.db, card_db_update.py): checked against Scryfall when the service starts,
+    # in the background (the machine is ready as usual); the app tells the user when an update is
+    # available, and the user starts it. auto = with the camera on the real machine (not --simulate);
+    # on; off (no check at power-on; the app can still check and update).
+    card_db_check: str = "auto"
+    card_db_check_wait_s: float = 30.0   # at boot: how long the check waits for a configured Wi-Fi to connect
 
     # --- RGB status LED on the Pi GPIO (status_led.py)
     led: str = "auto"                   # auto = GPIO on the Pi, in memory with --simulate; gpio; off

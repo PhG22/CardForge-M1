@@ -8,10 +8,10 @@ Settings: MTG_LED_PINS = "17,22,27" (BCM numbers, in R,G,B order), MTG_LED = aut
     OFF               off                      no power / service stopped
     STARTING          solid white              power-on until the machine is ready: set by the Pi firmware
                                                (config.txt "gpio=17,22,27=op,dh") before Linux boots, then
-                                               by this service while it loads, checks the card database
-                                               and homes the base (RF08)
-    UPDATING          white, 1 Hz              the card database (cards.db) is being updated from Scryfall
-                                               at power-on (card_db_update.py); not in Appendix B
+                                               by this service while it loads and homes the base (RF08)
+    UPDATING          white, 1 Hz              the card database (cards.db) is being updated from Scryfall,
+                                               an update the user started in the app (card_db_update.py);
+                                               not in Appendix B
     IDLE              solid green              ready, no run (Wi-Fi connected, homing done)
     RUNNING           green, 1 Hz              run in progress
     FEED_JAM          solid red                run paused by a fault (jam, stuck card, base...);
@@ -23,12 +23,11 @@ Settings: MTG_LED_PINS = "17,22,27" (BCM numbers, in R,G,B order), MTG_LED = aut
     SETUP             solid blue               no Wi-Fi configured yet (Bluetooth setup, RF40)
     NO_NETWORK        blue, 1 Hz               Wi-Fi configured but not connected
 
-Priority: UPDATING (while the card database updates) > STARTING (until ready() is called, once
-the service is up, the card database checked and the power-on homing over) > machine state (set
-by the run controller) > network state, which only shows while the machine is idle. So after
-power-on the LED goes white (-> blinking white while a card database update downloads -> white)
--> blue (no Wi-Fi yet: pair over Bluetooth) or blinking blue (Wi-Fi configured, not connected)
-or green (ready to start).
+Priority: UPDATING (while a card database update runs) > STARTING (until ready() is called, once
+the service is up and the power-on homing is over) > machine state (set by the run controller) >
+network state, which only shows while the machine is idle. So after power-on the LED goes white ->
+blue (no Wi-Fi yet: pair over Bluetooth) or blinking blue (Wi-Fi configured, not connected) or green
+(ready to start).
 """
 
 from __future__ import annotations

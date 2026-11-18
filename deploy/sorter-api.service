@@ -4,10 +4,9 @@
 #   3. sudo systemctl daemon-reload && sudo systemctl enable --now sorter-api
 #   4. Logs: journalctl -u sorter-api -f
 #
-# Card database: data/cards.db comes with the repository, and every time this service starts it asks
-# Scryfall for new cards and, if there are any, updates it before the machine is ready (status LED
-# blinking white; MTG_CARD_DB_UPDATE=off turns it off). No internet = the local one is used.
-# By hand: .venv/bin/python -m cardforge.cv sync
+# Card database: data/cards.db comes with the repository. Every time this service starts it checks
+# Scryfall for new cards (in the background; MTG_CARD_DB_CHECK=off turns it off) and the app tells the
+# user, who starts the update from the app. By hand: .venv/bin/python -m cardforge.cv sync
 
 # Status LED at power-on (RF16 / RF41, Appendix B "Starting" = solid white): add this line to
 # /boot/firmware/config.txt (/boot/config.txt before Bookworm) so the Pi firmware lights the LED
@@ -20,8 +19,8 @@
 Description=CardForge-M1 sorter (main loop + API)
 # Do NOT wait for network-online.target: while the saved Wi-Fi is out of reach it holds this
 # service for up to a minute, and the LED would stay white instead of blinking blue. The card database
-# check at start waits by itself, up to MTG_CARD_DB_UPDATE_WAIT_S (30 s), and only while a configured
-# Wi-Fi is still connecting (the server is only asked at Start; uploads retry by themselves).
+# check at start waits by itself, in the background, up to MTG_CARD_DB_CHECK_WAIT_S (30 s), and only while
+# a configured Wi-Fi is still connecting (the server is only asked at Start; uploads retry by themselves).
 After=network.target NetworkManager.service cardforge-setup.service
 Wants=cardforge-setup.service
 

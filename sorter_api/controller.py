@@ -264,7 +264,9 @@ class SorterController:
         # Does the A1 firmware support the optional commands? (turned off on ERR BAD_CMD)
         self._optional_ok = {"LIGHT": True, "VIBRATE": True}
         self._power_on_homing = threading.Event()   # set while the base homes after the service start (RF08)
-        self._startup_phase: str | None = None      # "card_db" / "homing" during the power-on sequence
+        self._startup_phase: str | None = None      # "homing" while the base homes after the service start
+        self._card_db_updating = False              # a card database update holds the machine (card_db_update.py)
+        self.card_db_status: Callable[[], dict] | None = None   # its status, for snapshot() (set by the API)
         self._homing_thread: threading.Thread | None = None
         self._saved_steps: int | None = None        # last base position written to base_state_file
         self._timing = RunTiming()                  # of the current or last run (RNF22, RF02)
@@ -293,13 +295,15 @@ class SorterController:
         with self._lock:
             snapshot = {
                 "state": self._state.value,
-                # power-on sequence still running: "card_db" (card database check/update), "homing"
+                # "homing" while the base homes right after the service started (RF08), else null
                 "startup": self._startup_phase,
                 "run": self._run.to_dict() if self._run else None,
                 # RNF22 / RF02: general run-status figures, no card identity (RF23).
                 "timing": self._timing.to_dict(),
             }
         snapshot["last_run_check"] = self.last_run_check()   # reads run.db: outside the lock
+        # Card database: update available, check / update in progress with its progress (card_db_update.py)
+        snapshot["card_db"] = self.card_db_status() if self.card_db_status is not None else None
         return snapshot
 
     def last_run_check(self) -> dict | None:
@@ -327,7 +331,7 @@ class SorterController:
         launch the sorting loop in the background and return.
         owner: the app user the run and its cards belong to (None without a server)."""
         with self._lock:
-            if self._startup_phase == "card_db":
+            if self._card_db_updating:
                 raise StartRefused(409, [Problem("CARD_DB_UPDATING", CARD_DB_UPDATING_MESSAGE)])
             if self._state is not ControllerState.IDLE:
                 if self._power_on_homing.is_set():
@@ -597,47 +601,58 @@ class SorterController:
                 result[name] = {"online": False, "enabled": True, "error": str(exc)}
         return result
 
-    def power_on(self, before_ready: Callable[[], object] | None = None) -> None:
-        """Service start: chamber light to its base level, then in the background, so the service
-        answers at once: `before_ready` (the card database check and update, card_db_update.py)
-        and, after it, the RF08 homing of the base. Start also homes again before every run.
-        Start is refused until both are over (CARD_DB_UPDATING, HOMING), and the status LED stays
-        STARTING (white; blinking white while the card database updates) until then, then shows
-        Idle (RF16, Appendix B: "power-on, homing complete") or, while there is no Wi-Fi, Setup /
-        No Network (RF41)."""
+    def power_on(self) -> None:
+        """Service start: chamber light to its base level and (RF08) homing of the base in the
+        background, so the service answers at once. Start also homes again before every run.
+        The status LED stays STARTING (white) until the power-on homing is over, then shows Idle
+        (RF16, Appendix B: "power-on, homing complete") or, while there is no Wi-Fi, Setup /
+        No Network (RF41). The card database is only checked at power-on, in parallel, never
+        updated (card_db_update.py): the user starts an update from the app."""
         self._led("IDLE")                          # shown once the LED leaves STARTING
         try:
             self._light(self.s.light_base_level)
         except (BusError, FrameError) as exc:
             log.warning("modules not reachable at power-on: %s", exc)
-        home = self.s.bottom_enabled and self.s.home_on_power_on
-        if before_ready is None and not home:
-            self.led.ready()
-            return
-        if before_ready is not None:
-            self._startup_phase = "card_db"
-        else:
+        if self.s.bottom_enabled and self.s.home_on_power_on:
             self._startup_phase = "homing"
             self._power_on_homing.set()
-        self._homing_thread = threading.Thread(target=self._power_on_sequence, args=(before_ready, home),
-                                               name="power-on", daemon=True)
-        self._homing_thread.start()
+            self._homing_thread = threading.Thread(target=self._power_on_sequence, name="power-on-homing",
+                                                   daemon=True)
+            self._homing_thread.start()
+        else:
+            self.led.ready()
 
-    def _power_on_sequence(self, before_ready: Callable[[], object] | None, home: bool) -> None:
+    def _power_on_sequence(self) -> None:
         try:
-            if before_ready is not None:
-                try:
-                    before_ready()
-                except Exception:                  # never keep the machine from starting
-                    log.exception("power-on: card database check failed; using the local card database")
-            if home:
-                self._power_on_homing.set()
-                self._startup_phase = "homing"
-                self._home_at_power_on()
+            self._home_at_power_on()
         finally:
             self._startup_phase = None
             self._power_on_homing.clear()
             self.led.ready()                       # homed or not: Start homes again and reports any fault
+
+    # ------------------------------------------------- card database update (card_db_update.py)
+
+    def begin_card_db_update(self) -> None:
+        """Hold the machine for a card database update. The database file is swapped at the end,
+        so not while a run is starting, running, stopping or paused, nor during a base move or the
+        power-on homing (409 RUN_ACTIVE). Start is refused (CARD_DB_UPDATING) until
+        end_card_db_update()."""
+        with self._lock:
+            if self._card_db_updating:
+                raise ManualRefused(409, "CARD_DB_UPDATING", "The card database is already being updated.")
+            if self._state is not ControllerState.IDLE or self._power_on_homing.is_set():
+                raise ManualRefused(409, "RUN_ACTIVE",
+                                    f"The sorter is busy ({self._state.value}). Update the card database "
+                                    "when no run is active.")
+            self._card_db_updating = True
+
+    def end_card_db_update(self) -> None:
+        with self._lock:
+            self._card_db_updating = False
+
+    @property
+    def card_db_updating(self) -> bool:
+        return self._card_db_updating
 
     @property
     def startup_phase(self) -> str | None:
@@ -1245,8 +1260,8 @@ class SorterController:
             log.warning("cleanup after run failed: %s", exc)
 
 
-CARD_DB_UPDATING_MESSAGE = ("The machine is checking for card database updates (the status LED blinks white "
-                            "while it downloads one). Try again when the LED turns green.")
+CARD_DB_UPDATING_MESSAGE = ("The machine is updating its card database (the status LED blinks white). Wait for "
+                            "it to finish, or cancel the update in the app.")
 
 _RECORD_FIELDS = {"match_method", "confidence", "card_name", "set_code", "collector_number", "color_identity",
                   "type_line", "mana_cost", "rarity", "error_message"}

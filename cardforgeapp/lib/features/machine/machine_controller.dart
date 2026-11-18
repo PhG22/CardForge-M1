@@ -34,6 +34,9 @@ enum MachineConnection {
 /// - While a run is active, keeps [BackgroundAlerts] watching it, so its
 ///   alerts also arrive as notifications with the app closed (RF38).
 /// - Runs the commands of the Machine control screen.
+/// - Follows the machine's card database: tells the user when Scryfall has new
+///   cards, and checks / updates / cancels when the user asks, with the
+///   update's progress live.
 class MachineController extends ChangeNotifier {
   MachineController({
     required MachineStore store,
@@ -84,6 +87,15 @@ class MachineController extends ChangeNotifier {
   BaseMoveResult? baseResult;
   MachineApiException? baseError;
 
+  /// The machine's card database: update available, check or update in
+  /// progress with its progress. Null without one (camera off) or with older
+  /// machine software.
+  CardDbStatus? cardDb;
+
+  /// A check / update / cancel request is on its way to the machine.
+  bool isSendingCardDbCommand = false;
+  MachineApiException? cardDbError;
+
   MachineApi? _api;
   MachineAddress? _address;
   StreamSubscription<MachineEvent>? _eventsSub;
@@ -95,6 +107,7 @@ class MachineController extends ChangeNotifier {
   String? _runningRunId; // to notice a run that ended while we were offline
   final Set<String> _alertedRuns = {};
   final Set<String> _alertedFaults = {}; // "<run id>@<fault time>": one alert per fault
+  final Set<String> _alertedCardDbUpdates = {}; // one "update available" per Scryfall version
   bool _reportedOnline = false; // last value given to BackgroundAlerts.setAppConnected
 
   LinkedMachine? get machine => _store.machine;
@@ -124,7 +137,29 @@ class MachineController extends ChangeNotifier {
       !isPaused &&
       !isMachineMovingBase &&
       !isStopping &&
+      !isMovingBase &&
+      !isUpdatingCardDb;
+
+  /// The machine is updating its card database: it can't sort until it ends.
+  bool get isUpdatingCardDb => cardDb?.isUpdating ?? false;
+
+  bool get canCheckCardDb =>
+      isOnline &&
+      cardDb != null &&
+      cardDb!.phase == CardDbPhase.idle &&
+      !isSendingCardDbCommand;
+
+  /// The database file is swapped at the end of an update: only while the
+  /// machine is idle (no run, no base move).
+  bool get canUpdateCardDb =>
+      canCheckCardDb &&
+      !isBusy &&
+      !isPaused &&
+      !isMachineMovingBase &&
       !isMovingBase;
+
+  bool get canCancelCardDbUpdate =>
+      isOnline && isUpdatingCardDb && !isSendingCardDbCommand;
 
   /// RNF19: the last run did not finish correctly (the machine lost power or
   /// restarted during it, a module stopped responding, or its saved records
@@ -173,6 +208,8 @@ class MachineController extends ChangeNotifier {
     _address = address;
     hardware = null;
     lastRunCheck = null;
+    cardDb = null;
+    cardDbError = null;
     if (current == null) {
       connection = MachineConnection.none;
       health = null;
@@ -209,6 +246,7 @@ class MachineController extends ChangeNotifier {
       health = h;
       _applySnapshot(s);
       lastRunCheck = s.lastRunCheck;
+      _applyCardDb(s.cardDb);
     } on MachineApiException {
       if (generation == _generation) _goOffline(generation, wasRunning: false);
       return;
@@ -268,6 +306,9 @@ class MachineController extends ChangeNotifier {
       case SnapshotEvent(:final snapshot):
         _applySnapshot(snapshot);
         lastRunCheck = snapshot.lastRunCheck;
+        _applyCardDb(snapshot.cardDb);
+      case CardDbEvent(:final status):
+        _applyCardDb(status);
       case RunStartedEvent(:final run):
         lastRunCheck = null; // a new run supersedes the warning
         _applySnapshot(
@@ -347,6 +388,36 @@ class MachineController extends ChangeNotifier {
       cardCount: run?.cardsProcessed,
       faultCode: code,
     );
+  }
+
+  /// The card database changed: tell the user when Scryfall has new cards
+  /// (once per version of Scryfall's data) and when an update they started
+  /// ends.
+  void _applyCardDb(CardDbStatus? next) {
+    final previous = cardDb;
+    cardDb = next;
+    if (next == null) return;
+    final name = machine?.name;
+    if (next.updateAvailable == true && !next.isUpdating) {
+      final version = next.lastCheck?.remoteUpdatedAt ?? 'available';
+      if (_alertedCardDbUpdates.add('${machine?.id}@$version')) {
+        _alerts.add(AlertType.cardDbUpdateAvailable, machineName: name);
+      }
+    }
+    final update = next.lastUpdate;
+    if (previous != null &&
+        previous.isUpdating &&
+        !next.isUpdating &&
+        update != null) {
+      switch (update.result) {
+        case 'updated':
+          _alerts.add(AlertType.cardDbUpdated, machineName: name);
+        case 'failed' || 'unreachable':
+          _alerts.add(AlertType.cardDbUpdateFailed, machineName: name);
+        default:
+          break; // cancelled by the user, or nothing to update
+      }
+    }
   }
 
   /// One alert per finished run, even if both the event and a snapshot say so.
@@ -486,6 +557,36 @@ class MachineController extends ChangeNotifier {
       _notify();
     }
     unawaited(loadHardware());
+  }
+
+  /// Asks the machine whether Scryfall has new cards (the answer comes as a
+  /// `card_db` event a few seconds later).
+  Future<void> checkCardDb() => _cardDbCommand((api) => api.checkCardDb());
+
+  /// Starts the card database update the user asked for (minutes on the
+  /// machine; its progress comes live). [force]: even when up to date.
+  Future<void> updateCardDb({bool force = false}) =>
+      _cardDbCommand((api) => api.updateCardDb(force: force));
+
+  /// Stops the update in progress; the machine keeps its cards.
+  Future<void> cancelCardDbUpdate() =>
+      _cardDbCommand((api) => api.cancelCardDbUpdate());
+
+  Future<void> _cardDbCommand(
+      Future<CardDbStatus> Function(MachineApi api) command) async {
+    final api = _api;
+    if (api == null || !isOnline || isSendingCardDbCommand) return;
+    isSendingCardDbCommand = true;
+    cardDbError = null;
+    _notify();
+    try {
+      _applyCardDb(await command(api));
+    } on MachineApiException catch (e) {
+      cardDbError = e;
+    } finally {
+      isSendingCardDbCommand = false;
+      _notify();
+    }
   }
 
   /// Asks the machine for its current IP over Bluetooth (no password), saves

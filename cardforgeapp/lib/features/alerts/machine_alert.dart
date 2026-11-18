@@ -12,6 +12,15 @@ enum AlertType {
   doubleFeed,
   connectionLost,
   machineLinked,
+
+  /// Scryfall has new cards: the machine's card database can be updated.
+  cardDbUpdateAvailable,
+
+  /// The card database update the user started finished.
+  cardDbUpdated,
+
+  /// The card database update failed; the machine kept its cards.
+  cardDbUpdateFailed,
 }
 
 enum AlertSeverity { info, success, warning, error }
@@ -19,11 +28,13 @@ enum AlertSeverity { info, success, warning, error }
 extension AlertTypeSeverity on AlertType {
   AlertSeverity get severity => switch (this) {
         AlertType.wifiConnected ||
-        AlertType.machineLinked =>
+        AlertType.machineLinked ||
+        AlertType.cardDbUpdateAvailable =>
           AlertSeverity.info,
-        AlertType.batchFinished => AlertSeverity.success,
+        AlertType.batchFinished || AlertType.cardDbUpdated => AlertSeverity.success,
         AlertType.wifiDisconnected ||
-        AlertType.connectionLost =>
+        AlertType.connectionLost ||
+        AlertType.cardDbUpdateFailed =>
           AlertSeverity.warning,
         AlertType.jamDetected ||
         AlertType.machineFault ||

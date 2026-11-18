@@ -122,6 +122,32 @@ class HomeScreen extends StatelessWidget {
                                       ],
                                     ),
                                   ],
+                                  // The card database: an update is
+                                  // available, or running (with its %).
+                                  if (deps.machine.isOnline &&
+                                      deps.machine.cardDb != null &&
+                                      l10n.cardDbHome(deps.machine.cardDb!) !=
+                                          null) ...[
+                                    const SizedBox(height: 8),
+                                    Row(
+                                      key: const ValueKey('home-card-db'),
+                                      children: [
+                                        const Icon(
+                                            Icons.system_update_alt_rounded,
+                                            size: 16,
+                                            color: MagicColors.gold),
+                                        const SizedBox(width: 6),
+                                        Expanded(
+                                          child: Text(
+                                            l10n.cardDbHome(
+                                                deps.machine.cardDb!)!,
+                                            style: text.bodySmall?.copyWith(
+                                                color: MagicColors.gold),
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ],
                                 ],
                               ),
                             ),
