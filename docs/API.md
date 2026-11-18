@@ -91,7 +91,7 @@ turns red, the app gets a `fault` event, and the run waits with its id and count
 | `error_code` | Cause |
 |---|---|
 | `FEED_TIMEOUT` / `FEED_FAILED` | Feed jam: no card reached the platform after 2 pull attempts (RF05) |
-| `DROP_FAILED` | The card did not fall from the platform |
+| `DROP_FAILED` | The card did not fall from the platform, not even after 2 pulses of the vibration motor under it (PROTOCOL.md 5.2). A card that falls after a pulse is **not** a fault: the run goes on with no alert |
 | `MOVE_TIMEOUT`, `HOME_TIMEOUT`, `HOME_FAILED`, `NOT_HOMED` | The base did not reach a tray / the zero position |
 
 The user fixes the machine (removes the stuck card, clears the feeder) and calls
@@ -272,11 +272,13 @@ started the run (RF38, [SERVER.md](SERVER.md)), so the app can notify them with 
 Returns the live STATUS of both modules, for a debug or maintenance screen:
 ```json
 { "top":    { "online": true, "state": "IDLE", "stack_has_card": true, "platform_has_card": false,
-              "flap_angle": 80, "roller_running": false, "error": null, "feed_attempt": 1 },
+              "flap_angle": 80, "roller_running": false, "error": null, "feed_attempt": 1,
+              "vibrating": false },
   "bottom": { "online": true, "state": "IDLE", "homed": true, "position": 1, "zero_sensor": true,
               "trays_with_cards": [], "error": null } }
 ```
 `feed_attempt` (a1_top 1.1): the pull attempt of the current or last FEED, 1 or 2 (RF05).
+`vibrating` (a1_top 1.2): the platform vibration motor is on (`null` with older firmware).
 
 ## GET /health
 
@@ -350,8 +352,10 @@ border detection until a crop is saved.
 * `PUT /sim/state` sets it up for testing the app's error screens:
 ```json
 { "stack_cards": 10, "trays_with_cards": [], "platform_has_card": false,
-  "top_jammed": false, "offline_modules": [] }
+  "top_jammed": false, "offline_modules": [], "platform_stuck_pulses": 0 }
 ```
+`platform_stuck_pulses`: the next card sticks to the platform and only falls after that many
+vibration pulses (1 or 2 = shaken loose, the run goes on; 3 = `DROP_FAILED`).
 `GET /sim/state` also shows `light_level` (the optional LIGHT command, PROTOCOL.md 5.1) and
 `status_led` (the mode the Pi's RGB LED is showing). `MTG_SIM_OPTIONAL_COMMANDS=0` simulates
-`a1_top.ino` as it is today, without LIGHT.
+an `a1_top.ino` without the optional commands (LIGHT, VIBRATE).

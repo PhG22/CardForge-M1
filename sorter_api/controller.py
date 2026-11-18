@@ -51,7 +51,7 @@ from .config import MAX_CARDS_PER_RUN, Settings
 from .events import EventHub
 from .housekeeping import PROJECT_ROOT, cleanup_after_run
 from .identifier import FACE_DOWN, IDENTIFIED, CardIdentifier, Identification
-from .modules import HOME_TRAY, BottomModule, ModuleState, TopModule
+from .modules import HOME_TRAY, VIBRATE_MAX_MS, BottomModule, ModuleState, TopModule
 from .protocol import FrameError
 from .sorting import OVERFLOW_TRAY
 from .status_led import MemoryLedDriver, StatusLed
@@ -246,7 +246,8 @@ class SorterController:
         self._thread: threading.Thread | None = None
         self._run: RunInfo | None = None           # current or last run
         self._in_progress: Identification | None = None   # identified card not dropped yet
-        self._optional_ok = {"LIGHT": True}  # does the A1 firmware support the optional LIGHT command?
+        # Does the A1 firmware support the optional commands? (turned off on ERR BAD_CMD)
+        self._optional_ok = {"LIGHT": True, "VIBRATE": True}
         self._power_on_homing = threading.Event()   # set while the base homes after the service start (RF08)
         self._homing_thread: threading.Thread | None = None
         self._saved_steps: int | None = None        # last base position written to base_state_file
@@ -908,24 +909,64 @@ class SorterController:
 
     def _drop_card(self) -> None:
         """Same sequence as feeder_flap_test.ino: open, wait until the platform IR
-        is clear, give the card time to fall, close."""
+        is clear, give the card time to fall, close.
+
+        A card that does not fall by itself is shaken loose by the platform vibration
+        motor (_shake_card_loose). If it then falls, the run just goes on: no fault,
+        no alert. Only a card still there after the last pulse pauses the run."""
         s = self.s
         self._check_abort()
         self.top.set_flap(s.flap_open_angle)
-        deadline = time.monotonic() + s.drop_timeout_s
-        while self.top.status().platform_has_card:
-            if time.monotonic() > deadline:
-                raise HardwareFault("DROP_FAILED", "The card did not fall from the platform (stuck?).")
-            self._sleep(s.poll_interval_s)
+        if not self._wait_platform_clear(s.drop_timeout_s):
+            fell, pulses = self._shake_card_loose()
+            if not fell:
+                message = _ERROR_MESSAGES["DROP_FAILED"]
+                if pulses:
+                    message = (f"The card did not fall from the platform, even after {pulses} "
+                               "vibration pulse(s) (stuck?).")
+                raise HardwareFault("DROP_FAILED", message)
         self._sleep(s.card_fall_s)
         self.top.set_flap(s.flap_closed_angle)
         self._sleep(s.flap_settle_s)
+
+    def _wait_platform_clear(self, timeout_s: float) -> bool:
+        """Poll the platform IR until the card has left. False if it is still there after timeout_s."""
+        deadline = time.monotonic() + timeout_s
+        while self.top.status().platform_has_card:
+            if time.monotonic() > deadline:
+                return False
+            self._sleep(self.s.poll_interval_s)
+        return True
+
+    def _shake_card_loose(self) -> tuple[bool, int]:
+        """The card did not fall when the flap opened: up to drop_vibration_pulses pulses of
+        the vibration motor under the platform (A1 VIBRATE, a1_top 1.2), each followed by a
+        short wait. Returns (fell, pulses given). fell is True as soon as the card leaves the
+        platform; False if it is still there after the last pulse, or if the A1 firmware has
+        no VIBRATE command (then no pulse is given)."""
+        s = self.s
+        pulses = max(0, s.drop_vibration_pulses)
+        ms = min(max(s.drop_vibration_ms, 1), VIBRATE_MAX_MS)
+        given = 0
+        for pulse in range(1, pulses + 1):
+            if not self._optional("VIBRATE", lambda: self.top.vibrate(ms)):
+                break
+            given = pulse
+            log.info("card stuck on the platform: vibration pulse %d of %d (%d ms)", pulse, pulses, ms)
+            if self._wait_platform_clear(ms / 1000 + s.drop_vibration_wait_s):
+                self._optional("VIBRATE", lambda: self.top.vibrate(0))   # it fell: motor off now
+                log.info("the stuck card fell after vibration pulse %d", pulse)
+                return True, given
+        if given:
+            log.warning("the card is still on the platform after %d vibration pulse(s)", given)
+        return False, given
 
     # -------------------------------------------------------------- helpers
 
     def _normal_stop_budget(self) -> float:
         s = self.s
-        return (s.feed_timeout_s + 2.0 + s.drop_timeout_s + s.card_fall_s + 2 * s.flap_settle_s
+        shake = max(0, s.drop_vibration_pulses) * (s.drop_vibration_ms / 1000 + s.drop_vibration_wait_s)
+        return (s.feed_timeout_s + 2.0 + s.drop_timeout_s + shake + s.card_fall_s + 2 * s.flap_settle_s
                 + (2 * s.move_timeout_s if s.bottom_enabled else 0.0) + 3.0)
 
     def _wait_idle(self, module, timeout_s: float, timeout_code: str, timeout_message: str,
@@ -1025,12 +1066,14 @@ class SorterController:
             except (BusError, FrameError) as exc:
                 log.warning("could not send STOP to %s: %s", module.ADDRESS, exc)
 
-    def _optional(self, command: str, call) -> None:
-        """LIGHT is an optional A1 firmware command: turned off for good on ERR BAD_CMD."""
+    def _optional(self, command: str, call) -> bool:
+        """LIGHT and VIBRATE are optional A1 firmware commands: turned off for good on
+        ERR BAD_CMD. Returns True if the command was sent and accepted."""
         if not self._optional_ok[command]:
-            return
+            return False
         try:
             call()
+            return True
         except ModuleError as exc:
             if exc.code == "BAD_CMD":
                 log.warning("A1 firmware has no %s command: feature disabled", command)
@@ -1039,6 +1082,7 @@ class SorterController:
                 log.warning("%s failed: %s", command, exc)
         except (BusError, FrameError) as exc:
             log.warning("%s failed: %s", command, exc)
+        return False
 
     def _light(self, level: int) -> None:
         self._optional("LIGHT", lambda: self.top.set_light(level))

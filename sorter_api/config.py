@@ -43,7 +43,13 @@ class Settings:
     flap_closed_angle: int = 80         # closed. Override: MTG_FLAP_CLOSED_ANGLE (must match FLAP_CLOSED in a1_top.ino)
     flap_open_angle: int = 25            # open (drop). Override: MTG_FLAP_OPEN_ANGLE
     flap_settle_s: float = 0.5          # time for the flap servo to reach its angle
-    drop_timeout_s: float = 3.0         # max time for the card to leave the platform
+    drop_timeout_s: float = 3.0         # time for the card to fall by itself once the flap is open
+    # Stuck card (a1_top 1.2, vibration motor on D7): if it did not fall within drop_timeout_s,
+    # up to drop_vibration_pulses pulses of drop_vibration_ms; after each pulse, wait
+    # drop_vibration_wait_s more for it to fall. Still there after the last one: DROP_FAILED.
+    drop_vibration_pulses: int = 2      # 0 = never vibrate (DROP_FAILED right after drop_timeout_s)
+    drop_vibration_ms: int = 800        # one pulse (firmware limit 3000)
+    drop_vibration_wait_s: float = 1.0  # after a pulse ends, before the next pulse / DROP_FAILED
     card_fall_s: float = 0.5            # after the platform IR clears, before closing the flap
     feed_timeout_s: float = 10.0        # RF05: 2 pull attempts of 5 s each (~16 feed steps each)
     home_timeout_s: float = 40.0        # Arduino gives up homing after this (gentle ramp: ~20 s)
@@ -105,7 +111,7 @@ class Settings:
     # --- simulator only
     sim_stack_cards: int = 8
     sim_time_scale: float = 1.0         # <1 makes the simulated motors faster
-    sim_optional_commands: bool = True  # False = simulate a1_top.ino as it is today (no LIGHT)
+    sim_optional_commands: bool = True  # False = simulate a1_top.ino without the optional commands (LIGHT, VIBRATE)
 
     @classmethod
     def from_env(cls) -> "Settings":

@@ -16,6 +16,7 @@ from .protocol import FrameError, Reply
 TRAY_COUNT = 6
 HOME_TRAY = 3          # the tray over the homing strip (a2_base.ino); STEPS=0 there
 MOVE_LIMIT = 20000          # a2_base accepts MOVE -20000 .. 20000
+VIBRATE_MAX_MS = 3000       # a1_top accepts VIBRATE 0 .. 3000
 
 
 class ModuleState:
@@ -67,6 +68,7 @@ class TopStatus:
     roller_running: bool
     error: str | None
     feed_attempt: int | None = None     # RF05: pull attempt of the current / last FEED (firmware 1.1+)
+    vibrating: bool | None = None       # platform vibration motor on (firmware 1.2+)
 
     def to_dict(self) -> dict:
         return {
@@ -77,6 +79,7 @@ class TopStatus:
             "roller_running": self.roller_running,
             "error": self.error,
             "feed_attempt": self.feed_attempt,
+            "vibrating": self.vibrating,
         }
 
 
@@ -105,7 +108,8 @@ class BottomStatus:
 
 
 class TopModule:
-    """A1: feed roller (360 servo), stopper flap (180 servo), stack + platform IR."""
+    """A1: feed roller (360 servo), stopper flap (180 servo), stack + platform IR,
+    platform vibration motor (D7)."""
 
     ADDRESS = "A1"
 
@@ -125,6 +129,7 @@ class TopModule:
             roller_running=_flag(r, "ROLLER"),
             error=r.fields.get("ERR"),
             feed_attempt=_int(r, "ATTEMPT") if "ATTEMPT" in r.fields else None,
+            vibrating=_flag(r, "VIB") if "VIB" in r.fields else None,
         )
 
     def roller_stop(self) -> None:
@@ -148,6 +153,13 @@ class TopModule:
         if not 0 <= level <= 100:
             raise ValueError(f"light level out of range: {level}")
         self._bus.transact(self.ADDRESS, "LIGHT", int(level))
+
+    # Optional command (docs/PROTOCOL.md 5.2, a1_top 1.2). Older firmware answers ERR BAD_CMD.
+    def vibrate(self, ms: int) -> None:
+        """Platform vibration motor on for ms milliseconds, then off by itself (0 = off now)."""
+        if not 0 <= ms <= VIBRATE_MAX_MS:
+            raise ValueError(f"vibration time out of range: {ms}")
+        self._bus.transact(self.ADDRESS, "VIBRATE", int(ms))
 
 
 class BottomModule:

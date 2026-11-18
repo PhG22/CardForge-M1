@@ -95,16 +95,18 @@ until the module reports `IDLE` or `ERROR`. If an action command arrives while
 
 ## 5. A1 — top module (feeder)
 
-Hardware: 360° servo (feed roller), 180° servo (stopper flap), stack IR, platform IR.
+Hardware: 360° servo (feed roller), 180° servo (stopper flap), stack IR, platform IR,
+vibration motor under the platform (D7, firmware 1.2).
 
 | Command | Reply | What it does |
 |---|---|---|
 | `PING` | `OK [FW=x.y]` | Liveness check |
-| `STATUS` | `OK STATE=.. STACK=0/1 PLAT=0/1 FLAP=<deg> ROLLER=0/1 ATTEMPT=<0-2> [ERR=..]` | Current state and sensors |
+| `STATUS` | `OK STATE=.. STACK=0/1 PLAT=0/1 FLAP=<deg> ROLLER=0/1 ATTEMPT=<0-2> VIB=0/1 [ERR=..]` | Current state and sensors |
 | `ROLLER STOP` | `OK` | Roller to neutral (no rotation). Cancels a running FEED |
 | `FLAP <0-180>` | `OK` | Move flap servo to angle. Instant command, state unchanged. **80 = closed**, **5 = open (drop)** |
 | `FEED <timeout_ms>` | `OK` | *Action* (RF05). Up to **2 pull attempts** of `timeout_ms / 2` each: run the roller until **PLAT=1**, then stop it at once → `IDLE`. No card at the end of the first attempt → roller stopped 0.5 s, then the second attempt. No card at the end of the second → **Feed Jam**: roller stopped at once, `ERROR` + `ERR=FEED_TIMEOUT`. If PLAT is already 1, finish immediately |
-| `STOP` | `OK` | Stop roller, cancel any action, state `IDLE`. Flap keeps its angle |
+| `VIBRATE <0-3000>` | `OK` | Firmware 1.2 (see 5.2). Vibration motor on for that many ms, then off by itself; `0` = off now. Instant command, state unchanged |
+| `STOP` | `OK` | Stop roller and vibration motor, cancel any action, state `IDLE`. Flap keeps its angle |
 
 | STATUS field | Meaning |
 |---|---|
@@ -113,6 +115,7 @@ Hardware: 360° servo (feed roller), 180° servo (stopper flap), stack IR, platf
 | `FLAP` | Last angle commanded to the flap servo |
 | `ROLLER` | 1 = feed roller is turning |
 | `ATTEMPT` | Pull attempt of the current or last FEED: 1 or 2 (0 = no FEED since power-up). Firmware 1.1+ |
+| `VIB` | 1 = the platform vibration motor is on. Firmware 1.2+ |
 
 Notes:
 * A 360° servo stops at its neutral pulse (≈1500 µs, `writeMicroseconds`), and
@@ -123,7 +126,8 @@ Notes:
   watches the raw platform IR and stops the roller the moment the card arrives.
   It does this even while it is sending a reply.
 * The flap drop sequence is done by the Pi: `FLAP 5`, wait until `PLAT=0`, wait
-  0.5 s, `FLAP 80`.
+  0.5 s, `FLAP 80`. If the card is still there after `MTG_DROP_TIMEOUT_S` (3 s), the Pi
+  shakes it loose with `VIBRATE` (5.2) before it reports `DROP_FAILED`.
 
 ### 5.1 Optional A1 command: chamber light (not in `a1_top.ino` yet)
 
@@ -140,6 +144,35 @@ The RGB **status LED** is not on the bus: it is wired to the Raspberry Pi GPIO (
 Wiring note: the circuit diagram (Rev E) puts the LED strip gate (`LED_CTRL`) on D3, but
 `a1_top.ino` now uses D3/D4 for the RS-485 SoftwareSerial and D5/D6 for the IR sensors.
 Pick a free PWM pin (D9/D10 are taken by Timer1 for the servos) before adding `LIGHT`.
+
+### 5.2 Optional A1 command: platform vibration motor (`a1_top.ino` 1.2)
+
+A small coin vibration motor is glued under the reading platform. It is switched by a
+BC548 (low side) from **D7**: D7 → 470 Ω → base, 22 kΩ base → GND, emitter → GND,
++5 V (servo step-down) → ~34 Ω → motor → collector, flyback diode across the motor.
+
+| Command | Reply | What it does |
+|---|---|---|
+| `VIBRATE <0-3000>` | `OK` | Motor on for that many ms, then **off by itself** (so a lost link never leaves it running). `0` = off now. Instant command, state unchanged. `STOP` also turns it off |
+
+What the Pi does with it (`controller._drop_card`), when the card does not leave the platform:
+
+```
+FLAP <open> ── card falls within 3 s ────────────────────────────────► FLAP 80, next card
+     │ still PLAT=1
+     ▼
+VIBRATE 800 ── falls within 0.8 s + 1 s ── VIBRATE 0 ────────────────► FLAP 80, next card
+     │ still PLAT=1                                    (no fault, no alert)
+     ▼
+VIBRATE 800 ── falls within 0.8 s + 1 s ── VIBRATE 0 ────────────────► FLAP 80, next card
+     │ still PLAT=1
+     ▼
+DROP_FAILED: STOP to the modules, run paused, fault event + alert to the app (RF27 / RF38)
+```
+
+Settings: `MTG_DROP_VIBRATION_PULSES` (2; 0 = never vibrate), `MTG_DROP_VIBRATION_MS` (800),
+`MTG_DROP_VIBRATION_WAIT_S` (1.0). Firmware without `VIBRATE` answers `ERR BAD_CMD`: the Pi
+turns the feature off for the session and reports `DROP_FAILED` after the 3 s, as before.
 
 ## 6. A2 — bottom module (rotating base)
 

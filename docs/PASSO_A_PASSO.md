@@ -269,7 +269,8 @@ O último comando cria/atualiza o `data/cards.db` (precisa de internet só agora
 ### B3. Firmware (Arduino IDE, no PC)
 
 1. `firmware/a1_top/a1_top.ino` → Arduino do **módulo de cima** (endereço A1). Pinos padrão: rolo D9, flap D10,
-   IR da plataforma D6, IR da pilha D5, RS-485 em D4 (RO) / D3 (DI) / D13 (DE+RE).
+   IR da plataforma D6, IR da pilha D5, motor de vibração da plataforma D7 (via BC548),
+   RS-485 em D4 (RO) / D3 (DI) / D13 (DE+RE).
 2. `firmware/a2_base/a2_base.ino` → Arduino da **base** (endereço A2). Pinos: STEP D5, DIR D6, SLEEP D4, RESET D3,
    M2 D2, IR do homing A5, RS-485 em A0 (RO) / A1 (DI) / D13 (DE+RE), IR dos bins: bin 1 D10, bin 2 D8, bin 3 D11,
    bin 4 D7, bin 5 D9, bin 6 D12 (FC-51, LOW = carta no bin).
@@ -521,7 +522,7 @@ continuam como visão local da máquina.
 | Muitas cartas `CROP_FAILED` ou lidas tortas | Câmera ou plataforma mudaram de lugar: refaça o recorte fixo (parte D, passo 1). As fotos usadas estão em `calibragem_recorte/` |
 | Sumiram arquivos de `capturas/` ou `relatorios/` | Ao fim de cada run o serviço esvazia as pastas temporárias (`MTG_CLEANUP_DIRS`); copie o que quiser guardar antes, ou use outro nome de pasta (ex.: `relatorios_ref`) |
 | Run pausada com `FEED_TIMEOUT` | Carta presa no alimentador ou pilha vazia com o IR da pilha dizendo o contrário. Libere e use Resume |
-| Run pausada com `DROP_FAILED` | Carta presa na plataforma: retire-a (ela não é registrada) e use Resume |
+| Run pausada com `DROP_FAILED` | Carta presa na plataforma mesmo depois de 2 pulsos do motor de vibração: retire-a (ela não é registrada) e use Resume. Se acontece sempre, confira o motor (D7, `VIB=` no STATUS) e se o `a1_top.ino` 1.2 foi gravado |
 | Muitas cartas no bin 6 | Calibração (parte D): brilho, foco, enquadramento. Veja `attention` nos eventos e os motivos em `/runs/<id>` |
 | Página de calibração: `VISION_OFF` | Serviço rodando com `MTG_VISION=off` |
 | Página de calibração: `RUN_ACTIVE` | Há uma run ativa ou pausada: termine com Stop |

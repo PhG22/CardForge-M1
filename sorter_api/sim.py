@@ -7,7 +7,8 @@ actions, STATE/ERR reporting, duplicate-request handling).
 
 Mechanics are simplified: a card takes ~0.7 s to feed, homing ~2 s, each tray
 step ~0.4 s, and a card on the platform falls ~0.15 s after the flap opens,
-landing in whichever tray is under the platform.
+landing in whichever tray is under the platform. A stuck card (PUT /sim/state
+platform_stuck_pulses) only falls after that many VIBRATE pulses with the flap open.
 """
 
 from __future__ import annotations
@@ -105,6 +106,10 @@ class SimTop(_SimDevice):
         self._feed_fail_at: float | None = None
         self._drop_at: float | None = None
         self.light: int | None = None       # optional LIGHT command
+        self.stuck_pulses = 0               # fault injection: the card on the platform needs this
+                                            # many VIBRATE pulses (flap open) before it falls
+        self.vibe_pulses = 0                # VIBRATE pulses received (> 0 ms)
+        self._vibe_until: float | None = None
 
     def tick(self, now: float) -> None:
         if self._feed_fail_at is not None:
@@ -125,6 +130,12 @@ class SimTop(_SimDevice):
             if self.world.bottom_present:
                 self.world.bottom.receive_card()
 
+    def _flap_open(self) -> bool:
+        return self.flap < FLAP_OPEN_BELOW
+
+    def _vibrating(self, now: float) -> bool:
+        return self._vibe_until is not None and now < self._vibe_until
+
     def _end_feed(self) -> None:
         self.roller = False
         self._feed_done_at = self._feed_fail_at = None
@@ -140,6 +151,7 @@ class SimTop(_SimDevice):
                 f"FLAP={self.flap}",
                 f"ROLLER={int(self.roller)}",
                 f"ATTEMPT={self.feed_attempt}",
+                *([f"VIB={int(self._vibrating(now))}"] if self.world.optional_commands else []),
                 *self._error_field(),
             ]
         if command == "ROLLER":
@@ -153,7 +165,8 @@ class SimTop(_SimDevice):
         if command == "FLAP":
             angle = _int_arg(args, 0, 0, 180)
             self.flap = angle
-            if angle < FLAP_OPEN_BELOW and self.platform and self._drop_at is None:
+            if (angle < FLAP_OPEN_BELOW and self.platform and self._drop_at is None
+                    and self.stuck_pulses == 0):
                 self._drop_at = now + 0.15 * self.world.scale
             elif angle >= FLAP_OPEN_BELOW:
                 self._drop_at = None
@@ -173,10 +186,23 @@ class SimTop(_SimDevice):
             return []
         if command == "STOP":
             self._end_feed()
+            self._vibe_until = None
             self.state, self.error = "IDLE", None
             return []
         if command == "LIGHT" and self.world.optional_commands:
             self.light = _int_arg(args, 0, 0, 100)
+            return []
+        if command == "VIBRATE" and self.world.optional_commands:
+            ms = _int_arg(args, 0, 0, 3000)          # instant command, state unchanged (a1_top 1.2)
+            if ms == 0:
+                self._vibe_until = None
+                return []
+            self._vibe_until = now + ms / 1000 * self.world.scale
+            self.vibe_pulses += 1
+            if self.platform and self._flap_open() and self.stuck_pulses > 0:
+                self.stuck_pulses -= 1
+                if self.stuck_pulses == 0 and self._drop_at is None:
+                    self._drop_at = now + 0.15 * self.world.scale   # shaken loose
             return []
         raise SimError("BAD_CMD")
 
@@ -270,7 +296,7 @@ class SimWorld:
     def __init__(self, stack_cards: int = 8, time_scale: float = 1.0, bottom_present: bool = True,
                  optional_commands: bool = True) -> None:
         self.lock = threading.Lock()
-        self.optional_commands = optional_commands  # False = firmware without LIGHT (a1_top.ino today)
+        self.optional_commands = optional_commands  # False = a1_top without LIGHT and VIBRATE
         self.scale = time_scale
         self.bottom_present = bottom_present  # False = top-only bench, nothing answers as A2
         self.top = SimTop(self)
@@ -298,7 +324,7 @@ class SimWorld:
             return reply
 
     def set_state(self, *, stack_cards=None, trays_with_cards=None, platform_has_card=None,
-                  top_jammed=None, offline_modules=None) -> None:
+                  top_jammed=None, offline_modules=None, platform_stuck_pulses=None) -> None:
         with self.lock:
             if stack_cards is not None:
                 self.top.stack = stack_cards
@@ -310,6 +336,8 @@ class SimWorld:
                 self.top.jammed = top_jammed
             if offline_modules is not None:
                 self.offline = set(offline_modules)
+            if platform_stuck_pulses is not None:
+                self.top.stuck_pulses = platform_stuck_pulses
 
     def describe(self) -> dict:
         with self.lock:
@@ -330,6 +358,9 @@ class SimWorld:
                 "cards_lost": self.bottom.cards_lost,
                 "offline_modules": sorted(self.offline),
                 "light_level": self.top.light,
+                "platform_stuck_pulses": self.top.stuck_pulses,
+                "vibrating": self.top._vibrating(now),
+                "vibration_pulses": self.top.vibe_pulses,
             }
 
 

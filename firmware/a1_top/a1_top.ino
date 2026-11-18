@@ -5,9 +5,9 @@
   the cycle: this sketch only executes commands and reports its sensors
   (docs/PROTOCOL.md, section 5).
 
-    PING                -> OK FW=1.1
+    PING                -> OK FW=1.2
     STATUS              -> OK STATE=IDLE|BUSY|ERROR STACK=0/1 PLAT=0/1 FLAP=<deg> ROLLER=0/1
-                              ATTEMPT=<0-2> [ERR=..]
+                              ATTEMPT=<0-2> VIB=0/1 [ERR=..]
     ROLLER STOP         -> stop the feed roller (also cancels a FEED)
     FLAP <0-180>        -> move the flap servo (80 = closed, 25 = open; the Pi sends the angles)
     FEED <timeout_ms>   -> feed ONE card onto the platform (RF05): up to 2 pull attempts of
@@ -16,7 +16,11 @@
                            for 0.5 s, then the second attempt. No card after the second:
                            Feed Jam = ERR=FEED_TIMEOUT, roller stopped at once.
                            ATTEMPT in STATUS = the attempt running (or the last one).
-    STOP                -> stop the roller, cancel FEED, clear the error (flap keeps its angle)
+    VIBRATE <0-3000>    -> platform vibration motor on for that many ms, then off by itself
+                           (0 = off now). Instant command: the state does not change. The Pi
+                           uses it to shake a card that did not fall when the flap opened.
+    STOP                -> stop the roller and the vibration motor, cancel FEED, clear the
+                           error (flap keeps its angle)
 
   Power-up: flap closed (80), roller stopped, nothing moves until the Pi asks.
   Built-in LED: off = idle, on = feeding, fast blink = error (until the next FEED or STOP).
@@ -26,6 +30,7 @@
   Default wiring (change the constants below to match yours)
     D9  feed roller servo (360)     D10 flap servo (180)
     D6  platform IR                 D5  stack IR
+    D7  -> vibration motor driver (470R -> BC548 base, HIGH = motor on)
     D4  <- MAX485 RO                D3  -> MAX485 DI          D13 -> MAX485 DE + RE
 */
 
@@ -53,6 +58,12 @@ const uint8_t FEEDER_PIN   = 9;
 const uint8_t FLAP_PIN     = 10;
 const uint8_t PLAT_IR_PIN  = 6;
 const uint8_t STACK_IR_PIN = 5;      // stack IR
+const uint8_t VIBE_PIN     = 7;      // platform vibration motor (BC548 low-side switch), HIGH = on
+
+// ===================== Vibration motor =====================
+// The motor always switches itself off after the time the Pi asked for, so a lost
+// RS-485 link can never leave it running.
+const unsigned long VIBE_MAX_MS = 3000;
 
 // ===================== Flap =====================
 const int FLAP_CLOSED = 80;          // power-up position; the Pi sends FLAP 25 (open) / FLAP 80 (closed)
@@ -167,6 +178,9 @@ unsigned long attemptMs     = 0;           // length of one pull attempt
 uint8_t       feedAttempt   = 0;           // 1 or 2 while feeding; 0 = never fed
 bool          rollerRunning = false;
 int           flapAngle     = FLAP_CLOSED;
+bool          vibeOn        = false;
+unsigned long vibeStartedAt = 0;
+unsigned long vibeMs        = 0;
 
 char    lineBuf[MAX_FRAME];
 uint8_t lineLen     = 0;
@@ -288,6 +302,28 @@ void serviceCritical() {
   if (feedPhase == FEED_RUN && rollerRunning && irRaw(platIr)) feederStop();
 }
 
+// ===================== Vibration motor =====================
+
+void vibeOff() {
+  digitalWrite(VIBE_PIN, LOW);
+  vibeOn = false;
+}
+
+void vibeStart(unsigned long ms, unsigned long now) {
+  if (ms == 0) {
+    vibeOff();
+    return;
+  }
+  vibeMs        = ms;
+  vibeStartedAt = now;
+  vibeOn        = true;
+  digitalWrite(VIBE_PIN, HIGH);
+}
+
+void updateVibe(unsigned long now) {
+  if (vibeOn && now - vibeStartedAt >= vibeMs) vibeOff();
+}
+
 // ===================== LED =====================
 
 void updateLed(unsigned long now) {
@@ -355,12 +391,12 @@ void execute(const char *cmd, const char *arg, char *out, size_t size) {
   long value;
 
   if (strcmp(cmd, "PING") == 0) {
-    snprintf(out, size, "OK FW=1.1");
+    snprintf(out, size, "OK FW=1.2");
 
   } else if (strcmp(cmd, "STATUS") == 0) {
-    int n = snprintf(out, size, "OK STATE=%s STACK=%d PLAT=%d FLAP=%d ROLLER=%d ATTEMPT=%d",
+    int n = snprintf(out, size, "OK STATE=%s STACK=%d PLAT=%d FLAP=%d ROLLER=%d ATTEMPT=%d VIB=%d",
                      stateName(), stackIr.stable ? 1 : 0, platIr.stable ? 1 : 0,
-                     flapAngle, rollerRunning ? 1 : 0, feedAttempt);
+                     flapAngle, rollerRunning ? 1 : 0, feedAttempt, vibeOn ? 1 : 0);
     if (state == STATE_ERROR && errorCode != NULL && n > 0 && (size_t)n < size) {
       snprintf(out + n, size - n, " ERR=%s", errorCode);
     }
@@ -403,8 +439,17 @@ void execute(const char *cmd, const char *arg, char *out, size_t size) {
     }
     snprintf(out, size, "OK");
 
+  } else if (strcmp(cmd, "VIBRATE") == 0) {
+    if (!parseArg(arg, 0, VIBE_MAX_MS, value)) {
+      snprintf(out, size, "ERR BAD_ARG");
+      return;
+    }
+    vibeStart((unsigned long)value, now);
+    snprintf(out, size, "OK");
+
   } else if (strcmp(cmd, "STOP") == 0) {
     endFeed();
+    vibeOff();
     state     = STATE_IDLE;
     errorCode = NULL;
     DEBUG_LOG(F("STOP"));
@@ -494,6 +539,8 @@ void setup() {
   if (STATUS_LED) pinMode(LED_BUILTIN, OUTPUT);
   if (RS485_DE_PIN != NO_DE_PIN) pinMode(RS485_DE_PIN, OUTPUT);
   setDriver(LOW);                         // listen
+  pinMode(VIBE_PIN, OUTPUT);
+  vibeOff();                              // motor off from the first moment
 
   // Targets BEFORE attach(), so the first pulses are already "closed" / "stopped"
   Timer1Servo::begin();
@@ -517,6 +564,7 @@ void loop() {
   updateIr(platIr, now);
   updateIr(stackIr, now);
   updateFeed(now);
+  updateVibe(now);
   pollBus();
   updateLed(now);
 }

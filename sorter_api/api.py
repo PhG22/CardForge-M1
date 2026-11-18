@@ -96,6 +96,9 @@ class SimStateUpdate(BaseModel):
     platform_has_card: Optional[bool] = None
     top_jammed: Optional[bool] = Field(None, description="Feeder never delivers a card")
     offline_modules: Optional[List[str]] = Field(None, description='e.g. ["A2"] to unplug the bottom module')
+    platform_stuck_pulses: Optional[int] = Field(
+        None, ge=0, description="The next card on the platform sticks: it falls only after this many "
+                                "vibration pulses (0 = falls normally; more than the Pi gives = DROP_FAILED)")
 
 
 def build_identifier(settings: Settings, vision=None):
