@@ -92,7 +92,7 @@ turns red, the app gets a `fault` event, and the run waits with its id and count
 | `error_code` | Cause |
 |---|---|
 | `FEED_TIMEOUT` / `FEED_FAILED` | Feed jam: no card reached the platform after 2 pull attempts (RF05) |
-| `DROP_FAILED` | The card did not fall from the platform, not even after 2 pulses of the vibration motor under it (PROTOCOL.md 5.2). A card that falls after a pulse is **not** a fault: the run goes on with no alert |
+| `DROP_FAILED` | The card did not fall from the platform, not even after 3 pulses of the vibration motor under it (PROTOCOL.md 5.2). A card that falls after a pulse is **not** a fault: the run goes on with no alert |
 | `MOVE_TIMEOUT`, `HOME_TIMEOUT`, `HOME_FAILED`, `NOT_HOMED` | The base did not reach a tray / the zero position |
 
 The user fixes the machine (removes the stuck card, clears the feeder) and calls
@@ -390,7 +390,7 @@ border detection until a crop is saved.
   "top_jammed": false, "offline_modules": [], "platform_stuck_pulses": 0 }
 ```
 `platform_stuck_pulses`: the next card sticks to the platform and only falls after that many
-vibration pulses (1 or 2 = shaken loose, the run goes on; 3 = `DROP_FAILED`).
+vibration pulses (1 to 3 = shaken loose, the run goes on; 4 = `DROP_FAILED`).
 `GET /sim/state` also shows `light_level` (the optional LIGHT command, PROTOCOL.md 5.1) and
 `status_led` (the mode the Pi's RGB LED is showing). `MTG_SIM_OPTIONAL_COMMANDS=0` simulates
 an `a1_top.ino` without the optional commands (LIGHT, VIBRATE).

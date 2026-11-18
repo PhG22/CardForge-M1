@@ -47,8 +47,8 @@ class Settings:
     # Stuck card (a1_top 1.2, vibration motor on D7): if it did not fall within drop_timeout_s,
     # up to drop_vibration_pulses pulses of drop_vibration_ms; after each pulse, wait
     # drop_vibration_wait_s more for it to fall. Still there after the last one: DROP_FAILED.
-    drop_vibration_pulses: int = 2      # 0 = never vibrate (DROP_FAILED right after drop_timeout_s)
-    drop_vibration_ms: int = 800        # one pulse (firmware limit 3000)
+    drop_vibration_pulses: int = 3      # 0 = never vibrate (DROP_FAILED right after drop_timeout_s)
+    drop_vibration_ms: int = 1000       # one pulse (firmware limit 3000)
     drop_vibration_wait_s: float = 1.0  # after a pulse ends, before the next pulse / DROP_FAILED
     card_fall_s: float = 0.5            # after the platform IR clears, before closing the flap
     feed_timeout_s: float = 10.0        # RF05: 2 pull attempts of 5 s each (~16 feed steps each)

@@ -2,8 +2,8 @@
 vibration motor (A1 VIBRATE, a1_top 1.2, motor on D7).
 
   * falls by itself            -> no vibration at all
-  * falls after pulse 1 or 2   -> the run goes on, no fault, no alert
-  * still there after pulse 2  -> DROP_FAILED: the run pauses and the app is alerted
+  * falls after pulse 1, 2, 3  -> the run goes on, no fault, no alert
+  * still there after pulse 3  -> DROP_FAILED: the run pauses and the app is alerted
   * firmware without VIBRATE   -> DROP_FAILED right away, as before
 """
 
@@ -72,16 +72,32 @@ def test_stuck_card_falls_after_the_second_pulse():
         assert vibrate_commands(c) == [f"VIBRATE {PULSE_MS}", f"VIBRATE {PULSE_MS}", "VIBRATE 0"]
 
 
-def test_card_still_stuck_after_two_pulses_pauses_the_run_with_drop_failed():
+def test_stuck_card_falls_after_the_third_pulse():
     with TestClient(create_app(vib_settings(), vision=plains())) as c:
         c.put("/sim/state", json={"platform_stuck_pulses": 3})
+        events = run_to_end(c)
+        assert events[-1]["type"] == "run_finished" and events[-1]["run"]["status"] == "completed"
+        assert not [e for e in events if e["type"] == "fault"]
+        assert vibrate_commands(c) == [f"VIBRATE {PULSE_MS}"] * 3 + ["VIBRATE 0"]
+
+
+def test_default_is_three_pulses_of_1000_ms():
+    from sorter_api.config import Settings
+
+    s = Settings()
+    assert s.drop_vibration_pulses == 3 and s.drop_vibration_ms == 1000
+
+
+def test_card_still_stuck_after_three_pulses_pauses_the_run_with_drop_failed():
+    with TestClient(create_app(vib_settings(), vision=plains())) as c:
+        c.put("/sim/state", json={"platform_stuck_pulses": 4})
         with c.websocket_connect("/ws/events") as ws:
             ws.receive_json()
             run_id = c.post("/run/start").json()["run"]["run_id"]
             fault = events_until(ws, "fault")[-1]
             assert fault["fault"] == "DROP_FAILED" and fault["time"]                  # RF27 alert
-            assert "2 vibration pulse(s)" in fault["message"]
-            assert vibrate_commands(c) == [f"VIBRATE {PULSE_MS}"] * 2                 # exactly 2 tries
+            assert "3 vibration pulse(s)" in fault["message"]
+            assert vibrate_commands(c) == [f"VIBRATE {PULSE_MS}"] * 3                 # exactly 3 tries
             assert c.get("/sim/state").json()["vibrating"] is False                  # STOP: motor off
 
             # The user takes the card out by hand and resumes: the same run goes on.

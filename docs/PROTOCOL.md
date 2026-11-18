@@ -161,16 +161,19 @@ What the Pi does with it (`controller._drop_card`), when the card does not leave
 FLAP <open> ── card falls within 3 s ────────────────────────────────► FLAP 80, next card
      │ still PLAT=1
      ▼
-VIBRATE 800 ── falls within 0.8 s + 1 s ── VIBRATE 0 ────────────────► FLAP 80, next card
+VIBRATE 1000 ── falls within 1 s + 1 s ── VIBRATE 0 ────────────────► FLAP 80, next card
      │ still PLAT=1                                    (no fault, no alert)
      ▼
-VIBRATE 800 ── falls within 0.8 s + 1 s ── VIBRATE 0 ────────────────► FLAP 80, next card
+VIBRATE 1000 ── falls within 1 s + 1 s ── VIBRATE 0 ────────────────► FLAP 80, next card
+     │ still PLAT=1
+     ▼
+VIBRATE 1000 ── falls within 1 s + 1 s ── VIBRATE 0 ────────────────► FLAP 80, next card
      │ still PLAT=1
      ▼
 DROP_FAILED: STOP to the modules, run paused, fault event + alert to the app (RF27 / RF38)
 ```
 
-Settings: `MTG_DROP_VIBRATION_PULSES` (2; 0 = never vibrate), `MTG_DROP_VIBRATION_MS` (800),
+Settings: `MTG_DROP_VIBRATION_PULSES` (3; 0 = never vibrate), `MTG_DROP_VIBRATION_MS` (1000),
 `MTG_DROP_VIBRATION_WAIT_S` (1.0). Firmware without `VIBRATE` answers `ERR BAD_CMD`: the Pi
 turns the feature off for the session and reports `DROP_FAILED` after the 3 s, as before.
 

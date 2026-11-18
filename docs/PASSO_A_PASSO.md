@@ -600,7 +600,7 @@ continuam como visão local da máquina.
 | Cartas em português lentas ou no bin 6 | `cards.db` sem os nomes em português: `sqlite3 data/cards.db "select * from db_metadata"` deve mostrar `printed_langs = pt` e `schema_version = 2`. Senão, `git pull` ou `.venv/bin/python -m cardforge.cv sync`, e reinicie o serviço |
 | Cartão SD enchendo | `cards_to_improve/` guarda fotos de resolução cheia das cartas lentas: apague as runs já estudadas, baixe `MTG_SLOW_CARDS_MAX_MB` ou desligue com `MTG_SLOW_CARD_S=0` |
 | Run pausada com `FEED_TIMEOUT` | Carta presa no alimentador ou pilha vazia com o IR da pilha dizendo o contrário. Libere e use Resume |
-| Run pausada com `DROP_FAILED` | Carta presa na plataforma mesmo depois de 2 pulsos do motor de vibração: retire-a (ela não é registrada) e use Resume. Se acontece sempre, confira o motor (D7, `VIB=` no STATUS) e se o `a1_top.ino` 1.2 foi gravado |
+| Run pausada com `DROP_FAILED` | Carta presa na plataforma mesmo depois de 3 pulsos do motor de vibração: retire-a (ela não é registrada) e use Resume. Se acontece sempre, confira o motor (D7, `VIB=` no STATUS) e se o `a1_top.ino` 1.2 foi gravado |
 | Muitas cartas no bin 6 | Calibração (parte D): brilho, foco, enquadramento. Veja `attention` nos eventos e os motivos em `/runs/<id>` |
 | Página de calibração: `VISION_OFF` | Serviço rodando com `MTG_VISION=off` |
 | Página de calibração: `RUN_ACTIVE` | Há uma run ativa ou pausada: termine com Stop |

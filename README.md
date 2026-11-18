@@ -369,7 +369,7 @@ O código pronto (firmware e API) é a referência; o design do Deliverable 3 fo
 |---|---|
 | RF05, RF08, RF09, RF19, RF20, RF22–RF23, RF25–RF27, RF29, RF39, RNF10, RNF15, RNF16, RNF19, RNF20, RNF23, RNF27 | Implementados e cobertos por testes com o simulador |
 | RF05 | `a1_top.ino` 1.1: 2 tentativas de puxar por carta, Feed Jam depois da segunda (`ATTEMPT=` no STATUS). **Gravar o firmware novo** |
-| Carta presa na plataforma | `a1_top.ino` 1.2: motor de vibração no D7 (`VIBRATE`, [PROTOCOL.md 5.2](docs/PROTOCOL.md)). Se a carta não cai em 3 s, o Pi dá até 2 pulsos de 0,8 s; se cair, a run segue sem alerta; se não, `DROP_FAILED`. **Gravar o firmware novo** |
+| Carta presa na plataforma | `a1_top.ino` 1.2: motor de vibração no D7 (`VIBRATE`, [PROTOCOL.md 5.2](docs/PROTOCOL.md)). Se a carta não cai em 3 s, o Pi dá até 3 pulsos de 1 s; se cair, a run segue sem alerta; se não, `DROP_FAILED`. **Gravar o firmware novo** |
 | RF17, RF18, RNF18, RNF22 | Implementados; **medir na máquina** (a visão leva ~4,5 s por captura no Pi, segundo o Deliverable 5). RNF22: `a2_base.ino` 1.1 usa o perfil rápido (`FAST_PROFILE = true`, ~2 s por salto); confira o `DRIFT` no log depois dos homings |
 | RF38 | Implementado: Pi → servidor (`/machine/events`) → app em segundo plano (`/notifications`) → notificação. Lado Python coberto por testes com PostgreSQL real; **o app precisa de `flutter pub get` / `flutter analyze` / `flutter test`** |
 | RF16, RF32, RF37, RF41 (LED de status) | Implementados no Pi (GPIO 17/22/27) |
