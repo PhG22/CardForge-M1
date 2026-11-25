@@ -1,0 +1,54 @@
+# systemd unit: start the CardForge-M1 main loop + API on boot.
+#   1. Adjust User, WorkingDirectory and the MTG_* values below.
+#   2. sudo cp deploy/sorter-api.service /etc/systemd/system/
+#   3. sudo systemctl daemon-reload && sudo systemctl enable --now sorter-api
+#   4. Logs: journalctl -u sorter-api -f
+#
+# Card database: data/cards.db comes with the repository. Every time this service starts it checks
+# Scryfall for new cards (in the background; MTG_CARD_DB_CHECK=off turns it off) and the app tells the
+# user, who starts the update from the app. By hand: .venv/bin/python -m cardforge.cv sync
+
+# Status LED at power-on (RF16 / RF41, Appendix B "Starting" = solid white): add this line to
+# /boot/firmware/config.txt (/boot/config.txt before Bookworm) so the Pi firmware lights the LED
+# white in the first second, before Linux boots:
+#   gpio=17,22,27=op,dh
+# This service keeps it white until it is up and the base is homed, then shows green (ready),
+# solid blue (no Wi-Fi yet: pair over Bluetooth) or blinking blue (Wi-Fi not connected).
+
+[Unit]
+Description=CardForge-M1 sorter (main loop + API)
+# Do NOT wait for network-online.target: while the saved Wi-Fi is out of reach it holds this
+# service for up to a minute, and the LED would stay white instead of blinking blue. The card database
+# check at start waits by itself, in the background, up to MTG_CARD_DB_CHECK_WAIT_S (30 s), and only while
+# a configured Wi-Fi is still connecting (the server is only asked at Start; uploads retry by themselves).
+After=network.target NetworkManager.service cardforge-setup.service
+Wants=cardforge-setup.service
+
+[Service]
+User=raspad
+Group=dialout
+# gpio: MAX485 DE/RE pin; video: the CSI camera
+SupplementaryGroups=gpio video
+WorkingDirectory=/home/raspad/CardForge-M1
+# USB-RS485 converter (Deliverable 5): it switches direction by itself, so no DE pin.
+# MAX485 on the Pi UART instead: MTG_SERIAL_PORT=/dev/serial0 and MTG_DE_PIN=<BCM pin of DE+RE>.
+Environment=MTG_SERIAL_PORT=/dev/ttyUSB0
+Environment=MTG_BAUDRATE=9600
+Environment=MTG_VISION=camera
+Environment=MTG_RUN_DB=/home/raspad/CardForge-M1/data/run.db
+# RF08: last base position, for a fast homing at power-on
+Environment=MTG_BASE_STATE_FILE=/home/raspad/CardForge-M1/data/base_position.json
+# CardForge server (docs/SERVER.md): runs are saved to the account of the app user who
+# pressed Start and uploaded when they end. Put the token in a file, not here:
+#   /etc/cardforge/sorter.env (mode 600):  MTG_MACHINE_TOKEN=<one of the server's CF_MACHINE_TOKENS>
+#Environment=MTG_SERVER_URL=http://192.168.0.10:8080
+#EnvironmentFile=/etc/cardforge/sorter.env
+# Without a server only: password the app signs in with on the Pi (user "admin").
+# Empty = any credentials are accepted.
+Environment=MTG_APP_PASSWORD=change-me
+ExecStart=/home/raspad/CardForge-M1/.venv/bin/python -m sorter_api
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

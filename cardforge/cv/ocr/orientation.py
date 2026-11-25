@@ -44,11 +44,16 @@ class OrientationResolver:
     def title_score(self, fields: ExtractedFields) -> int:
         return self.names.best_score(fields.name)
 
+    # Pontuação mínima do código de edição para a linha de info valer como prova de orientação:
+    # 100 = código exato, 90 = código com uma troca típica de OCR desfeita ("JKO" -> "IKO"). Abaixo
+    # disso é semelhança genérica (pode ser o nome do artista) e não serve de prova.
+    INFO_SET_SCORE = 90
+
     def info_ok(self, fields: ExtractedFields) -> bool:
         if self.parser is None:
             return False
         info = self.parser.parse(fields.info_raw)
-        return info.set_score == 100 and info.has_number
+        return info.set_score >= self.INFO_SET_SCORE and info.has_number
 
     def resolve(self, card: RectifiedCard) -> OrientationResult:
         rois = RoiCatalog.rois_for(CardLayout.STANDARD)

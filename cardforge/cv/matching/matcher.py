@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Optional
+from typing import Iterable, Optional
 
 from rapidfuzz import fuzz
 
@@ -13,7 +13,7 @@ from ..ocr.fields import ExtractedFields
 from ..ocr.rois import CardLayout
 from .info_parser import CollectorInfo
 from .name_index import NameIndex, compact
-from .type_words import types_agree
+from .type_words import types_agree, types_conflict
 
 
 class MatchMethod(str, Enum):
@@ -34,6 +34,7 @@ class MatchResult:
     needs_review: bool = False
     name_key: Optional[str] = None
     name_score: int = 0
+    printed_name_match: bool = False   # o título bateu com o nome impresso traduzido (ex.: pt), não o inglês
 
 
 class CardMatcher:
@@ -44,19 +45,49 @@ class CardMatcher:
     para que o controle refaça a captura (RF29) e, por fim, marque a carta como não identificada.
     """
 
+    # Quantas leituras alternativas de edição/número são conferidas no banco. Cada tentativa é uma
+    # consulta indexada (~0,05 ms), mas a lista é curta de propósito: o 5.º candidato já é chute.
+    MAX_SET_CANDIDATES = 4
+    MAX_NUMBER_CANDIDATES = 2
+
     def __init__(self, repo: CardRepository, names: NameIndex, cfg: VisionConfig):
         self.repo = repo
         self.names = names
         self.cfg = cfg
 
-    def cross_check(self, ocr_name: str, official_name: str) -> bool:
-        """O nome lido confirma a impressão encontrada por set + número?"""
-        a, b = compact(ocr_name), compact(official_name)
+    def find_print(self, info: CollectorInfo, layout: CardLayout) -> Optional[CardRecord]:
+        """
+        Procura a impressão no banco testando as leituras possíveis de edição e número, da mais
+        confiável para a menos (`CollectorInfo.set_candidates` / `number_candidates`).
+
+        O banco é o árbitro do saneamento do OCR: uma combinação inventada por uma troca de
+        caractere ("LCIPI" em vez de "LCI PT", "1OO" em vez de "100") não existe em `card_print`,
+        então um candidato errado só custa uma consulta — e o certo deixa de ser perdido.
+        """
+        sets = info.set_candidates or ((info.set_code,) if info.has_set else ())
+        numbers = info.number_candidates or ((info.collector_number,) if info.has_number else ())
+        for code in sets[:self.MAX_SET_CANDIDATES]:
+            queries = [code.lower()]
+            if layout.is_token and not queries[0].startswith("t"):
+                queries.insert(0, "t" + queries[0])   # tokens ficam em sets próprios ("fin" -> "tfin")
+            for query in queries:
+                for number in numbers[:self.MAX_NUMBER_CANDIDATES]:
+                    printed = self.repo.find_print(query, number)
+                    if printed is not None:
+                        return printed
+        return None
+
+    def cross_check(self, ocr_name: str, official_name: str, printed_names: Iterable[str] = ()) -> bool:
+        """
+        O nome lido confirma a impressão encontrada por set + número? Vale o nome inglês ou o nome
+        impresso dessa mesma impressão noutro idioma ("Chicote do Espadachim" = LCI 283 em pt).
+        """
+        a = compact(ocr_name)
         if not a:
             return True  # nada lido no título: não há como contradizer
         # Cartas de várias faces: basta bater com uma face.
-        faces = [compact(f) for f in official_name.split(" // ")] + [b]
-        return any(a in f or f in a or fuzz.ratio(a, f) >= self.cfg.cross_check_cutoff for f in faces if f)
+        names = {compact(n) for name in (official_name, *printed_names) for n in (name, *name.split(" // "))}
+        return any(a in f or f in a or fuzz.ratio(a, f) >= self.cfg.cross_check_cutoff for f in names if f)
 
     def match(self, fields: ExtractedFields, info: CollectorInfo, layout: CardLayout) -> MatchResult:
         set_query = info.set_code.lower()
@@ -65,15 +96,15 @@ class CardMatcher:
 
         name_key, name_score = self.names.best_name(fields.name, self.cfg.name_cutoff)
 
-        printed: Optional[CardRecord] = None
-        if info.has_set and info.has_number:
-            printed = self.repo.find_print(set_query, info.collector_number)
-            if printed is None and layout.is_token:
-                printed = self.repo.find_print(info.set_code.lower(), info.collector_number)
+        printed = self.find_print(info, layout) if info.has_set and info.has_number else None
 
         if printed is not None:
             if self.cross_check(fields.name, printed.name):
                 return MatchResult(printed, MatchMethod.SET_NUMBER, 100, False, name_key, name_score)
+            if printed.printed_names and self.cross_check(fields.name, "", printed.printed_names):
+                # Título em português (ou outro idioma do cards.db) desta mesma impressão.
+                return MatchResult(printed, MatchMethod.SET_NUMBER, 100, False, name_key, name_score,
+                                   printed_name_match=True)
             if name_key:
                 by_name = self.repo.find_latest_print_by_name(name_key, set_query if info.has_set else "")
                 if by_name is not None and by_name.name == printed.name:
@@ -84,10 +115,17 @@ class CardMatcher:
                     return MatchResult(by_name, MatchMethod.NAME_SET_MISMATCH,
                                        min(name_score, self.cfg.confidence_threshold - 1), True,
                                        name_key, name_score)
-            # Carta impressa noutro idioma ("Sagui Espinhoso"): o nome não corresponde a nenhuma carta
-            # inglesa, então a confirmação vem dos tipos da carta lidos na linha de tipo ("Criatura").
+            # Carta impressa noutro idioma ("Sagui Espinhoso"): o nome não corresponde a nenhuma
+            # carta inglesa, então a confirmação vem dos tipos lidos na linha de tipo ("Criatura")
+            # ou da etiqueta de idioma da própria linha de info ("IKO·PT"). A etiqueta é prova
+            # direta de que o nome VAI divergir, e salva as cartas cuja linha de tipo não foi lida
+            # (moldura showcase, linha fora da ROI): sem ela a carta era achada por edição + número
+            # e ainda assim ia para revisão, gastando as 3 capturas (RF29) para cair no bin 6.
+            # Uma linha de tipo que contradiz a carta continua indo para revisão: aí a divergência
+            # não é só de idioma, é sinal de que a edição/número podem estar errados.
             if (self.cfg.accept_localized_cards and len(compact(fields.name)) >= 3
-                    and types_agree(fields.type, printed.type_line)):
+                    and (types_agree(fields.type, printed.type_line)
+                         or (info.is_localized and not types_conflict(fields.type, printed.type_line)))):
                 return MatchResult(printed, MatchMethod.SET_NUMBER_LOCALIZED, self.cfg.confidence_threshold,
                                    False, None, name_score)
             return MatchResult(printed, MatchMethod.SET_NUMBER_NAME_MISMATCH,

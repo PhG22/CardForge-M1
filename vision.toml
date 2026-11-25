@@ -25,14 +25,42 @@ name_cutoff = 85
 set_cutoff = 85
 cross_check_cutoff = 70
 accept_localized_cards = true        # false = estrito ao design CV-AD-04 (cartas não inglesas vão para revisão)
+printed_name_langs = ["pt"]          # nomes impressos baixados no sync (all_cards, ~400 MB em streaming);
+                                     # [] = só inglês. Mudou? rode "python -m cardforge.cv sync" de novo
+db_max_age_days = 30                 # refaz o cards.db se tiver mais que isso, mesmo sem cartas novas (0 = não)
 
-[camera]                             # Picamera2 / OV5647 — calibrar na câmara escura com os LEDs no nível base
-resolution = [2028, 1520]
-exposure_us = 20000
-analogue_gain = 2.0
-awb_gains = [1.6, 1.5]               # [0, 0] = balanço de branco automático
+[camera]                             # calibre em http://<ip-do-pi>:8000/calibration
+backend = "picamera2"                # "picamera2" (padrão) ou "rpicam" (chama rpicam-still a cada foto)
+sensor = "auto"                      # detecta a câmera (imx219 = Camera Module v2, ov5647 = v1) e usa o perfil dela
 warmup_s = 0.5
+light_level = 60                     # fitas LED, % (precisa do comando LIGHT no A1); gravado pela calibração
+
+# Um perfil por câmera: "Salvar no vision.toml" grava aqui os valores da câmera conectada.
+# Resolução cheia: em 1640x1232 o rodapé da carta (edição e número) ficou ilegível para o OCR.
+[camera.profiles.imx219]             # Pi Camera Module v2
+resolution = [3280, 2464]
+exposure_us = 9992                   # calibrado em 1640x1232: rode a autocalibração de novo em 3280x2464
+analogue_gain = 1.274
+awb_gains = [1.853, 1.374]
+
+[camera.profiles.ov5647]             # Pi Camera Module v1 (ainda não calibrada)
+resolution = [2592, 1944]
+
+[crop]                               # onde está a carta na foto
+mode = "fixed"                       # "fixed" = 4 cantos calibrados, sem detecção de bordas; "detect" = detecção a cada foto
+corners = []                         # recorte usado quando o sensor não tem um próprio em [crop.corners_by_sensor]
+margin = 0.0                         # amplia o recorte em volta da carta (0.02 = 2 %)
+
+# Um recorte por câmera, na ordem da carta (canto superior esquerdo da carta = lado do título, depois os outros
+# no sentido horário), em fração do quadro. Gravado por "Salvar recorte fixo" / "Salvar estes cantos" em /calibration.
+[crop.corners_by_sensor]
+# imx219: borda EXTERNA da carta marcada à mão nas fotos de calibragem_recorte/ (12/11/2026); refine pela página
+imx219 = [[0.8280, 0.3182], [0.8537, 0.9740], [0.1634, 0.9862], [0.1537, 0.3222]]
 
 [face_down]                          # RF39
 min_brown_ratio = 0.75
 max_text_chars = 2
+# Acima disto a cor basta: carta dada como virada antes de qualquer OCR (~1 ms em vez de 2 chamadas de
+# OCR). Verso ≈ 0,85; a frente mais marrom das 59 fotos de referência, 0,67. Confira o brown_ratio do
+# debug com fotos da sua câmara antes de baixar; 1.01 desliga o atalho.
+skip_ocr_brown_ratio = 0.80

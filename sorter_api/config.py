@@ -1,0 +1,135 @@
+"""Settings, read from environment variables (all prefixed MTG_)."""
+
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass, fields
+
+
+def _env(name: str, default, cast):
+    raw = os.environ.get(f"MTG_{name.upper()}")
+    if raw is None or raw == "":
+        return default
+    if cast is bool:
+        return raw.strip().lower() in ("1", "true", "yes", "on")
+    return cast(raw)
+
+
+MAX_CARDS_PER_RUN = 250    # RNF27: a run never processes more cards than one full feed load (RNF02)
+
+
+@dataclass
+class Settings:
+    # --- HTTP server
+    host: str = "0.0.0.0"
+    port: int = 8000
+    log_level: str = "INFO"             # DEBUG prints every RS-485 frame
+
+    # --- RS-485 link (match what your test script used)
+    simulate: bool = False              # True = fake A1/A2 in software, no serial port needed
+    serial_port: str = "/dev/serial0"   # Pi UART; /dev/ttyUSB0 for a USB-RS485 adapter
+    baudrate: int = 9600
+    de_pin: int | None = None           # Pi only: BCM GPIO wired to DE+RE; None for auto-direction adapters
+    de_rts: bool = False                # laptop + USB-TTL adapter: DE+RE wired to the adapter's RTS pin
+    de_rts_invert: bool = False         # flip if the module never answers with de_rts on
+    reply_timeout: float = 0.3          # seconds to wait for a reply frame
+    retries: int = 3                    # RNF10: retransmissions after a timeout / bad checksum, then link lost
+    frame_gap_s: float = 0.002          # quiet time between a reply and the next request
+
+    # --- modules
+    bottom_enabled: bool = True         # False = top-only test bench: A2 is never contacted
+
+    # --- mechanics (flap/drop timings from feeder_flap_test.ino)
+    flap_closed_angle: int = 80         # closed. Override: MTG_FLAP_CLOSED_ANGLE (must match FLAP_CLOSED in a1_top.ino)
+    flap_open_angle: int = 25            # open (drop). Override: MTG_FLAP_OPEN_ANGLE
+    flap_settle_s: float = 0.5          # time for the flap servo to reach its angle
+    drop_timeout_s: float = 3.0         # time for the card to fall by itself once the flap is open
+    # Stuck card (a1_top 1.2, vibration motor on D7): if it did not fall within drop_timeout_s,
+    # up to drop_vibration_pulses pulses of drop_vibration_ms; after each pulse, wait
+    # drop_vibration_wait_s more for it to fall. Still there after the last one: DROP_FAILED.
+    drop_vibration_pulses: int = 3      # 0 = never vibrate (DROP_FAILED right after drop_timeout_s)
+    drop_vibration_ms: int = 1000       # one pulse (firmware limit 3000)
+    drop_vibration_wait_s: float = 1.0  # after a pulse ends, before the next pulse / DROP_FAILED
+    card_fall_s: float = 0.5            # after the platform IR clears, before closing the flap
+    feed_timeout_s: float = 10.0        # RF05: 2 pull attempts of 5 s each (~16 feed steps each)
+    home_timeout_s: float = 40.0        # Arduino gives up homing after this (gentle ramp: ~20 s)
+    home_on_power_on: bool = True       # RF08: home the base when the service starts (and again at every Start)
+    park_base_after_run: bool = True    # RF08: back to the home tray after a run, so the next homing is short
+    base_state_file: str = "data/base_position.json"   # last base position, for a fast power-on homing ("" = off)
+    drift_warn_steps: int = 5           # log a warning when a homing finds the base further off than this
+    move_timeout_s: float = 15.0        # Pi gives up waiting for GOTO / MOVE after this
+    base_steps_per_turn: int = 12800    # for /base/move with degrees (measured: 4:1 gearing)
+    poll_interval_s: float = 0.1        # STATUS polling period while a module is BUSY
+    # Every byte on the bus pauses the base's step interrupt (SoftwareSerial), so the base
+    # is left alone while it moves: wait the duration it reports, then poll slowly.
+    base_poll_interval_s: float = 0.25  # after the reported move time has passed
+    home_poll_interval_s: float = 1.0   # while homing (duration unknown)
+    trays: int = 6
+
+    # --- identification
+    # "camera" = Pi camera + computer vision (the real machine)
+    # "files"  = computer vision on photos from vision_images, in turn (no camera: simulator / bench)
+    # "off"    = no vision: wait identify_delay_s and cycle trays 1..6 (mechanics bench test)
+    vision: str = "off"
+    vision_config: str = "vision.toml"  # cardforge.cv settings (thresholds, camera, cards.db path)
+    vision_images: str = "input_cartas"
+    identify_attempts: int = 3          # captures per card: 1 + 2 retries (RF29)
+    identify_delay_s: float = 2.0       # vision=off only
+    light_base_level: int = 60          # chamber LEDs, % (needs the optional LIGHT command on A1)
+    light_step: int = 20                # added before each retry (RNF09)
+    # Card database (data/cards.db, card_db_update.py): checked against Scryfall when the service starts,
+    # in the background (the machine is ready as usual); the app tells the user when an update is
+    # available, and the user starts it. auto = with the camera on the real machine (not --simulate);
+    # on; off (no check at power-on; the app can still check and update).
+    card_db_check: str = "auto"
+    card_db_check_wait_s: float = 30.0   # at boot: how long the check waits for a configured Wi-Fi to connect
+
+    # --- RGB status LED on the Pi GPIO (status_led.py)
+    led: str = "auto"                   # auto = GPIO on the Pi, in memory with --simulate; gpio; off
+    led_pins: str = "17,22,27"          # BCM R,G,B = physical pins 11, 15, 13 (common cathode, COM on pin 9)
+    network_monitor: str = "auto"       # auto = show Setup / No Network (blue) when nmcli exists; on; off
+
+    # --- files on the SD card (housekeeping.py)
+    project_root: str = ""              # empty = the folder that holds sorter_api/
+    crop_captures_dir: str = "calibragem_recorte"   # fixed-crop calibration pictures, kept for debugging
+    cleanup_dirs: str = "data/tmp,capturas,relatorios"  # emptied at the end of every run ("" = no cleanup)
+    # Cards whose identification (photos + vision, retries included) takes longer than this go to
+    # cards_to_improve/ with their pictures and results (slow_cards.py). 0 = off.
+    slow_card_s: float = 3.0
+    slow_cards_dir: str = "cards_to_improve"
+    slow_cards_max_mb: float = 1000.0   # above this the slow cards are kept without pictures
+    benchmark_dir: str = "benchmarks"   # card-time statistics of every run (benchmark.py)
+
+    # --- runs
+    max_cards_per_run: int = MAX_CARDS_PER_RUN   # RNF27; lower only for bench tests, never above 250
+    run_db: str = "data/run.db"         # local_run / local_cards (RF19, RNF19)
+
+    # --- CardForge server (cardforge_server/, docs/SERVER.md): accounts + PostgreSQL.
+    # With server_url set, Start needs the app user's token (checked with the server) and
+    # every finished run is uploaded by the SyncWorker. Empty = runs stay on the Pi only.
+    server_url: str = ""                # e.g. http://192.168.0.10:8080
+    machine_token: str = ""             # one of the server's CF_MACHINE_TOKENS
+    server_timeout_s: float = 5.0
+    sync_interval_s: float = 60.0       # how often to look for runs still to upload
+    sync_retry_max_s: float = 900.0     # longest wait between two failed uploads of a run
+    server_alerts: bool = True          # RF38: send faults and run ends to the server (app notifications)
+    alert_max_age_s: float = 900.0      # give up resending an alert after this long
+
+    # --- app sign-in on the Pi itself (app_compat.py), only WITHOUT a server.
+    # POST /auth/login: empty password = any credentials are accepted.
+    app_username: str = "admin"
+    app_password: str = ""
+
+    # --- simulator only
+    sim_stack_cards: int = 8
+    sim_time_scale: float = 1.0         # <1 makes the simulated motors faster
+    sim_optional_commands: bool = True  # False = simulate a1_top.ino without the optional commands (LIGHT, VIBRATE)
+
+    @classmethod
+    def from_env(cls) -> "Settings":
+        kwargs = {}
+        for f in fields(cls):
+            default = f.default
+            cast = {"int": int, "float": float, "bool": bool, "str": str, "int | None": int}[str(f.type)]
+            kwargs[f.name] = _env(f.name, default, cast)
+        return cls(**kwargs)

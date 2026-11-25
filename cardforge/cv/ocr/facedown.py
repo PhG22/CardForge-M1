@@ -28,8 +28,10 @@ class FaceDownDetector:
     def matches_card_back(self, img: np.ndarray) -> bool:
         return self.brown_ratio(img) >= self.cfg.min_brown_ratio
 
+    def has_no_title(self, o: OrientationResult) -> bool:
+        """Nenhum título legível em nenhuma das duas orientações. Sem rotação tentada = título lido."""
+        return (o.tried_rotation and o.title_chars <= self.cfg.max_text_chars
+                and o.rotated_title_chars <= self.cfg.max_text_chars)
+
     def is_face_down(self, o: OrientationResult) -> bool:
-        # Sem rotação tentada = o título foi lido na orientação normal.
-        no_title = (o.tried_rotation and o.title_chars <= self.cfg.max_text_chars
-                    and o.rotated_title_chars <= self.cfg.max_text_chars)
-        return no_title and self.matches_card_back(o.card.image)
+        return self.has_no_title(o) and self.matches_card_back(o.card.image)

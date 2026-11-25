@@ -1,0 +1,16 @@
+# /etc/systemd/system/cardforge-setup.service
+# Runs as root: advertising over BlueZ and changing Wi-Fi with nmcli both need it.
+[Unit]
+Description=CardForge Bluetooth setup (machine password + Wi-Fi)
+After=bluetooth.service NetworkManager.service
+Requires=bluetooth.service
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/cardforge/pi_ble_setup
+ExecStart=/opt/cardforge/pi_ble_setup/venv/bin/python -m cardforge_setup run
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

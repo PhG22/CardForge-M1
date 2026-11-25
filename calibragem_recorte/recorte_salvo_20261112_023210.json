@@ -1,0 +1,26 @@
+{
+  "mode": "fixed",
+  "calibrated": false,
+  "corners": [],
+  "samples": 5,
+  "mean": [
+    [
+      0.19889,
+      0.37425
+    ],
+    [
+      0.73732,
+      0.3495
+    ],
+    [
+      0.75685,
+      0.94475
+    ],
+    [
+      0.19137,
+      0.95475
+    ]
+  ],
+  "spread_px": 488.2,
+  "vision_toml": "vision.toml"
+}

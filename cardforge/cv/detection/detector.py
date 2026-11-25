@@ -18,6 +18,7 @@ class ContourStrategy(str, Enum):
     OTSU_DARK = "OTSU_DARK"            # carta de borda escura sobre fundo claro
     OTSU_DARK_OPEN = "OTSU_DARK_OPEN"
     OTSU_LIGHT = "OTSU_LIGHT"          # carta de borda clara sobre fundo escuro
+    FIXED = "FIXED"                    # recorte fixo calibrado (sem detecção)
 
 
 DARK_SET = (ContourStrategy.CANNY, ContourStrategy.CANNY_FILL,

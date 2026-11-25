@@ -1,0 +1,243 @@
+import 'dart:async';
+
+import 'package:cardforge/features/machine/api/machine_api.dart';
+import 'package:cardforge/features/machine/api/machine_api_models.dart';
+
+/// A machine REST API fully controlled by the test: set the next answers,
+/// push WebSocket events with [emit], drop the connection with [dropEvents].
+/// Every call answers immediately (no timers), so tests stay deterministic.
+class FakeMachineApi implements MachineApi {
+  FakeMachineApi({
+    this.reachable = true,
+    this.bottomEnabled = true,
+    MachineSnapshot? snapshot,
+  }) : snapshot =
+            snapshot ?? const MachineSnapshot(state: ControllerState.idle);
+
+  bool reachable;
+  bool bottomEnabled;
+  MachineSnapshot snapshot;
+
+  /// What the card database commands answer (the machine's `card_db`).
+  CardDbStatus cardDb = const CardDbStatus(updateAvailable: false);
+
+  /// When set, the next card database command throws it.
+  MachineApiException? cardDbError;
+
+  /// When set, the next startRun throws it.
+  MachineApiException? startError;
+
+  /// When set, startRun waits for it (to test the "Preparing…" state).
+  Completer<void>? startGate;
+
+  /// When set, the next resumeRun throws it.
+  MachineApiException? resumeError;
+
+  HardwareStatus hardware = const HardwareStatus(
+    top: TopModuleStatus(
+      online: true,
+      state: 'IDLE',
+      stackHasCard: true,
+      platformHasCard: false,
+      flapAngle: 80,
+      rollerRunning: false,
+    ),
+    bottom: BaseStatus(online: true, state: 'IDLE', homed: true, position: 3),
+  );
+
+  final List<String> calls = [];
+  int closed = 0;
+  StreamController<MachineEvent>? _events;
+
+  static const MachineApiException _offline =
+      MachineApiException(MachineApiFailure.unreachable);
+
+  static RunInfo runningRun({int cards = 0, int? tray}) => RunInfo(
+        runId: 'run-1',
+        status: RunStatus.running,
+        cardsProcessed: cards,
+        currentTray: tray,
+      );
+
+  /// RNF19: GET /run/status after the machine lost power during run-1, which
+  /// had sorted [cards] cards.
+  static MachineSnapshot interruptedSnapshot({int cards = 2}) {
+    final run = RunInfo(
+      runId: 'run-1',
+      status: RunStatus.failed,
+      cardsProcessed: cards,
+      errorCode: 'INTERRUPTED',
+      message: 'The run was interrupted (power loss or software restart).',
+    );
+    return MachineSnapshot(
+      state: ControllerState.idle,
+      run: run,
+      lastRunCheck: LastRunCheck(
+        ok: false,
+        reason: 'INTERRUPTED',
+        finished: false,
+        cardsSaved: cards,
+        run: run,
+      ),
+    );
+  }
+
+  void _check(String call) {
+    calls.add(call);
+    if (!reachable) throw _offline;
+  }
+
+  @override
+  Future<MachineHealth> health() async {
+    _check('health');
+    return MachineHealth(ok: true, bottomEnabled: bottomEnabled);
+  }
+
+  @override
+  Future<MachineSnapshot> runStatus() async {
+    _check('runStatus');
+    return snapshot;
+  }
+
+  @override
+  Future<RunInfo> startRun() async {
+    _check('startRun');
+    await startGate?.future;
+    final error = startError;
+    if (error != null) {
+      startError = null;
+      throw error;
+    }
+    final run = runningRun();
+    snapshot = MachineSnapshot(state: ControllerState.running, run: run);
+    return run;
+  }
+
+  @override
+  Future<RunInfo> resumeRun() async {
+    _check('resumeRun');
+    final error = resumeError;
+    if (error != null) {
+      resumeError = null;
+      throw error;
+    }
+    final run = RunInfo(
+      runId: snapshot.run?.runId ?? 'run-1',
+      status: RunStatus.running,
+      cardsProcessed: snapshot.run?.cardsProcessed ?? 0,
+    );
+    snapshot = MachineSnapshot(state: ControllerState.running, run: run);
+    return run;
+  }
+
+  /// A run paused by a fault, as GET /run/status reports it.
+  static RunInfo pausedRun({int cards = 3, String code = 'FEED_TIMEOUT'}) =>
+      RunInfo(
+        runId: 'run-1',
+        status: RunStatus.paused,
+        cardsProcessed: cards,
+        errorCode: code,
+        faultAt: DateTime.utc(2026, 11, 11, 20, 15, 3),
+      );
+
+  @override
+  Future<RunInfo?> stopRun({bool immediate = false}) async {
+    _check(immediate ? 'stopRun(immediate)' : 'stopRun');
+    final run = RunInfo(
+      runId: snapshot.run?.runId ?? 'run-1',
+      status: RunStatus.cancelled,
+      cardsProcessed: snapshot.run?.cardsProcessed ?? 0,
+    );
+    snapshot = MachineSnapshot(state: ControllerState.idle, run: run);
+    return run;
+  }
+
+  @override
+  Future<HardwareStatus> hardwareStatus() async {
+    _check('hardwareStatus');
+    return hardware;
+  }
+
+  @override
+  Future<BaseMoveResult> homeBase() async {
+    _check('homeBase');
+    return const BaseMoveResult(
+      base: BaseStatus(online: true, homed: true, position: 3, drift: -2),
+    );
+  }
+
+  @override
+  Future<BaseMoveResult> gotoTray(int tray) async {
+    _check('gotoTray($tray)');
+    return BaseMoveResult(
+      base: BaseStatus(online: true, homed: true, position: tray),
+    );
+  }
+
+  @override
+  Future<CardDbStatus> cardDbStatus() async {
+    _check('cardDbStatus');
+    return cardDb;
+  }
+
+  @override
+  Future<CardDbStatus> checkCardDb() => _cardDbCall(
+      'checkCardDb', const CardDbStatus(phase: CardDbPhase.checking));
+
+  @override
+  Future<CardDbStatus> updateCardDb({bool force = false}) => _cardDbCall(
+        force ? 'updateCardDb(force)' : 'updateCardDb',
+        CardDbStatus(
+          phase: CardDbPhase.updating,
+          updateAvailable: cardDb.updateAvailable,
+          lastCheck: cardDb.lastCheck,
+          progress: const CardDbProgress(stage: 'checking', fraction: 0),
+        ),
+      );
+
+  @override
+  Future<CardDbStatus> cancelCardDbUpdate() => _cardDbCall(
+        'cancelCardDbUpdate',
+        CardDbStatus(
+          updateAvailable: cardDb.updateAvailable,
+          lastCheck: cardDb.lastCheck,
+          lastUpdate: const CardDbResult(result: 'cancelled'),
+        ),
+      );
+
+  Future<CardDbStatus> _cardDbCall(String call, CardDbStatus next) async {
+    _check(call);
+    final error = cardDbError;
+    if (error != null) {
+      cardDbError = null;
+      throw error;
+    }
+    cardDb = next;
+    return next;
+  }
+
+  @override
+  Stream<MachineEvent> events() {
+    calls.add('events');
+    if (!reachable) return Stream<MachineEvent>.error(_offline);
+    final controller = StreamController<MachineEvent>();
+    _events = controller;
+    controller.add(SnapshotEvent(snapshot));
+    return controller.stream;
+  }
+
+  /// Pushes a WebSocket event to the app.
+  void emit(MachineEvent event) => _events?.add(event);
+
+  /// The WebSocket drops (Wi-Fi lost, machine turned off).
+  Future<void> dropEvents() async {
+    final events = _events;
+    _events = null;
+    await events?.close();
+  }
+
+  bool get hasEventListener => _events?.hasListener ?? false;
+
+  @override
+  void close() => closed++;
+}

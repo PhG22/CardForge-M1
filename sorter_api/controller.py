@@ -1,0 +1,1313 @@
+"""Run controller: the Raspberry Pi main loop (FW-AD-01).
+
+States:  IDLE -> STARTING -> RUNNING -> (STOPPING) -> IDLE
+         STARTING -> IDLE when the start checks fail (start() raises StartRefused)
+         RUNNING -> PAUSED on a mechanical fault -> (resume) STARTING -> RUNNING
+                                                 -> (stop)   IDLE
+
+One card (FW-SD-02):  feed (A1) -> identify (camera + vision, up to 3 captures)
+                      -> tray from the color identity -> base to the tray (A2)
+                      -> drop (A1 flap) -> one record in run.db -> progress event
+
+A run ends when the stack is empty (completed), when 250 cards were processed and
+cards are still on the stack (completed, error_code BATCH_LIMIT, RNF27), when
+the user stops it (cancelled), or on a fault that needs a power cycle (failed:
+a module stopped answering = Data-Link Loss). Mechanical faults (feed jam, a card
+that does not fall, the base not reaching a tray) PAUSE the run instead (RNF23):
+the motors stop, the run keeps its id and counters, the app is alerted (RF27),
+and /run/resume re-homes the base and continues the same run (FW-SD-04).
+
+Two kinds of stop:
+  * normal (default): finish the feed in progress, send the card on the platform
+    to its tray (or to the overflow tray 6 if it was not identified yet), drop it,
+    record it, close the flap, then stop all motors. No card is left in the machine.
+  * immediate: stop all motors right now. A card may stay on the platform.
+
+While a run is active the live events carry progress only, never which card was
+read or where it went (RF23). Results are read from run.db once the run is over.
+
+With settings.bottom_enabled = False (top-only test bench) the bottom module A2
+is never contacted: no homing, no tray check, no base moves.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import os
+import sqlite3
+import threading
+import time
+import uuid
+from collections.abc import Callable
+from contextlib import contextmanager
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from enum import Enum
+from pathlib import Path
+
+from .bus import BusError, ModuleError, ModuleNotResponding
+from .config import MAX_CARDS_PER_RUN, Settings
+from .events import EventHub
+from .benchmark import BenchmarkFiles, run_benchmark, summary_text
+from .housekeeping import PROJECT_ROOT, cleanup_after_run, project_path
+from .identifier import FACE_DOWN, IDENTIFIED, CardIdentifier, Identification
+from .modules import HOME_TRAY, VIBRATE_MAX_MS, BottomModule, ModuleState, TopModule
+from .protocol import FrameError
+from .slow_cards import SlowCardRecorder
+from .sorting import OVERFLOW_TRAY
+from .status_led import MemoryLedDriver, StatusLed
+from .store import Owner, RunStore, ScanRecord
+
+log = logging.getLogger(__name__)
+
+
+def utc_now() -> str:
+    # Same format as the local SQLite schema: 2026-10-21T22:19:00.123Z
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+
+
+class ControllerState(str, Enum):
+    IDLE = "idle"
+    STARTING = "starting"
+    RUNNING = "running"
+    STOPPING = "stopping"
+    PAUSED = "paused"            # a mechanical fault holds the run until /run/resume or /run/stop
+    MANUAL = "manual"            # a /base/... or /flap test move is running
+
+
+class RunStatus(str, Enum):
+    RUNNING = "running"
+    PAUSED = "paused"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+@dataclass
+class Problem:
+    code: str
+    message: str
+    details: dict = field(default_factory=dict)
+
+    def to_dict(self) -> dict:
+        return {"code": self.code, "message": self.message, **self.details}
+
+
+class StartRefused(Exception):
+    def __init__(self, http_status: int, problems: list[Problem]) -> None:
+        self.http_status = http_status
+        self.problems = problems
+        super().__init__("; ".join(p.message for p in problems))
+
+    @property
+    def message(self) -> str:
+        return " ".join(p.message for p in self.problems)
+
+
+class NoActiveRun(Exception):
+    pass
+
+
+class NotPaused(Exception):
+    pass
+
+
+class ManualRefused(Exception):
+    def __init__(self, http_status: int, code: str, message: str) -> None:
+        self.http_status = http_status
+        self.code = code
+        self.message = message
+        super().__init__(message)
+
+
+class Aborted(Exception):
+    """Immediate stop: raised from any wait in the loop."""
+
+
+class StopRequested(Exception):
+    """Normal stop: raised only where the loop can safely switch to clearing out."""
+
+
+class HardwareFault(Exception):
+    def __init__(self, code: str, message: str) -> None:
+        self.code = code
+        self.message = message
+        super().__init__(message)
+
+
+CAPTURE_ROUTINE_LIMIT_S = 2.0     # RF02 / RF15: card held still for the photo, at most 2.0 s
+
+
+@dataclass
+class RunTiming:
+    """Measured during a run, for RNF22 (>= 7 cards/min, <= 8.6 s per card, with no retries)
+    and RF02 / RF15 (capture routine <= 2.0 s). The time of each card runs from the start
+    of its feed to the end of its drop, so a pause (fault) does not count."""
+
+    cards: int = 0
+    total_s: float = 0.0
+    nominal_cards: int = 0            # identified (or rejected) at the first capture: no retry
+    nominal_total_s: float = 0.0
+    slowest_capture_s: float | None = None
+    last_card: dict | None = None
+    first_try_cards: int = 0          # no retry and no failsafe at all (benchmark.py)
+    per_card: list = field(default_factory=list)   # times of every card: the run benchmark
+
+    def add(self, phases: dict, attempts: int, fallbacks: tuple[str, ...] = (), scan_status: str = "") -> None:
+        total = phases["total_s"]
+        self.cards += 1
+        self.total_s += total
+        if attempts <= 1:
+            self.nominal_cards += 1
+            self.nominal_total_s += total
+        capture = phases.get("capture_s")
+        if capture is not None:
+            self.slowest_capture_s = max(self.slowest_capture_s or 0.0, capture)
+        self.last_card = phases
+        first_try = not fallbacks
+        self.first_try_cards += first_try
+        self.per_card.append({"card": phases.get("card"), "identify_s": phases.get("identify_s"),
+                              "total_s": total, "attempts": attempts, "scan_status": scan_status,
+                              "first_try": first_try, "fallbacks": list(fallbacks)})
+
+    def benchmark(self) -> dict:
+        """Mean, median, mode, min and max of the card times: all cards and first-try only."""
+        return run_benchmark(self.per_card)
+
+    @staticmethod
+    def _rate(cards: int, seconds: float) -> float | None:
+        return round(60.0 * cards / seconds, 1) if cards and seconds > 0 else None
+
+    def to_dict(self) -> dict:
+        return {
+            "cards": self.cards,
+            "seconds_per_card": round(self.total_s / self.cards, 2) if self.cards else None,
+            "cards_per_min": self._rate(self.cards, self.total_s),
+            "nominal_cards": self.nominal_cards,
+            "nominal_seconds_per_card": (round(self.nominal_total_s / self.nominal_cards, 2)
+                                         if self.nominal_cards else None),
+            "nominal_cards_per_min": self._rate(self.nominal_cards, self.nominal_total_s),
+            "slowest_capture_s": self.slowest_capture_s,
+            "last_card": self.last_card,
+            "first_try_cards": self.first_try_cards,
+            "benchmark": self.benchmark() if self.per_card else None,
+        }
+
+    def summary(self) -> str | None:
+        if not self.cards:
+            return None
+        text = f"{self._rate(self.cards, self.total_s)} cards/min ({self.total_s / self.cards:.1f} s per card"
+        if self.nominal_cards and self.nominal_cards != self.cards:
+            text += f"; {self._rate(self.nominal_cards, self.nominal_total_s)} cards/min without retries"
+        return text + ")."
+
+
+@dataclass
+class RunInfo:
+    run_id: str                     # UUIDv4 = local_run.local_uuid
+    status: RunStatus
+    started_at: str
+    stopped_at: str | None = None
+    cards_processed: int = 0
+    current_tray: int | None = None
+    error_code: str | None = None
+    message: str | None = None
+    fault_at: str | None = None     # when the run was paused by a fault
+    owner: str | None = None        # username of the app user who started it (server mode)
+
+    def to_dict(self) -> dict:
+        active = self.status in (RunStatus.RUNNING, RunStatus.PAUSED)
+        return {
+            "run_id": self.run_id,
+            "status": self.status.value,
+            "started_at": self.started_at,
+            "stopped_at": self.stopped_at,
+            "cards_processed": self.cards_processed,
+            # The tray of the last card tells its category: hidden while the run is active (RF23).
+            "current_tray": None if active else self.current_tray,
+            "error_code": self.error_code,
+            "message": self.message,
+            "fault_at": self.fault_at,
+            "owner": self.owner,
+        }
+
+
+class SorterController:
+    def __init__(
+        self,
+        top: TopModule,
+        bottom: BottomModule,
+        identifier: CardIdentifier,
+        events: EventHub,
+        settings: Settings,
+        store: RunStore | None = None,
+        status_led: StatusLed | None = None,
+        on_run_finished: Callable[[], None] | None = None,
+    ) -> None:
+        """on_run_finished: called after a finished run is saved in run.db (wakes the SyncWorker)."""
+        self.top = top
+        self.bottom = bottom
+        self.identifier = identifier
+        self.events = events
+        self.s = settings
+        self.store = store
+        self.led = status_led if status_led is not None else StatusLed(MemoryLedDriver())
+        self._on_run_finished = on_run_finished
+        self._lock = threading.Lock()
+        self._state = ControllerState.IDLE
+        self._stop_requested = threading.Event()   # normal stop (also set by an immediate stop)
+        self._abort = threading.Event()            # immediate stop
+        self._thread: threading.Thread | None = None
+        self._run: RunInfo | None = None           # current or last run
+        self._in_progress: Identification | None = None   # identified card not dropped yet
+        # Does the A1 firmware support the optional commands? (turned off on ERR BAD_CMD)
+        self._optional_ok = {"LIGHT": True, "VIBRATE": True}
+        self._power_on_homing = threading.Event()   # set while the base homes after the service start (RF08)
+        self._startup_phase: str | None = None      # "homing" while the base homes after the service start
+        self._card_db_updating = False              # a card database update holds the machine (card_db_update.py)
+        self.card_db_status: Callable[[], dict] | None = None   # its status, for snapshot() (set by the API)
+        self._homing_thread: threading.Thread | None = None
+        self._saved_steps: int | None = None        # last base position written to base_state_file
+        self._timing = RunTiming()                  # of the current or last run (RNF22, RF02)
+        root = Path(settings.project_root) if settings.project_root else PROJECT_ROOT
+        # Cards that took > slow_card_s to identify: pictures + results for later study (slow_cards.py)
+        self._slow_cards = SlowCardRecorder(project_path(settings.slow_cards_dir, root), settings.slow_card_s,
+                                            settings.slow_cards_max_mb)
+        self._benchmark_files = BenchmarkFiles(project_path(settings.benchmark_dir, root))
+        if store is not None:
+            n = store.recover_interrupted(utc_now())
+            if n:
+                log.warning("%d run(s) were interrupted by a restart and are now marked failed", n)
+            # "Current or last run" also after a restart: the last run comes from run.db.
+            self._run = _run_from_store(store.last_run())
+            check = self.last_run_check()
+            if check is not None and not check["ok"]:
+                log.warning("last run check (RNF19): %s %s", check["reason"], check["message"])
+
+    @property
+    def _modules(self) -> tuple:
+        return (self.top, self.bottom) if self.s.bottom_enabled else (self.top,)
+
+    # ------------------------------------------------------------------ API
+
+    def snapshot(self) -> dict:
+        with self._lock:
+            snapshot = {
+                "state": self._state.value,
+                # "homing" while the base homes right after the service started (RF08), else null
+                "startup": self._startup_phase,
+                "run": self._run.to_dict() if self._run else None,
+                # RNF22 / RF02: general run-status figures, no card identity (RF23).
+                "timing": self._timing.to_dict(),
+            }
+        snapshot["last_run_check"] = self.last_run_check()   # reads run.db: outside the lock
+        # Card database: update available, check / update in progress with its progress (card_db_update.py)
+        snapshot["card_db"] = self.card_db_status() if self.card_db_status is not None else None
+        return snapshot
+
+    def last_run_check(self) -> dict | None:
+        """RNF19: did the last finished run end correctly, with all its records? (RunStore.last_run_check)
+        None without run.db, before the first run, and while a run is running or paused."""
+        if self.store is None:
+            return None
+        try:
+            return self.store.last_run_check()
+        except sqlite3.Error as exc:
+            log.error("could not read run.db for the last run check: %s", exc)
+            return {"ok": False, "reason": "DATABASE_DAMAGED",
+                    "message": f"The machine could not read its run database ({exc}). Recent results may be "
+                               "missing. Empty the trays and sort those cards again in a new run.",
+                    "finished": None, "records_ok": None, "database_ok": False, "cards_saved": None,
+                    "run": None}
+
+    @property
+    def state(self) -> ControllerState:
+        with self._lock:
+            return self._state
+
+    def start(self, owner: Owner | None = None) -> RunInfo:
+        """Prepare the modules and check the start conditions; if they pass,
+        launch the sorting loop in the background and return.
+        owner: the app user the run and its cards belong to (None without a server)."""
+        with self._lock:
+            if self._card_db_updating:
+                raise StartRefused(409, [Problem("CARD_DB_UPDATING", CARD_DB_UPDATING_MESSAGE)])
+            if self._state is not ControllerState.IDLE:
+                if self._power_on_homing.is_set():
+                    raise StartRefused(409, [Problem(
+                        "HOMING", "The base is homing after power-on. Try again in a few seconds.")])
+                raise StartRefused(409, [Problem(
+                    "RUN_ACTIVE", f"Cannot start: the sorter is busy ({self._state.value}).")])
+            self._state = ControllerState.STARTING
+            self._stop_requested = threading.Event()
+            self._abort = threading.Event()
+
+        self._led("IDLE")                          # a STARTUP_BLOCKED from the last attempt ends here
+        problems = self._guarded_prepare(home=True, idle_on_fail=True)
+        if problems:
+            self._set_idle()
+            self._led("STARTUP_BLOCKED")
+            raise StartRefused(409, problems)
+
+        run = RunInfo(run_id=str(uuid.uuid4()), status=RunStatus.RUNNING, started_at=utc_now(),
+                      message="Run started.", owner=owner.username if owner else None)
+        self.identifier.reset()
+        with self._lock:
+            if self._stop_requested.is_set():          # stop arrived right after the checks
+                self._state = ControllerState.IDLE
+                raise StartRefused(409, [Problem("START_CANCELLED", "Start was cancelled by a stop request.")])
+            if self.store is not None:
+                self.store.create_run(run.run_id, run.started_at, owner)
+            self._run = run
+            self._timing = RunTiming()
+            self._slow_cards.start_run(run.run_id, run.started_at)
+            self._launch(run)
+        self.events.publish({"type": "run_started", "run": run.to_dict()})
+        return run
+
+    def resume(self) -> RunInfo:
+        """Continue a run paused by a fault (FW-SD-04): re-home, re-check, keep the same run."""
+        with self._lock:
+            if self._state is not ControllerState.PAUSED or self._run is None:
+                raise NotPaused()
+            run = self._run
+            self._state = ControllerState.STARTING
+            self._stop_requested = threading.Event()
+            self._abort = threading.Event()
+
+        problems = self._guarded_prepare(home=True, idle_on_fail=False, resuming=True)
+        if problems:
+            with self._lock:
+                self._state = ControllerState.PAUSED
+            raise StartRefused(409, problems)
+        with self._lock:
+            if self._stop_requested.is_set():          # stop arrived right after the checks
+                self._state = ControllerState.PAUSED
+                raise StartRefused(409, [Problem("START_CANCELLED", "Resume was cancelled by a stop request.")])
+            run.status = RunStatus.RUNNING
+            run.error_code = None
+            run.fault_at = None
+            run.message = "Run resumed."
+            if self.store is not None:
+                self.store.update_run(run.run_id, status=RunStatus.RUNNING.value, message=run.message)
+            self._launch(run)
+        self.events.publish({"type": "run_resumed", "run": run.to_dict()})
+        return run
+
+    def stop(self, immediate: bool = False) -> tuple[str, dict]:
+        """End the current run (status 'cancelled'). Returns (message for the app, snapshot).
+
+        Normal stop waits until the card in progress has been dropped and the
+        motors are stopped (a few seconds). Immediate stop halts the motors at once.
+        A stop during the start checks always cancels the start.
+        """
+        with self._lock:
+            previous = self._state
+            if previous is ControllerState.IDLE:
+                raise NoActiveRun()
+            if previous is ControllerState.PAUSED:
+                run = self._run
+            else:
+                run = None
+                if previous is ControllerState.RUNNING:
+                    self._state = ControllerState.STOPPING
+                immediate = immediate or previous in (ControllerState.STARTING, ControllerState.MANUAL)
+                self._stop_requested.set()
+                if immediate:
+                    self._abort.set()
+            thread = self._thread
+        if run is not None:                          # paused: motors are already stopped
+            try:
+                self.top.set_flap(self.s.flap_closed_angle)
+            except (BusError, FrameError) as exc:
+                log.warning("could not close the flap: %s", exc)
+            self._finish(run, RunStatus.CANCELLED, None,
+                         f"Run stopped by user while paused, after {run.cards_processed} card(s).")
+            return run.message, self.snapshot()
+        if immediate:
+            self._safe_stop_modules()   # don't wait for the loop to notice
+        if thread is not None:
+            thread.join(timeout=3.0 if immediate else self._normal_stop_budget())
+        snapshot = self.snapshot()
+        if previous is ControllerState.STARTING:
+            message = "Start cancelled."
+        elif previous is ControllerState.MANUAL:
+            message = "Base stopped."
+        elif snapshot["state"] == ControllerState.IDLE.value and snapshot["run"]:
+            message = snapshot["run"]["message"]
+        else:
+            message = "Stopping: finishing the card in progress."
+        return message, snapshot
+
+    # ------------------------------------------------------- manual base moves
+
+    def base_status(self) -> dict:
+        self._require_bottom()
+        return self.bottom.status().to_dict()
+
+    def base_home(self, hint_steps: int | None = None) -> dict:
+        ms = int(self.s.home_timeout_s * 1000)
+        return self._manual(lambda: self.bottom.start_home(ms, hint_steps), self.s.home_timeout_s + 2.0,
+                            "HOME_TIMEOUT", "The base did not find the strip in time.",
+                            poll_s=self.s.home_poll_interval_s)
+
+    def base_goto(self, tray: int) -> dict:
+        return self._manual(lambda: self.bottom.start_goto(tray), self.s.move_timeout_s,
+                            "MOVE_TIMEOUT", f"The base did not reach tray {tray}.")
+
+    def base_move(self, steps: int) -> dict:
+        return self._manual(lambda: self.bottom.start_move(steps), self.s.move_timeout_s,
+                            "MOVE_TIMEOUT", f"The base did not reach position {steps}.")
+
+    def _require_bottom(self) -> None:
+        if not self.s.bottom_enabled:
+            raise ManualRefused(409, "BOTTOM_DISABLED",
+                                "The bottom module is disabled (top-only mode). Restart the API without --top-only.")
+
+    def _manual(self, start_action, timeout_s: float, timeout_code: str, timeout_message: str,
+                poll_s: float | None = None) -> dict:
+        """Run one base action outside a run and wait until it finishes."""
+        self._require_bottom()
+        with self._lock:
+            if self._state is not ControllerState.IDLE:
+                raise ManualRefused(409, "RUN_ACTIVE",
+                                    f"The sorter is busy ({self._state.value}). Stop the run first.")
+            self._state = ControllerState.MANUAL
+        try:
+            ms = start_action()
+            poll_s = self.s.base_poll_interval_s if poll_s is None else poll_s
+            deadline = time.monotonic() + timeout_s
+            time.sleep(min(_quiet_time(ms), timeout_s))   # leave the bus quiet while it moves
+            while True:
+                status = self.bottom.status()
+                if status.state == ModuleState.IDLE:
+                    self._remember_base(status)
+                    return status.to_dict()
+                if status.state == ModuleState.ERROR:
+                    raise HardwareFault(status.error or "MODULE_ERROR",
+                                        _error_message(self.bottom.ADDRESS, status.error))
+                if time.monotonic() > deadline:
+                    self._safe_stop_modules()
+                    raise HardwareFault(timeout_code, timeout_message)
+                time.sleep(poll_s)
+        finally:
+            self._set_idle()
+
+    # ------------------------------------------------------- manual flap (testing)
+
+    def flap_status(self) -> dict:
+        """The flap's last commanded angle (A1 STATUS) and the angles the runs use."""
+        return {"angle": self.top.status().flap_angle,
+                "open_angle": self.s.flap_open_angle,
+                "closed_angle": self.s.flap_closed_angle}
+
+    def flap_set(self, angle: int) -> dict:
+        """Move the flap to any angle outside a run, wait for the servo, return the status.
+        The flap stays there; the next run start (or /calibration/feed) closes it again."""
+        if not 0 <= angle <= 180:
+            raise ManualRefused(400, "BAD_ANGLE", "The flap angle must be 0 to 180 degrees.")
+        with self._manual_session():
+            self.top.set_flap(angle)
+            time.sleep(self.s.flap_settle_s)
+            return self.flap_status()
+
+    def flap_set_angles(self, open_angle: int | None, closed_angle: int | None) -> dict:
+        """Change the open/closed angles the runs use, live (lost at restart: set
+        MTG_FLAP_OPEN_ANGLE / MTG_FLAP_CLOSED_ANGLE to keep them)."""
+        new_open = self.s.flap_open_angle if open_angle is None else open_angle
+        new_closed = self.s.flap_closed_angle if closed_angle is None else closed_angle
+        if not (0 <= new_open <= 180 and 0 <= new_closed <= 180):
+            raise ManualRefused(400, "BAD_ANGLE", "The flap angles must be 0 to 180 degrees.")
+        if new_open == new_closed:
+            raise ManualRefused(400, "BAD_ANGLE", "The open and closed angles must be different.")
+        self.require_idle()
+        self.s.flap_open_angle, self.s.flap_closed_angle = new_open, new_closed
+        log.info("flap angles changed: open %d, closed %d", new_open, new_closed)
+        return self.flap_status()
+
+    # ------------------------------------------- camera calibration helpers (no run)
+
+    def calibration_feed(self) -> dict:
+        """Feed one card onto the platform and leave it there, for the camera calibration."""
+        s = self.s
+        with self._manual_session():
+            if self.top.status().platform_has_card:
+                return {"message": "A card is already on the platform.", "platform_has_card": True}
+            self.top.set_flap(s.flap_closed_angle)
+            self.top.start_feed(int(s.feed_timeout_s * 1000))
+            top = self._wait_idle(self.top, s.feed_timeout_s + 2.0, "FEED_TIMEOUT",
+                                  "The card did not reach the platform.")
+            return {"message": "Card on the platform." if top.platform_has_card else "No card reached the platform.",
+                    "platform_has_card": top.platform_has_card}
+
+    def calibration_drop(self) -> dict:
+        """Drop the calibration card into the overflow tray 6 (homes the base first if needed)."""
+        s = self.s
+        with self._manual_session():
+            if not self.top.status().platform_has_card:
+                return {"message": "No card on the platform.", "tray": None}
+            tray = None
+            if s.bottom_enabled:
+                if not self.bottom.status().homed:
+                    self.bottom.start_home(int(s.home_timeout_s * 1000))
+                    self._wait_idle(self.bottom, s.home_timeout_s + 2.0, "HOME_TIMEOUT",
+                                    "The base did not reach the zero position.", poll_s=s.home_poll_interval_s)
+                tray = OVERFLOW_TRAY
+            self._route_and_drop(OVERFLOW_TRAY)
+            return {"message": f"Card dropped into tray {tray}." if tray else "Card dropped.", "tray": tray}
+
+    def require_idle(self) -> None:
+        with self._lock:
+            if self._state is not ControllerState.IDLE:
+                raise ManualRefused(409, "RUN_ACTIVE",
+                                    f"The sorter is busy ({self._state.value}). Stop the run first.")
+
+    @contextmanager
+    def _manual_session(self):
+        """MANUAL state for a short hardware action outside a run; /run/stop aborts it."""
+        with self._lock:
+            if self._state is not ControllerState.IDLE:
+                raise ManualRefused(409, "RUN_ACTIVE",
+                                    f"The sorter is busy ({self._state.value}). Stop the run first.")
+            self._state = ControllerState.MANUAL
+            self._stop_requested = threading.Event()
+            self._abort = threading.Event()
+        try:
+            yield
+        except Aborted:
+            raise ManualRefused(409, "CANCELLED", "Cancelled by a stop request.")
+        finally:
+            self._set_idle()
+
+    def stack_status(self) -> dict:
+        """Ask A1's stack IR whether there are cards to sort."""
+        has_cards = self.top.status().stack_has_card
+        return {
+            "has_cards": has_cards,
+            "message": "There are cards on the stack." if has_cards else "No cards on the stack.",
+        }
+
+    def hardware_status(self) -> dict:
+        result = {}
+        for name, module in (("top", self.top), ("bottom", self.bottom)):
+            if module is self.bottom and not self.s.bottom_enabled:
+                result[name] = {"online": False, "enabled": False,
+                                "error": "bottom module disabled (top-only mode)"}
+                continue
+            try:
+                result[name] = {"online": True, "enabled": True, **module.status().to_dict()}
+            except (BusError, FrameError) as exc:
+                result[name] = {"online": False, "enabled": True, "error": str(exc)}
+        return result
+
+    def power_on(self) -> None:
+        """Service start: chamber light to its base level and (RF08) homing of the base in the
+        background, so the service answers at once. Start also homes again before every run.
+        The status LED stays STARTING (white) until the power-on homing is over, then shows Idle
+        (RF16, Appendix B: "power-on, homing complete") or, while there is no Wi-Fi, Setup /
+        No Network (RF41). The card database is only checked at power-on, in parallel, never
+        updated (card_db_update.py): the user starts an update from the app."""
+        self._led("IDLE")                          # shown once the LED leaves STARTING
+        try:
+            self._light(self.s.light_base_level)
+        except (BusError, FrameError) as exc:
+            log.warning("modules not reachable at power-on: %s", exc)
+        if self.s.bottom_enabled and self.s.home_on_power_on:
+            self._startup_phase = "homing"
+            self._power_on_homing.set()
+            self._homing_thread = threading.Thread(target=self._power_on_sequence, name="power-on-homing",
+                                                   daemon=True)
+            self._homing_thread.start()
+        else:
+            self.led.ready()
+
+    def _power_on_sequence(self) -> None:
+        try:
+            self._home_at_power_on()
+        finally:
+            self._startup_phase = None
+            self._power_on_homing.clear()
+            self.led.ready()                       # homed or not: Start homes again and reports any fault
+
+    # ------------------------------------------------- card database update (card_db_update.py)
+
+    def begin_card_db_update(self) -> None:
+        """Hold the machine for a card database update. The database file is swapped at the end,
+        so not while a run is starting, running, stopping or paused, nor during a base move or the
+        power-on homing (409 RUN_ACTIVE). Start is refused (CARD_DB_UPDATING) until
+        end_card_db_update()."""
+        with self._lock:
+            if self._card_db_updating:
+                raise ManualRefused(409, "CARD_DB_UPDATING", "The card database is already being updated.")
+            if self._state is not ControllerState.IDLE or self._power_on_homing.is_set():
+                raise ManualRefused(409, "RUN_ACTIVE",
+                                    f"The sorter is busy ({self._state.value}). Update the card database "
+                                    "when no run is active.")
+            self._card_db_updating = True
+
+    def end_card_db_update(self) -> None:
+        with self._lock:
+            self._card_db_updating = False
+
+    @property
+    def card_db_updating(self) -> bool:
+        return self._card_db_updating
+
+    @property
+    def startup_phase(self) -> str | None:
+        return self._startup_phase
+
+    def _home_at_power_on(self) -> None:
+        started = time.monotonic()
+        hint = self._saved_base_steps()
+        try:
+            status = self.base_home(hint)
+            log.info("base homed at power-on in %.1f s (tray %s, drift %s%s)", time.monotonic() - started,
+                     status.get("position"), status.get("drift"),
+                     "" if hint is None else f", from the saved position {hint}")
+            self._check_drift(status.get("drift"), "power-on")
+        except ManualRefused as exc:            # a run or a test move got there first: it homes by itself
+            log.info("power-on homing skipped: %s", exc.message)
+        except (BusError, FrameError, HardwareFault) as exc:
+            code, message = _describe_fault(exc)
+            log.warning("base not homed at power-on (%s: %s); Start will home it", code, message)
+
+    @property
+    def homing_at_power_on(self) -> bool:
+        return self._power_on_homing.is_set()
+
+    def shutdown(self) -> None:
+        try:
+            self.stop(immediate=True)
+        except NoActiveRun:
+            pass
+        if self._homing_thread is not None:
+            self._homing_thread.join(timeout=3.0)
+        self._slow_cards.close()
+
+    # ------------------------------------------------------- start sequence
+
+    def _guarded_prepare(self, *, home: bool, idle_on_fail: bool, resuming: bool = False) -> list[Problem]:
+        """_prepare() with the hardware errors turned into StartRefused."""
+        def fail(status: int, problems: list[Problem]):
+            self._safe_stop_modules()
+            if idle_on_fail:
+                self._set_idle()
+            else:
+                with self._lock:
+                    self._state = ControllerState.PAUSED
+            return StartRefused(status, problems)
+
+        try:
+            return self._prepare(home=home, resuming=resuming)
+        except Aborted:
+            if idle_on_fail:
+                self._set_idle()
+            else:
+                with self._lock:
+                    self._state = ControllerState.PAUSED
+            raise StartRefused(409, [Problem("START_CANCELLED", "Start was cancelled by a stop request.")])
+        except ModuleNotResponding as exc:
+            raise fail(503, [Problem(
+                "MODULE_OFFLINE",
+                f"The {_module_name(exc.addr)} module ({exc.addr}) is not responding. "
+                "Check its power and the RS-485 cable.",
+                {"module": exc.addr})])
+        except (HardwareFault, ModuleError, FrameError) as exc:
+            code, message = _describe_fault(exc)
+            raise fail(500, [Problem(code, message)])
+        except Exception:
+            log.exception("unexpected error while starting")
+            self._safe_stop_modules()
+            if idle_on_fail:
+                self._set_idle()
+            raise
+
+    def _prepare(self, *, home: bool, resuming: bool = False) -> list[Problem]:
+        s = self.s
+        self._check_abort()
+
+        # Quick checks first (< 1 s), so a refused start answers before the long homing.
+        bottom_now = self.bottom.status() if s.bottom_enabled else None
+        problems = self._check_conditions(self.top.status(), bottom_now, resuming=resuming)
+        if problems:
+            return problems
+
+        # Bottom first: homing takes the longest and runs on A2 by itself,
+        # while we set up A1 over the same bus. A homed base knows where it is; otherwise
+        # the saved position lets it go straight to the strip (RF08).
+        homing_started = time.monotonic()
+        if s.bottom_enabled and home:
+            hint = None if bottom_now is not None and bottom_now.homed else self._saved_base_steps()
+            self.bottom.start_home(int(s.home_timeout_s * 1000), hint)
+
+        self.top.roller_stop()                    # feed roller must not rotate
+        self.top.set_flap(s.flap_closed_angle)    # flap closed (80 degrees by default)
+        self._light(s.light_base_level)
+        self._sleep(s.flap_settle_s)
+
+        bottom = None
+        if s.bottom_enabled and home:
+            bottom = self._wait_idle(self.bottom, s.home_timeout_s + 2.0, "HOME_TIMEOUT",
+                                     "The base did not reach the zero position.", poll_s=s.home_poll_interval_s)
+            log.info("base homed before the run in %.1f s (drift %s)", time.monotonic() - homing_started,
+                     bottom.drift)
+            self._check_drift(bottom.drift, "run start")
+        # Checked again after homing: someone may have touched the machine meanwhile.
+        return self._check_conditions(self.top.status(), bottom, resuming=resuming)
+
+    def _check_conditions(self, top, bottom, resuming: bool = False) -> list[Problem]:
+        problems: list[Problem] = []
+        if not resuming and hasattr(self.identifier, "problems"):
+            problems += [Problem(code, message) for code, message in self.identifier.problems()]
+        if not top.stack_has_card and not resuming:
+            problems.append(Problem("STACK_EMPTY", "No cards on the stack. Load cards and try again."))
+        # A resumed run keeps the cards it already sorted in the trays (RNF23).
+        if bottom is not None and bottom.trays_with_cards and not resuming:
+            trays = ", ".join(str(t) for t in bottom.trays_with_cards)
+            problems.append(Problem(
+                "TRAYS_NOT_EMPTY", f"Trays are not empty (tray {trays}). Empty them and try again.",
+                {"trays": list(bottom.trays_with_cards)}))
+        if top.platform_has_card:
+            problems.append(Problem(
+                "PLATFORM_NOT_CLEAR", "There is a card on the reading platform. Remove it and try again."))
+        return problems
+
+    # ------------------------------------------------------------- run loop
+
+    def _launch(self, run: RunInfo) -> None:
+        """Called with self._lock held."""
+        self._state = ControllerState.RUNNING
+        self._thread = threading.Thread(target=self._run_loop, args=(run,), name="sorter-run", daemon=True)
+        self._thread.start()
+
+    def _run_loop(self, run: RunInfo) -> None:
+        log.info("run %s running", run.run_id)
+        self._led("RUNNING")
+        try:
+            stopped = limit = False
+            try:
+                while True:
+                    self._check_abort()
+                    if self._stop_requested.is_set():
+                        stopped = True
+                        break
+                    # Stack first: a stack of exactly 250 cards ends as "stack empty"
+                    # (concluded), not as a batch limit with "remaining cards".
+                    if not self.top.status().stack_has_card:
+                        break
+                    # RNF27: every card that left the platform counts (identified,
+                    # unidentified, face-down), also across a pause and resume.
+                    if run.cards_processed >= self._card_limit():
+                        limit = True
+                        break
+                    self._sort_one_card(run)
+            except StopRequested:
+                stopped = True
+
+            if stopped:
+                cleared = self._clear_out(run)
+                self._safe_stop_modules()
+                self._park_base()
+                n = run.cards_processed
+                if cleared:
+                    message = (f"Run stopped by user: the card in progress was sorted, {n} card(s) "
+                               "processed. Flap closed, motors stopped.")
+                else:
+                    message = f"Run stopped by user after {n} card(s). Flap closed, motors stopped."
+                self._finish(run, RunStatus.CANCELLED, None, message)
+            elif limit:
+                self._safe_stop_modules()
+                self._park_base()
+                self._finish(run, RunStatus.COMPLETED, "BATCH_LIMIT",
+                             f"Batch limit reached: {run.cards_processed} card(s) processed. "
+                             "Empty the trays and start a new run for the remaining cards."
+                             + self._timing_note())
+            else:
+                self._park_base()
+                self._finish(run, RunStatus.COMPLETED, None,
+                             f"Stack is empty: {run.cards_processed} card(s) processed." + self._timing_note())
+        except Aborted:
+            self._safe_stop_modules()
+            self._finish(run, RunStatus.CANCELLED, None,
+                         f"Run stopped immediately by user after {run.cards_processed} card(s). "
+                         "A card may still be on the platform.")
+        except ModuleNotResponding as exc:
+            # Data-Link Loss (Appendix C): needs a power cycle, the run cannot be resumed.
+            self._safe_stop_modules()
+            self._led("FEED_JAM")
+            self._finish(run, RunStatus.FAILED, "MODULE_OFFLINE",
+                         f"The {_module_name(exc.addr)} module ({exc.addr}) stopped responding. "
+                         "Turn the machine off and on again.")
+        except FrameError as exc:
+            self._safe_stop_modules()
+            self._led("FEED_JAM")
+            self._finish(run, RunStatus.FAILED, "PROTOCOL_ERROR", f"Invalid reply from a module: {exc}")
+        except (HardwareFault, ModuleError) as exc:
+            self._safe_stop_modules()
+            code, message = _describe_fault(exc)
+            self._pause(run, code, message)
+        except Exception:
+            log.exception("run loop crashed")
+            self._safe_stop_modules()
+            self._finish(run, RunStatus.FAILED, "INTERNAL_ERROR", "Unexpected error in the sorter software.")
+
+    def _card_limit(self) -> int:
+        """RNF27: cards per run. A lower setting is kept (bench tests); a higher one is
+        capped at MAX_CARDS_PER_RUN, the feed compartment's capacity (RNF02)."""
+        limit = self.s.max_cards_per_run
+        if limit > MAX_CARDS_PER_RUN or limit < 1:
+            log.warning("max_cards_per_run=%s is outside 1..%d: using %d (RNF27)",
+                        limit, MAX_CARDS_PER_RUN, MAX_CARDS_PER_RUN)
+            return MAX_CARDS_PER_RUN
+        return limit
+
+    def _sort_one_card(self, run: RunInfo) -> None:
+        s = self.s
+        card_number = run.cards_processed + 1
+        phases: dict = {"card": card_number}
+        began = time.monotonic()
+
+        # 1. Feed one card from the stack onto the platform.
+        #    A normal stop does not interrupt this: the card is in the feeder.
+        self._check_abort()
+        self.top.start_feed(int(s.feed_timeout_s * 1000))
+        top = self._wait_idle(self.top, s.feed_timeout_s + 2.0, "FEED_TIMEOUT",
+                              "The card did not reach the platform.")
+        if not top.platform_has_card:
+            raise HardwareFault("FEED_FAILED", "Feeding finished but no card is on the platform.")
+        fed = time.monotonic()
+        phases["feed_s"] = round(fed - began, 2)
+        if top.feed_attempt is not None:            # RF05: 2 = the first pull did not bring a card
+            phases["feed_attempt"] = top.feed_attempt
+
+        # 2. Take pictures and identify it. A normal stop ends the retries early;
+        #    _clear_out() then sends the card to its tray (or to the overflow tray).
+        if self._stop_requested.is_set():
+            raise StopRequested()
+        identify_started = time.monotonic()
+        result = self.identifier.identify(self._sleep_unless_stopped)
+        self._in_progress = result
+        phases["identify_s"] = round(time.monotonic() - identify_started, 2)
+        capture_ms = result.details.get("capture_ms")
+        if isinstance(capture_ms, int):             # card held still until the photo is taken
+            phases["capture_s"] = round(identify_started - fed + capture_ms / 1000, 2)
+        if self._stop_requested.is_set():
+            raise StopRequested()
+        # Slow card (> slow_card_s): its pictures go to cards_to_improve/ while the base turns.
+        # Any other card lets go of its pictures now (a full camera picture is ~24 MB of RAM).
+        slow = self._slow_cards.add_card(card_number, result, phases["identify_s"])
+        if slow is None:
+            for capture in result.trace:
+                capture.drop_images()
+
+        # 3. Turn the base so the target tray is under the platform, 4. drop the card.
+        tray = self._route_and_drop(result.tray, phases)
+        phases["total_s"] = round(time.monotonic() - began, 2)
+        fallbacks = result.fallbacks + (("feed_retry",) if phases.get("feed_attempt", 1) > 1 else ())
+        timing = {"identify_s": phases["identify_s"], "total_s": phases["total_s"],
+                  "first_try": not fallbacks, "fallbacks": fallbacks}
+        self._record(run, card_number, result, tray, timing=timing)
+        self._timing.add(phases, result.attempts, fallbacks, result.scan_status)
+        self._slow_cards.finish_card(slow, {
+            **timing, "fallbacks": list(fallbacks), "phases": phases,
+            "outcome": {"scan_status": result.scan_status, "tray": tray, "attempts": result.attempts,
+                        "card_identifier": result.card_identifier, **result.details}})
+        log.info("card %d: %s%s", card_number, ", ".join(f"{k} {v}" for k, v in phases.items() if k != "card"),
+                 f" (not first-try: {' '.join(fallbacks)})" if fallbacks else "")
+        if phases.get("capture_s") is not None and phases["capture_s"] > CAPTURE_ROUTINE_LIMIT_S:
+            log.warning("card %d: capture routine took %.2f s (RF02 limit %.1f s)", card_number,
+                        phases["capture_s"], CAPTURE_ROUTINE_LIMIT_S)
+
+    def _route_and_drop(self, tray: int, phases: dict | None = None) -> int | None:
+        s = self.s
+        moved = time.monotonic()
+        if s.bottom_enabled:
+            ms = self.bottom.start_goto(tray)
+            self._wait_idle(self.bottom, s.move_timeout_s, "MOVE_TIMEOUT",
+                            f"The base did not reach tray {tray}.",
+                            poll_s=s.base_poll_interval_s, quiet_s=_quiet_time(ms))
+        dropped = time.monotonic()
+        self._drop_card()
+        if phases is not None:
+            phases["move_s"] = round(dropped - moved, 2)
+            phases["drop_s"] = round(time.monotonic() - dropped, 2)
+        return tray if s.bottom_enabled else None
+
+    def _record(self, run: RunInfo, card_number: int, result: Identification, tray: int | None,
+                error_message: str | None = None, timing: dict | None = None) -> None:
+        """The card left the platform: one record in run.db (RNF20), then a progress event.
+        timing: identify_s, total_s, first_try, fallbacks (cards that went all the way through)."""
+        details = dict(result.details)
+        if error_message:
+            details["error_message"] = error_message
+        if self.store is not None:
+            timing = timing or {}
+            self.store.save_scan(run.run_id, card_number, utc_now(), ScanRecord(
+                scan_status=result.scan_status, bin=tray, card_identifier=result.card_identifier,
+                attempts=result.attempts, identify_s=timing.get("identify_s"), total_s=timing.get("total_s"),
+                first_try=None if "first_try" not in timing else int(timing["first_try"]),
+                fallbacks=" ".join(timing["fallbacks"]) if "fallbacks" in timing else None,
+                **{k: v for k, v in details.items() if k in _RECORD_FIELDS}))
+        self._in_progress = None
+        with self._lock:
+            run.cards_processed = card_number
+            run.current_tray = tray
+        # RF23: progress only. No card identity, no tray.
+        self.events.publish({"type": "card_sorted", "run_id": run.run_id, "card_number": card_number})
+        if result.scan_status != IDENTIFIED and result.notify:
+            # Attention event (RF36): logged and notified, the run continues.
+            self.events.publish({
+                "type": "attention",
+                "kind": "face_down" if result.scan_status == FACE_DOWN else "unidentified",
+                "run_id": run.run_id, "card_number": card_number, "time": utc_now(),
+            })
+
+    def _clear_out(self, run: RunInfo) -> bool:
+        """Normal stop: leave no card in the machine. Returns True if a card was sorted."""
+        s = self.s
+        self._check_abort()
+        if s.bottom_enabled:
+            bottom = self.bottom.status()
+            if bottom.state == ModuleState.BUSY:
+                self._wait_idle(self.bottom, s.move_timeout_s, "MOVE_TIMEOUT", "The base did not stop.",
+                                poll_s=s.base_poll_interval_s)
+        top = self.top.status()
+        if top.state == ModuleState.BUSY:          # a feed still running: let the card arrive
+            top = self._wait_idle(self.top, s.feed_timeout_s + 2.0, "FEED_TIMEOUT",
+                                  "The card did not reach the platform.")
+        cleared = False
+        if top.platform_has_card:
+            # Identified before the stop: it still goes to its own tray. Otherwise: overflow.
+            result = self._in_progress or Identification(tray=OVERFLOW_TRAY)
+            note = None if self._in_progress else "run stopped before the card was identified"
+            card_number = run.cards_processed + 1
+            tray = self._route_and_drop(result.tray)
+            self._record(run, card_number, result, tray, error_message=note)
+            cleared = True
+            self.events.publish({"type": "card_cleared", "run_id": run.run_id, "card_number": card_number})
+        else:
+            self.top.set_flap(s.flap_closed_angle)
+            self._sleep(s.flap_settle_s)
+        self._in_progress = None
+        self.top.roller_stop()
+        return cleared
+
+    def _drop_card(self) -> None:
+        """Same sequence as feeder_flap_test.ino: open, wait until the platform IR
+        is clear, give the card time to fall, close.
+
+        A card that does not fall by itself is shaken loose by the platform vibration
+        motor (_shake_card_loose). If it then falls, the run just goes on: no fault,
+        no alert. Only a card still there after the last pulse pauses the run."""
+        s = self.s
+        self._check_abort()
+        self.top.set_flap(s.flap_open_angle)
+        if not self._wait_platform_clear(s.drop_timeout_s):
+            fell, pulses = self._shake_card_loose()
+            if not fell:
+                message = _ERROR_MESSAGES["DROP_FAILED"]
+                if pulses:
+                    message = (f"The card did not fall from the platform, even after {pulses} "
+                               "vibration pulse(s) (stuck?).")
+                raise HardwareFault("DROP_FAILED", message)
+        self._sleep(s.card_fall_s)
+        self.top.set_flap(s.flap_closed_angle)
+        self._sleep(s.flap_settle_s)
+
+    def _wait_platform_clear(self, timeout_s: float) -> bool:
+        """Poll the platform IR until the card has left. False if it is still there after timeout_s."""
+        deadline = time.monotonic() + timeout_s
+        while self.top.status().platform_has_card:
+            if time.monotonic() > deadline:
+                return False
+            self._sleep(self.s.poll_interval_s)
+        return True
+
+    def _shake_card_loose(self) -> tuple[bool, int]:
+        """The card did not fall when the flap opened: up to drop_vibration_pulses pulses of
+        the vibration motor under the platform (A1 VIBRATE, a1_top 1.2), each followed by a
+        short wait. Returns (fell, pulses given). fell is True as soon as the card leaves the
+        platform; False if it is still there after the last pulse, or if the A1 firmware has
+        no VIBRATE command (then no pulse is given)."""
+        s = self.s
+        pulses = max(0, s.drop_vibration_pulses)
+        ms = min(max(s.drop_vibration_ms, 1), VIBRATE_MAX_MS)
+        given = 0
+        for pulse in range(1, pulses + 1):
+            if not self._optional("VIBRATE", lambda: self.top.vibrate(ms)):
+                break
+            given = pulse
+            log.info("card stuck on the platform: vibration pulse %d of %d (%d ms)", pulse, pulses, ms)
+            if self._wait_platform_clear(ms / 1000 + s.drop_vibration_wait_s):
+                self._optional("VIBRATE", lambda: self.top.vibrate(0))   # it fell: motor off now
+                log.info("the stuck card fell after vibration pulse %d", pulse)
+                return True, given
+        if given:
+            log.warning("the card is still on the platform after %d vibration pulse(s)", given)
+        return False, given
+
+    # -------------------------------------------------------------- helpers
+
+    def _normal_stop_budget(self) -> float:
+        s = self.s
+        shake = max(0, s.drop_vibration_pulses) * (s.drop_vibration_ms / 1000 + s.drop_vibration_wait_s)
+        return (s.feed_timeout_s + 2.0 + s.drop_timeout_s + shake + s.card_fall_s + 2 * s.flap_settle_s
+                + (2 * s.move_timeout_s if s.bottom_enabled else 0.0) + 3.0)
+
+    def _wait_idle(self, module, timeout_s: float, timeout_code: str, timeout_message: str,
+                   poll_s: float | None = None, quiet_s: float = 0.0):
+        """Poll STATUS until the module is IDLE. ERROR -> HardwareFault.
+        quiet_s: first wait this long without talking to the module (base moves)."""
+        deadline = time.monotonic() + timeout_s
+        poll_s = self.s.poll_interval_s if poll_s is None else poll_s
+        if quiet_s > 0:
+            self._sleep(min(quiet_s, timeout_s))
+        while True:
+            status = module.status()
+            if status.state == ModuleState.IDLE:
+                if module is self.bottom:
+                    self._remember_base(status)
+                return status
+            if status.state == ModuleState.ERROR:
+                raise HardwareFault(status.error or "MODULE_ERROR", _error_message(module.ADDRESS, status.error))
+            if time.monotonic() > deadline:
+                raise HardwareFault(timeout_code, timeout_message)
+            self._sleep(poll_s)
+
+    def _timing_note(self) -> str:
+        summary = self._timing.summary()
+        if summary is None:
+            return ""
+        log.info("run throughput: %s", self._timing.to_dict())
+        return " " + summary[0].upper() + summary[1:]
+
+    # ------------------------------------------- base position (RF08: homing in 5 s)
+
+    def _park_base(self) -> None:
+        """End of a run: back to the home tray, so the next homing (next Start, or the next
+        power-on with the saved position) is only the short final approach."""
+        s = self.s
+        if not (s.bottom_enabled and s.park_base_after_run):
+            return
+        try:
+            ms = self.bottom.start_goto(HOME_TRAY)
+            self._wait_idle(self.bottom, s.move_timeout_s, "MOVE_TIMEOUT", f"The base did not reach tray {HOME_TRAY}.",
+                            poll_s=s.base_poll_interval_s, quiet_s=_quiet_time(ms))
+        except (Aborted, BusError, FrameError, HardwareFault, ModuleError) as exc:
+            log.warning("could not park the base at tray %d after the run: %s", HOME_TRAY, exc)
+
+    def _saved_base_steps(self) -> int | None:
+        """Where the base was last seen (steps from home), if it was saved."""
+        path = self.s.base_state_file
+        if not path:
+            return None
+        try:
+            steps = int(json.loads(Path(path).read_text(encoding="utf-8"))["steps"])
+        except (OSError, ValueError, KeyError, TypeError):
+            return None
+        return steps if abs(steps) <= 20000 else None
+
+    def _remember_base(self, status) -> None:
+        """After every finished base move: save the position (atomic write, only when it changed)."""
+        path = self.s.base_state_file
+        steps = getattr(status, "steps", None)
+        if not path or steps is None or not getattr(status, "homed", False) or steps == self._saved_steps:
+            return
+        try:
+            target = Path(path)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            tmp = target.with_suffix(target.suffix + ".tmp")
+            tmp.write_text(json.dumps({"steps": steps, "at": utc_now()}), encoding="utf-8")
+            os.replace(tmp, target)
+            self._saved_steps = steps
+        except OSError as exc:
+            log.warning("could not save the base position to %s: %s", path, exc)
+
+    def _check_drift(self, drift: int | None, when: str) -> None:
+        if drift is not None and abs(drift) > self.s.drift_warn_steps:
+            log.warning("homing at %s found the base %d steps off (more than %d): the motor lost steps; "
+                        "check the base motion profile (FAST_PROFILE) and the belt/gear",
+                        when, drift, self.s.drift_warn_steps)
+
+    def _sleep(self, seconds: float) -> None:
+        """Wait; only an immediate stop interrupts it."""
+        if self._abort.wait(seconds):
+            raise Aborted()
+
+    def _sleep_unless_stopped(self, seconds: float) -> None:
+        """Wait; any stop interrupts it."""
+        if self._stop_requested.wait(seconds):
+            self._check_abort()
+            raise StopRequested()
+
+    def _check_abort(self) -> None:
+        if self._abort.is_set():
+            raise Aborted()
+
+    def _safe_stop_modules(self) -> None:
+        for module in self._modules:
+            try:
+                module.stop()
+            except (BusError, FrameError) as exc:
+                log.warning("could not send STOP to %s: %s", module.ADDRESS, exc)
+
+    def _optional(self, command: str, call) -> bool:
+        """LIGHT and VIBRATE are optional A1 firmware commands: turned off for good on
+        ERR BAD_CMD. Returns True if the command was sent and accepted."""
+        if not self._optional_ok[command]:
+            return False
+        try:
+            call()
+            return True
+        except ModuleError as exc:
+            if exc.code == "BAD_CMD":
+                log.warning("A1 firmware has no %s command: feature disabled", command)
+                self._optional_ok[command] = False
+            else:
+                log.warning("%s failed: %s", command, exc)
+        except (BusError, FrameError) as exc:
+            log.warning("%s failed: %s", command, exc)
+        return False
+
+    def _light(self, level: int) -> None:
+        self._optional("LIGHT", lambda: self.top.set_light(level))
+
+    def _led(self, mode: str) -> None:
+        """RGB status LED on the Pi GPIO (status_led.py)."""
+        self.led.set(mode)
+
+    def set_chamber_light(self, level: int) -> None:
+        """Used by the vision identifier to raise the light before a retry (RNF09)."""
+        self._light(level)
+
+    def _set_idle(self) -> None:
+        with self._lock:
+            self._state = ControllerState.IDLE
+
+    def _pause(self, run: RunInfo, code: str, message: str) -> None:
+        """Mechanical fault: hold the run (RNF23) until /run/resume or /run/stop."""
+        now = utc_now()
+        with self._lock:
+            run.status = RunStatus.PAUSED
+            run.error_code = code
+            run.message = message + " Fix it, then press Resume."
+            run.fault_at = now
+            self._state = ControllerState.PAUSED
+            self._thread = None
+        self._in_progress = None
+        self._led("FEED_JAM")
+        if self.store is not None:
+            self.store.update_run(run.run_id, status=RunStatus.PAUSED.value, error_code=code, message=run.message)
+        log.warning("run %s paused: %s %s", run.run_id, code, message)
+        self.events.publish({"type": "fault", "fault": code, "time": now, "message": run.message,
+                             "run": run.to_dict()})
+
+    def _finish(self, run: RunInfo, status: RunStatus, error_code: str | None, message: str) -> None:
+        stopped_at = utc_now()
+        if self.store is not None:
+            self.store.update_run(run.run_id, status=status.value, stopped_at=stopped_at,
+                                  error_code=error_code, message=message)
+        self._save_run_reports(run, status, stopped_at)
+        if self._on_run_finished is not None:
+            try:
+                self._on_run_finished()
+            except Exception as exc:          # never fail a run because of the upload
+                log.warning("could not schedule the upload of run %s: %s", run.run_id, exc)
+        self._cleanup()                       # before IDLE: a new run never overlaps the cleanup
+        with self._lock:
+            run.status = status
+            run.stopped_at = stopped_at
+            run.error_code = error_code
+            run.message = message
+            self._state = ControllerState.IDLE
+            self._thread = None
+        self._in_progress = None
+        if status is not RunStatus.FAILED:
+            self._led("IDLE")
+        log.info("run %s %s: %s", run.run_id, status.value, message)
+        self.events.publish({"type": "run_finished", "run": run.to_dict(), "message": message,
+                             "last_run_check": self.last_run_check()})
+
+    def _save_run_reports(self, run: RunInfo, status: RunStatus, stopped_at: str) -> None:
+        """End of a run: the card-time benchmark (run.db + benchmarks/) and the index of the slow
+        cards (cards_to_improve/). Never fails the run."""
+        info = {"run_id": run.run_id, "started_at": run.started_at, "stopped_at": stopped_at,
+                "status": status.value, "cards_processed": run.cards_processed}
+        cards = list(self._timing.per_card)
+        if cards:
+            try:
+                bench = run_benchmark(cards)
+                if self.store is not None:
+                    self.store.save_benchmark(run.run_id, bench)
+                path = self._benchmark_files.write(info, bench, cards)
+                log.info("run %s benchmark: %s (%s)", run.run_id, summary_text(bench), path)
+            except Exception as exc:
+                log.warning("could not save the benchmark of run %s: %s", run.run_id, exc)
+        try:
+            self._slow_cards.end_run(info)
+        except Exception as exc:
+            log.warning("could not finish cards_to_improve for run %s: %s", run.run_id, exc)
+
+    def _cleanup(self) -> None:
+        """End of a run: free the SD card (temporary pictures/reports, run.db journal)."""
+        try:
+            root = Path(self.s.project_root) if self.s.project_root else PROJECT_ROOT
+            dirs = [d for d in self.s.cleanup_dirs.split(",") if d.strip()]
+            cleanup_after_run(dirs, root, self.store, keep=(self.s.slow_cards_dir, self.s.benchmark_dir))
+        except Exception as exc:              # never fail a run because of the cleanup
+            log.warning("cleanup after run failed: %s", exc)
+
+
+CARD_DB_UPDATING_MESSAGE = ("The machine is updating its card database (the status LED blinks white). Wait for "
+                            "it to finish, or cancel the update in the app.")
+
+_RECORD_FIELDS = {"match_method", "confidence", "card_name", "set_code", "collector_number", "color_identity",
+                  "type_line", "mana_cost", "rarity", "error_message"}
+
+_MODULE_NAMES = {TopModule.ADDRESS: "top", BottomModule.ADDRESS: "bottom"}
+
+_ERROR_MESSAGES = {
+    "FEED_TIMEOUT": "Feed jam: no card reached the platform after 2 pull attempts (jam or empty stack).",
+    "FEED_FAILED": "Feeding finished but no card is on the platform.",
+    "DROP_FAILED": "The card did not fall from the platform (stuck?).",
+    "HOME_TIMEOUT": "The base could not find the zero position. Check the zero IR sensor.",
+    "HOME_FAILED": "The base could not find the reflective strip. Check the homing IR sensor.",
+    "MOVE_TIMEOUT": "The base did not reach the requested tray.",
+    "NOT_HOMED": "The base has not been homed.",
+}
+
+
+def _run_from_store(row: dict | None) -> RunInfo | None:
+    """A run as saved in run.db (RunStore.last_run) -> RunInfo, for GET /run/status after a restart."""
+    if row is None:
+        return None
+    try:
+        status = RunStatus(row["status"])
+    except ValueError:
+        return None
+    return RunInfo(run_id=row["run_id"], status=status, started_at=row["started_at"],
+                   stopped_at=row["stopped_at"], cards_processed=row["cards_processed"],
+                   error_code=row["error_code"], message=row["message"], owner=row.get("owner_name"))
+
+
+def _quiet_time(duration_ms: int | None) -> float:
+    """Seconds to wait before the first STATUS poll after a base move (2 % margin)."""
+    return 0.0 if not duration_ms else duration_ms * 1.02 / 1000 + 0.05
+
+
+def _module_name(addr: str) -> str:
+    return _MODULE_NAMES.get(addr, addr)
+
+
+def _error_message(addr: str, code: str | None) -> str:
+    return _ERROR_MESSAGES.get(code or "", f"The {_module_name(addr)} module ({addr}) reported error {code}.")
+
+
+def _describe_fault(exc: Exception) -> tuple[str, str]:
+    if isinstance(exc, HardwareFault):
+        return exc.code, exc.message
+    if isinstance(exc, ModuleError):
+        return exc.code, f"The {_module_name(exc.addr)} module ({exc.addr}) rejected '{exc.command}': {exc.code}."
+    return "PROTOCOL_ERROR", f"Invalid reply from a module: {exc}"

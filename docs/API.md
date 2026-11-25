@@ -1,0 +1,426 @@
+# REST API (for the app)
+
+Base URL: `http://<raspberry-ip>:8000`. Interactive docs: `http://<raspberry-ip>:8000/docs`.
+All bodies are JSON. Every response the app should show to the user has a `message` field.
+
+## POST /run/start
+
+This call prepares the machine and checks the start conditions:
+
+1. **Quick checks** (< 1 s): card database loaded, camera crop calibrated, stack IR, platform IR, the 6 tray IRs.
+   If any fails, the call answers **409** right away, without homing.
+2. **A2** homes the base to the zero position, while **A1** stops the feed roller,
+   closes the flap (80°) and sets the chamber light to its base level.
+3. The checks are repeated after homing (someone may have touched the machine).
+
+If the checks pass, the sorting loop starts in the background.
+⚠️ When the checks pass, the call **blocks while the base homes** (RF08): about 1 s when
+the base is parked at tray 3 (it parks there after every run), up to ~4 s from another
+tray, longer only when the base was turned by hand (full search; at most 40 s). The app's own routes (`/machines/{id}/start`, end of this page) answer
+within 8 s instead.
+
+**200 — run started**
+```json
+{ "started": true, "message": "Run started.",
+  "run": { "run_id": "9aa0a9c4-…", "status": "running", "started_at": "2026-11-04T13:14:28.956Z",
+           "stopped_at": null, "cards_processed": 0, "current_tray": null,
+           "error_code": null, "message": "Run started." } }
+```
+
+**409 — conditions not met.** All problems are listed at once, so the user can fix everything in one go:
+```json
+{ "started": false,
+  "message": "No cards on the stack. Load cards and try again. Trays are not empty (tray 2, 5). Empty them and try again.",
+  "problems": [
+    { "code": "STACK_EMPTY", "message": "No cards on the stack. Load cards and try again." },
+    { "code": "TRAYS_NOT_EMPTY", "message": "Trays are not empty (tray 2, 5). Empty them and try again.", "trays": [2, 5] }
+  ] }
+```
+
+| Status | `problems[].code` | When |
+|---|---|---|
+| 409 | `STACK_EMPTY` | Stack IR sees no card |
+| 409 | `TRAYS_NOT_EMPTY` | One or more tray IRs see cards (`trays` lists them) |
+| 409 | `PLATFORM_NOT_CLEAR` | A card was left on the reading platform |
+| 409 | `CARD_DB_MISSING` | `data/cards.db` is missing: run `python -m cardforge.cv sync` |
+| 409 | `CROP_NOT_CALIBRATED` | `vision.toml` `[crop] mode = "fixed"` without corners: save the fixed crop on `/calibration` |
+| 409 | `RUN_ACTIVE` | A run is already starting / running / stopping / paused |
+| 409 | `HOMING` | The base is still homing after the service started (RF08): try again in a few seconds |
+| 409 | `CARD_DB_UPDATING` | A card database update the user started is running (status LED blinking white): wait for it, or `POST /card-db/update/cancel` |
+| 409 | `START_CANCELLED` | `/run/stop` was called during the start checks |
+| 503 | `MODULE_OFFLINE` | A1 or A2 did not answer (`module` says which) |
+| 500 | `HOME_TIMEOUT`, `PROTOCOL_ERROR`, … | Hardware fault during preparation |
+| 401 | `SIGN_IN_REQUIRED` | With a CardForge server (`MTG_SERVER_URL`): no `Authorization: Bearer <token>`, or the server says the app user's token is expired/unknown |
+| 503 | `SERVER_UNREACHABLE` | With a CardForge server: the Pi could not reach it to check who is starting the run |
+| 502 | `SERVER_ERROR` | With a CardForge server: it answered with an error |
+
+**Run owner (server mode).** With `MTG_SERVER_URL` set, the app sends its access token
+with `POST /run/start`. The Pi checks it with the server (`GET /auth/me`) before anything
+else; the user becomes the owner of the run and of every card in it (`run.owner` in the
+answer). Only the start needs the server: if the network drops during the run, nothing
+changes (see [SERVER.md](SERVER.md)).
+
+## POST /run/stop
+
+Ends the run with status `cancelled` and leaves no card in the machine:
+
+1. No new card is fed.
+2. If a card is in the feeder, the feed finishes and the card reaches the platform.
+3. If a card is on the platform, the identification retries are cut short. If the
+   card was already identified, the base turns to its tray; otherwise to the
+   overflow tray 6. The card is dropped and recorded in run.db like any other.
+4. The flap is closed (80°), the roller is stopped, and STOP is sent to every module.
+
+A stop while the run is **paused** just closes the run (the motors are already stopped).
+
+The call answers once all this is done, usually in 1–3 s:
+```json
+{ "stopped": true,
+  "message": "Run stopped by user: the card in progress was sorted, 2 card(s) processed. Flap closed, motors stopped.",
+  "state": "idle", "run": { "status": "cancelled", "cards_processed": 2, … } }
+```
+`POST /run/stop?immediate=true` is the emergency stop. It sends STOP to the modules
+at once, and a card may stay on the platform. Use it when something is jammed.
+
+**409** `{ "stopped": false, "message": "No run in progress." }`
+
+## Faults: the run pauses, POST /run/resume continues it
+
+A mechanical fault does **not** end the run (RNF23). The motors stop, the status LED
+turns red, the app gets a `fault` event, and the run waits with its id and counters:
+
+| `error_code` | Cause |
+|---|---|
+| `FEED_TIMEOUT` / `FEED_FAILED` | Feed jam: no card reached the platform after 2 pull attempts (RF05) |
+| `DROP_FAILED` | The card did not fall from the platform, not even after 3 pulses of the vibration motor under it (PROTOCOL.md 5.2). A card that falls after a pulse is **not** a fault: the run goes on with no alert |
+| `MOVE_TIMEOUT`, `HOME_TIMEOUT`, `HOME_FAILED`, `NOT_HOMED` | The base did not reach a tray / the zero position |
+
+The user fixes the machine (removes the stuck card, clears the feeder) and calls
+`POST /run/resume`. It re-homes the base, checks that the platform is clear, and
+continues the **same run**. A card that was on the platform when the fault happened
+and was removed by hand is not recorded (it was not sorted).
+
+**200** `{ "resumed": true, "message": "Run resumed.", "run": {…} }` ·
+**409** `{ "resumed": false, "message": "No paused run to resume." }` ·
+**409** with `problems` (e.g. `PLATFORM_NOT_CLEAR`) — the run stays paused.
+
+A module that does not answer after 3 retransmissions (`MODULE_OFFLINE`, Data-Link Loss, RNF10) or an invalid reply
+(`PROTOCOL_ERROR`) still ends the run as `failed`: the machine needs a power cycle.
+
+## Results (RF22), history and CSV export (RF24)
+
+Every card that leaves the platform is written to `run.db` (SQLite on the Pi) in one
+transaction, right after the drop. Results are only given once the run is over (RF23).
+
+| Call | Answer |
+|---|---|
+| `GET /runs?limit=50&offset=0` | `{ "runs": [run, …] }`, newest first |
+| `GET /runs/{run_id}` | **200** `{ "run", "bin_counts", "scan_counts", "benchmark", "cards" }` · **409** while the run is running or paused · **404** unknown id |
+| `GET /inventory/export.csv` | Every card of every finished run, CSV (RFC 4180, UTF-8, CRLF) |
+
+```json
+{ "run": { "run_id": "…", "status": "completed", "cards_processed": 5, "successful_scans": 3, "failed_scans": 2, … },
+  "bin_counts": { "1": 1, "5": 1, "6": 3 },
+  "scan_counts": { "identified": 3, "unidentified": 1, "face_down": 1 },
+  "benchmark": { "general":   { "identify_s": { "n": 5, "mean": 2.1, "median": 1.8, "mode": 1.8, "mode_count": 2,
+                                                 "min": 1.6, "max": 4.9 },
+                                 "total_s":    { … } },
+                 "first_try": { "identify_s": { … }, "total_s": { … } } },
+  "cards": [ { "card_number": 1, "bin": 1, "scan_status": "identified", "card_name": "Plains",
+               "set_code": "FIN", "collector_number": "295", "color_identity": "W",
+               "card_identifier": "<scryfall print id>", "match_method": "SET_NUMBER",
+               "confidence": 100, "attempts": 1, "scanned_at": "…",
+               "identify_s": 1.8, "total_s": 6.9, "first_try": 1, "fallbacks": "" }, … ] }
+```
+
+`benchmark` (null for runs from before it existed or with no measured card) — card times of the run, in seconds:
+`identify_s` = first photo → decision, retries included; `total_s` = start of the feed → end of the drop.
+`general` = every card; `first_try` = only the cards identified (or found face down) at the first capture with the
+minimum OCR and fed at the first pull. `mode` = most common time rounded to 0.1 s (tie: the shortest). Per card,
+`first_try` is 1/0 (null = not measured, e.g. the card cleared out by a Stop) and `fallbacks` says why a card was
+not first-try: `retry`, `orientation_reread`, `layout_ocr`, `face_down_after_identify`, `not_identified`,
+`vision_error`, `feed_retry`. The same figures are written to `benchmarks/` on the Pi, and the cards whose
+identification took longer than `MTG_SLOW_CARD_S` (3 s) to `cards_to_improve/` with their pictures
+([PASSO_A_PASSO.md](PASSO_A_PASSO.md), part E4/E5).
+
+These are the **machine's** views (every run made on this Pi, any user). The app reads
+the signed-in user's runs, collection and export from the CardForge server instead
+([SERVER.md](SERVER.md)), which receives each finished run from the Pi:
+
+| Call | Answer |
+|---|---|
+| `GET /sync/status` | `{ "enabled", "server_url", "synced", "pending", "failed", "local_only", "last_error" }` — finished runs uploaded, waiting, failing (retried with backoff), or kept on the Pi only (started without a server) |
+| `POST /sync/now` | Retry the uploads right away (e.g. after fixing the network). **409** without a server |
+
+Tray rule (RF20): color identity {W} → 1, {U} → 2, {B} → 3, {R} → 4, {G} → 5;
+colorless, multicolor, unidentified (after 3 captures, RF25/RF29) and face-down (RF39) → 6.
+RNF27: every card that leaves the platform counts (identified, unidentified, face-down, also across a
+pause). When the stack empties with 250 cards or fewer, the run is `completed` with no `error_code`
+("Stack is empty"). When 250 cards are done and cards are still on the stack, the run stops by itself:
+`completed` with `error_code: "BATCH_LIMIT"`. `MTG_MAX_CARDS_PER_RUN` can lower the limit (bench tests),
+never raise it above 250.
+
+## Base test endpoints (bottom module A2)
+
+These let you test base moves outside a run. They answer **409** `RUN_ACTIVE`
+while a run is going, and **409** `BOTTOM_DISABLED` in top-only mode. Each call
+waits until the move is done, then returns the base status:
+
+```json
+{ "ok": true, "message": "Base at tray 2.",
+  "base": { "state": "IDLE", "homed": true, "position": 2, "steps": 1653, "drift": 0,
+            "zero_sensor": false, "trays_with_cards": [], "error": null } }
+```
+
+| Call | What it does |
+|---|---|
+| `GET /base/status` | Live status: homed, tray, steps, sensors |
+| `POST /base/home` | Find the strip. The base ends at tray 3, `steps: 0`. About 1–4 s when the base is homed already; a full search (position unknown) takes longer |
+| `POST /base/goto/{tray}` | Turn to tray 1–6. Needs homing first (else **409** `NOT_HOMED`) |
+| `POST /base/move` | Turn to any absolute position: `{"steps": 1000}` or `{"degrees": 30}` (+ = clockwise). **400** if neither or both are given, or if outside ±20000 steps |
+
+`POST /run/stop` also stops a base test move.
+
+`drift` is the number of steps the base was off when it last re-homed. Use it to
+check for lost steps: home → do some moves → home again → read `drift`. 0 to ±5 is
+fine. Avoid calling `GET /base/status` in a fast loop while the base is moving,
+because every request on the bus makes the motor stagger slightly.
+
+## Flap test endpoints (top module A1)
+
+These let you test the flap outside a run, for example to find the best opening angle.
+`POST /flap` and `PUT /flap/angles` answer **409** `RUN_ACTIVE` while a run is going;
+`GET /flap` always works. They also work in top-only mode. Each answer has the flap status:
+
+```json
+{ "ok": true, "message": "Flap at 5 degrees.",
+  "flap": { "angle": 5, "open_angle": 5, "closed_angle": 80 } }
+```
+
+| Call | What it does |
+|---|---|
+| `GET /flap` | `angle` = last angle sent to the flap servo; `open_angle` / `closed_angle` = what the runs use |
+| `POST /flap` | Move the flap: `{"angle": 12}` (any 0–180) or `{"position": "open"}` / `{"position": "closed"}`. Waits `flap_settle_s` (0.5 s), then answers. **400** `BAD_ANGLE` if neither or both are given, or out of range |
+| `PUT /flap/angles` | Change the angles the runs use: `{"open_angle": 8}`, `{"closed_angle": 78}` or both. Live, **not saved**: after a restart the API uses `MTG_FLAP_OPEN_ANGLE` (default 5) and `MTG_FLAP_CLOSED_ANGLE` (default 80) again. **400** if out of 0–180 or open = closed |
+
+⚠️ A card on the platform falls when the flap opens, into whatever tray is under it.
+The flap stays where you moved it. The next `POST /run/start` (or `/calibration/feed`) closes it again.
+
+## GET /stack
+
+Reads the stack IR on the top module (A1):
+```json
+{ "has_cards": false, "message": "No cards on the stack." }
+```
+Answers **503** with `has_cards: null` if A1 does not respond.
+
+## GET /run/status
+
+Returns the current controller state and the current or last run. Use it to poll,
+or to catch up after the WebSocket was disconnected.
+```json
+{ "state": "running", "run": { "run_id": "…", "status": "running", "cards_processed": 7, "current_tray": 1, … } }
+```
+`state`: `idle` · `starting` · `running` · `stopping` · `paused` · `manual` (a base test move, or the homing
+right after the service starts: with `MTG_HOME_ON_POWER_ON=1`, the default, the base homes by itself at power-on, RF08)
+`startup`: `"homing"` while the base homes right after the service started, else `null`.
+`card_db`: the card database, see [Card database](#card-database) (`null` without one, `MTG_VISION=off`).
+`run.status`: `running` · `paused` · `completed` · `failed` · `cancelled`.
+When it is `paused` or `failed`, `run.error_code` and `run.message` say why.
+`run.current_tray` is `null` while the run is active (RF23).
+After a restart, `run` is the last run saved in `run.db` (a run cut by a power loss is `failed` /
+`INTERRUPTED`).
+
+`last_run_check` (RNF19) — did the last run end correctly, with all its records? `null` before the
+first run and while a run is running or paused:
+```json
+"last_run_check": { "ok": false, "reason": "INTERRUPTED",
+  "message": "The last run did not finish correctly: the machine lost power or restarted during it. The 12 card(s) sorted before that are saved. Empty the trays, put the remaining cards back on the stack and start a new run.",
+  "finished": false, "records_ok": true, "database_ok": true, "cards_saved": 12,
+  "run": { "run_id": "…", "status": "failed", "cards_processed": 12, "error_code": "INTERRUPTED", … } }
+```
+| Field | `false` when |
+|---|---|
+| `finished` | The run failed or was interrupted. A Stop by the user is a correct end |
+| `records_ok` | Its saved cards don't match its counters, or their numbers have gaps |
+| `database_ok` | `run.db` failed SQLite's `quick_check` when the service started |
+| `ok` | Any of the three. `reason`: the run's `error_code` (`INTERRUPTED`, `MODULE_OFFLINE`, `PROTOCOL_ERROR`, …), else `RECORDS_MISMATCH` or `DATABASE_DAMAGED` |
+
+The app shows a not-ok check on Machine control and on Home, explains it, and turns "Start sorting"
+into "Start a new run", until the next run starts.
+
+`timing` (RNF22, RF02 / RF15) — figures of the current or last run, no card identity:
+```json
+"timing": { "cards": 50, "seconds_per_card": 8.31, "cards_per_min": 7.2,
+            "nominal_cards": 47, "nominal_seconds_per_card": 8.02, "nominal_cards_per_min": 7.5,
+            "slowest_capture_s": 0.62,
+            "last_card": { "card": 50, "feed_s": 1.1, "feed_attempt": 1, "capture_s": 0.41, "identify_s": 4.4,
+                           "move_s": 1.6, "drop_s": 1.2, "total_s": 8.3 },
+            "first_try_cards": 44,
+            "benchmark": { "cards": 50, "first_try_cards": 44, "first_try_share": 0.88,
+                           "fallbacks": { "orientation_reread": 4, "retry": 3, "not_identified": 1 },
+                           "general": { … }, "first_try": { … } } }
+```
+`nominal_*` = only the cards identified at the first capture (no retry): what RNF22 measures
+(≥ 7 cards/min, ≤ 8.6 s per card). A card's time runs from the start of its feed to the end
+of its drop, so a pause does not count. `capture_s` = the card held still until its photo is
+taken (RF02 / RF15, ≤ 2.0 s; the log warns above it). The end-of-run message adds the cards
+per minute. `first_try_cards` / `benchmark`: see `GET /runs/{run_id}` above (`benchmark` is null before the
+first card of a run).
+
+## WS /ws/events — notifications
+
+Connect once and keep the socket open. Each message is one JSON object:
+
+| `type` | When | Payload |
+|---|---|---|
+| `snapshot` | Right after connecting | same as GET /run/status |
+| `run_started` | Start checks passed | `run` |
+| `card_sorted` | A card was dropped in a tray | `run_id`, `card_number` — progress only: no tray, no card identity (RF23) |
+| `card_cleared` | A stop sorted the card in progress | `run_id`, `card_number` |
+| `attention` | A card went to tray 6 unidentified or face-down; the run continues (RF36) | `kind` (`unidentified` / `face_down`), `run_id`, `card_number`, `time` |
+| `fault` | **The run paused. Alert the user** (RF27) | `fault` (error code), `time`, `message`, `run` |
+| `run_resumed` | `/run/resume` succeeded | `run` |
+| `run_finished` | **Run ended. Notify the user** | `run` (with `status` completed / failed / cancelled), `message`, `last_run_check` (RNF19) |
+| `card_db` | A card database check or update started or ended (with `update_available: true`: **tell the user an update is available**), and about once a second while an update runs | `card_db` ([Card database](#card-database)) |
+
+Example `run_finished` messages: `"Stack is empty: 37 card(s) processed. 7.4 cards/min (8.1 s per card)."`,
+`"Feed jam: no card reached the platform after 2 pull attempts (jam or empty stack)."`,
+`"The bottom module (A2) stopped responding."`.
+
+With a CardForge server, `fault` and `run_finished` also go to the server for the user who
+started the run (RF38, [SERVER.md](SERVER.md)), so the app can notify them with the app closed.
+
+## GET /hardware/status
+
+Returns the live STATUS of both modules, for a debug or maintenance screen:
+```json
+{ "top":    { "online": true, "state": "IDLE", "stack_has_card": true, "platform_has_card": false,
+              "flap_angle": 80, "roller_running": false, "error": null, "feed_attempt": 1,
+              "vibrating": false },
+  "bottom": { "online": true, "state": "IDLE", "homed": true, "position": 1, "zero_sensor": true,
+              "trays_with_cards": [], "error": null } }
+```
+`feed_attempt` (a1_top 1.1): the pull attempt of the current or last FEED, 1 or 2 (RF05).
+`vibrating` (a1_top 1.2): the platform vibration motor is on (`null` with older firmware).
+
+## Card database
+
+The machine identifies cards against `data/cards.db`, its copy of Scryfall. At power-on it only **checks**
+Scryfall for new cards (2 small requests, in the background: the machine is ready as usual). The app tells the
+user when an update is available, and **the user starts it**: it downloads ~480 MB and builds the new database in
+the background (minutes on the Pi 3B), with its progress and ETA. The old database stays in use until the new one
+is ready; a failure or a cancel keeps it. While updating, the status LED blinks white and Start answers
+409 `CARD_DB_UPDATING`.
+
+| Call | Answer |
+|---|---|
+| `GET /card-db` | the status below |
+| `POST /card-db/check` | **202** `{started: true, card_db}` (a few seconds; the result comes on the WebSocket) · **200** `{started: false}` when a check or an update is already running |
+| `POST /card-db/update` (`?force=true`: even when up to date) | **202** `{started: true, card_db}` · **409** `RUN_ACTIVE` (a run is starting, running, stopping or paused; a base move) · `CARD_DB_UPDATING` · `CARD_DB_CHECKING` |
+| `POST /card-db/update/cancel` | **200** `{cancelling: true, card_db}` · **409** `NOT_UPDATING` |
+| any of them without vision (`MTG_VISION=off`) | **409** `CARD_DB_UNAVAILABLE` |
+
+```json
+{ "phase": "updating",
+  "update_available": true,
+  "last_check": { "result": "update_available", "reason": "new cards or sets on Scryfall", "at": "2026-11-18T12:00:00+00:00",
+                  "seconds": 1.2, "download_mb": 489, "remote_updated_at": "2026-11-18T10:06:30.623+00:00",
+                  "message": "…" },
+  "last_update": null,
+  "progress": { "stage": "all_cards", "fraction": 0.42, "stage_fraction": 0.5, "downloaded_mb": 204.0,
+                "download_mb": 489.0, "speed_mb_s": 2.1, "eta_s": 130, "elapsed_s": 95 },
+  "local": { "bulk_updated_at": "2026-11-17T10:06:30.623+00:00", "built_at": "2026-11-17T18:26:02Z",
+             "printed_langs": "pt", "schema_version": "2", "cards": 110960 } }
+```
+* `phase`: `idle` · `checking` · `updating`. `update_available`: `null` until a check reached Scryfall.
+* `last_check.result`: `up_to_date` · `update_available` · `offline` (no network; at boot it waits up to
+  `MTG_CARD_DB_CHECK_WAIT_S` for a configured Wi-Fi) · `unreachable` (no internet / Scryfall down) · `failed`.
+* `last_update.result`: `updated` · `up_to_date` (nothing to download) · `cancelled` · `unreachable` · `failed`
+  (+ `message`, `at`, `seconds`). In every case but `updated` the machine kept its database.
+* `progress.stage`: `checking` → `all_cards` (Portuguese names) → `default_cards` (the card list) → `building` →
+  `finishing`. `fraction` (0–1, the whole update; never goes backwards) and `eta_s` come from the download speed
+  so far and the time the last build took on this machine; `eta_s` is `null` until it can tell.
+
+The same object is `card_db` in `GET /run/status`, in the WebSocket's first `snapshot`, and in the `card_db`
+event, sent when a check or an update starts or ends and about once a second while an update runs.
+
+## GET /health
+
+Returns `{ "ok": true, "simulate": false, "bottom_enabled": true, "server": true, "startup": null, "card_db": {…} }`
+(`server`: a CardForge server is configured; `startup` and `card_db`: as in `GET /run/status`).
+
+## Top-only mode (`--top-only` / `MTG_BOTTOM_ENABLED=0`)
+
+This mode is for the test bench where only the top module (A1) is wired. The
+API never talks to A2:
+
+* no homing
+* no tray check
+* no base moves
+
+cards are recorded with `bin: null`, and `GET /hardware/status` reports
+`bottom.enabled: false`. Everything else works the same way: the start checks
+(stack, platform), the loop (feed → identify → drop), stop, and the
+notifications.
+
+## Routes of the mobile app (app_compat.py)
+
+The app talks to `API_BASE_URL` for sign-in and data. With the CardForge server
+([SERVER.md](SERVER.md)) that is the server, and these routes are **not** served by the Pi.
+**Without a server** (`MTG_SERVER_URL` empty), the Pi stands in for it: build the app with
+`USE_MOCK=false` and `API_BASE_URL=http://<raspberry-ip>:8000`. Sign-up, the run history
+and the CSV export need the server.
+
+| Route | Answer |
+|---|---|
+| `POST /auth/login` `{identifier, password}` | **200** `{access_token}` · **401**. User `MTG_APP_USERNAME` (default `admin`), password `MTG_APP_PASSWORD` (empty = anything is accepted) |
+| `POST /auth/google` | **501**: Google sign-in needs the CardForge server |
+| `GET /cards?query=&run_id=&color=&limit=&offset=` | Same answer as the CardForge server's `GET /cards` (`items` by name with `quantity` and `color`, `total`, `color_counts`, `not_identified`): identified cards of finished runs, or of one run (`run_id` = the Pi's run uuid), filtered by color group (`W`, `U`, `B`, `R`, `G`, `colorless`, `multicolor`; **422** `INVALID_COLOR`) |
+| `GET /machines/{id}/status` | `{state}`: `idle`, `running` (starting / running / stopping), `stopped` (paused by a fault) |
+| `POST /machines/{id}/start` | Starts a run, or **resumes** a paused one. Waits up to 8 s: a refusal comes back as **409** with `problems`; after 8 s (still homing) the answer is `running` |
+| `POST /machines/{id}/stop` | Normal stop, `{state}` (waits up to 8 s) |
+
+They need `Authorization: Bearer <access_token>` (else **401**). The `{id}` is ignored:
+one Pi drives one machine. The app shows any **409** as "machine offline", so the
+reason of a refused start is only in the body for now.
+
+## Camera calibration (calibration_api.py)
+
+With the machine assembled, from a browser: `http://<raspberry-ip>:8000/calibration`. The page uses these
+routes; all answer **409** `RUN_ACTIVE` during a run and **409** `VISION_OFF` with `MTG_VISION=off`.
+
+| Route | What it does |
+|---|---|
+| `POST /calibration/snapshot` | One capture: `metrics` (frame brightness, clipped %, card found, area, 3×3 light grid, sharpness, advice) + annotated JPEG (base64) |
+| `GET /calibration/frame.jpg?overlay=1` | One capture as JPEG |
+| `GET / PUT /calibration/settings` | `exposure_us`, `analogue_gain`, `awb_gains` [red, blue], `light_level` — PUT applies them live, not saved |
+| `POST /calibration/auto` | Auto exposure + white balance with the card in place, then locked |
+| `POST /calibration/save` | Writes the values to `vision.toml` `[camera]` |
+| `POST /calibration/reference` | Remembers the card brightness; later snapshots report the change (RNF08, ≤ 10 %) |
+| `POST /calibration/identify` | Full identification of the card on the platform + annotated card |
+| `POST /calibration/feed` / `POST /calibration/drop` | Feed one card onto the platform / drop it into tray 6 (homes the base if needed) |
+| `GET /calibration/crop` | Fixed crop: `mode`, saved `corners`, measured `samples`, their `mean` and `spread_px` |
+| `POST /calibration/crop/sample` | Find the card on the platform by border detection (calibration only) and keep its corners. The picture is saved in `calibragem_recorte/` (original, `_anotada`, `medicoes.csv`; `_sem_borda` when not found) and its name comes back in `picture` |
+| `DELETE /calibration/crop/samples` | Forget the measurements |
+| `POST /calibration/crop/save` | The average position (outliers left out: `rejected` lists their pictures) becomes the fixed crop of the connected camera, live and in `vision.toml` |
+| `POST /calibration/crop/preview` | `{"corners": [[x, y] x 4]}` (fractions of the picture, card order: title-side top-left first): the card cut with them + `metrics` (`info_sharpness`, ...) |
+| `POST /calibration/crop/manual` | Same body: save corners marked by hand as the fixed crop. **400** `BAD_CORNERS` if they are not 4 points around a card-shaped area |
+
+With the fixed crop the identification never searches for the card border: it warps the picture with the
+saved corners (`strategy: "FIXED"` in the result). `MTG_VISION=files` (photos from elsewhere) always uses
+border detection until a crop is saved.
+
+## Simulator only (`--simulate`)
+
+* `GET /sim/state` shows the simulated machine.
+* `PUT /sim/state` sets it up for testing the app's error screens:
+```json
+{ "stack_cards": 10, "trays_with_cards": [], "platform_has_card": false,
+  "top_jammed": false, "offline_modules": [], "platform_stuck_pulses": 0 }
+```
+`platform_stuck_pulses`: the next card sticks to the platform and only falls after that many
+vibration pulses (1 to 3 = shaken loose, the run goes on; 4 = `DROP_FAILED`).
+`GET /sim/state` also shows `light_level` (the optional LIGHT command, PROTOCOL.md 5.1) and
+`status_led` (the mode the Pi's RGB LED is showing). `MTG_SIM_OPTIONAL_COMMANDS=0` simulates
+an `a1_top.ino` without the optional commands (LIGHT, VIBRATE).

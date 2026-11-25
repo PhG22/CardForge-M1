@@ -1,0 +1,42 @@
+name: cardforge
+description: App to monitor and manage the CardForge automatic Magic card sorter.
+publish_to: "none"
+version: 0.3.0+1
+
+environment:
+  sdk: ">=3.4.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_localizations:
+    sdk: flutter
+  go_router: ^14.2.0
+  http: ^1.2.2
+  google_sign_in: ^6.2.1
+  flutter_secure_storage: ^9.2.2
+  google_fonts: ^6.2.1
+  shared_preferences: ^2.3.2
+  # BLE for the machine setup. Free for educational use (License.nonprofit).
+  flutter_blue_plus: ^2.3.4
+  web_socket_channel: ^3.0.3
+  # CSV export (RF24): temporary file + system share sheet.
+  cross_file: ^0.3.4
+  path_provider: ^2.1.4
+  share_plus: ^12.0.2
+  # RF38: alerts as notifications while the app is in the background or the
+  # phone is locked. A foreground service watches the run's alerts on the
+  # CardForge server (no Firebase) and shows them as local notifications.
+  # 10.x needs Flutter 3.38, 11.x Flutter 3.44: pub picks what your SDK allows.
+  flutter_foreground_task: ">=10.0.0 <12.0.0"
+  flutter_local_notifications: ^22.3.3
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/images/

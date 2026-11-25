@@ -54,7 +54,9 @@ def text_report(source: str, r: IdentificationResult) -> str:
         f"Nome: {f.name if f else 'N/A'}",
         f"Tipo: {f.type if f else 'N/A'}",
         f"Linha de info: {f.info_raw if f else 'N/A'}",
-        f"Edição: {i.set_code if i else 'N/A'}  |  Número: {i.collector_number if i else 'N/A'}",
+        f"Edição: {i.set_code if i else 'N/A'}  |  Número: {i.collector_number if i else 'N/A'}"
+        + (f"  |  Idioma: {i.language}" if i and i.language else "")
+        + (f"  |  Alternativas: {', '.join(i.set_candidates[1:4])}" if i and len(i.set_candidates) > 1 else ""),
         "",
         "--- CARTA OFICIAL (cards.db / Scryfall) ---",
     ]

@@ -1,0 +1,545 @@
+"""Local run storage on the Pi: run.db (SQLite), tables local_run and local_cards (DB-ER).
+
+* RF19 / RNF20: one record per card that physically left the platform, written in
+  one transaction together with the run counters, right after the drop.
+* RNF19: WAL journal + synchronous=FULL, so a committed card survives a power cut.
+* Runs that were still running or paused when the Pi lost power are marked
+  failed (INTERRUPTED) on the next start.
+* RNF19 last-run check: run.db passes SQLite's quick_check when it is opened, and
+  last_run_check() says whether the most recent run ended correctly and whether its
+  saved cards still match its counters. The app shows it and suggests a new run.
+* Owner: the user who pressed Start in the app (started_by = PostgreSQL users.id,
+  checked with the server at start). Every card of the run belongs to that user.
+* Sync (DB02 / DB04): once a run is finished, sync.SyncWorker uploads it with its
+  cards to the CardForge server, which stores them in PostgreSQL. sync_state goes
+  pending -> synced, or failed (retried with backoff, next_sync_at). Runs without an
+  owner (no server configured when they ran) stay on the Pi only.
+
+The machine-local results (RF22) and inventory (RF24) are also read from here.
+"""
+
+from __future__ import annotations
+
+import csv
+import io
+import logging
+import secrets
+import sqlite3
+import threading
+import uuid
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Callable
+
+log = logging.getLogger(__name__)
+
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS local_run (
+    local_uuid       TEXT PRIMARY KEY,
+    status           TEXT NOT NULL,             -- running | paused | completed | cancelled | failed
+    started_at       TEXT NOT NULL,             -- ISO 8601, UTC
+    stopped_at       TEXT,
+    cards_processed  INTEGER NOT NULL DEFAULT 0,
+    successful_scans INTEGER NOT NULL DEFAULT 0,
+    failed_scans     INTEGER NOT NULL DEFAULT 0,
+    error_code       TEXT,
+    message          TEXT,
+    sync_state       TEXT NOT NULL DEFAULT 'pending',   -- pending | synced | failed
+    sync_attempts    INTEGER NOT NULL DEFAULT 0,
+    started_by       INTEGER,                   -- PostgreSQL users.id; NULL = no server: never uploaded
+    owner_name       TEXT,                      -- that user's username (logs, /sync/status)
+    remote_run_id    INTEGER,                   -- PostgreSQL runs.id once synced
+    last_sync_error  TEXT,
+    synced_at        TEXT,
+    next_sync_at     TEXT                       -- after a failed upload: not before this time
+);
+
+CREATE TABLE IF NOT EXISTS local_cards (
+    local_uuid       TEXT PRIMARY KEY,
+    run_uuid         TEXT NOT NULL REFERENCES local_run(local_uuid),
+    card_number      INTEGER NOT NULL,          -- 1, 2, ... inside the run
+    card_identifier  TEXT,                      -- Scryfall print id; NULL when unidentified
+    scan_status      TEXT NOT NULL,             -- identified | unidentified | face_down
+    bin              INTEGER,                   -- tray 1-6 it fell into; NULL in top-only mode
+    match_method     TEXT,
+    confidence       INTEGER,
+    attempts         INTEGER,
+    card_name        TEXT,
+    set_code         TEXT,
+    collector_number TEXT,
+    color_identity   TEXT,
+    type_line        TEXT,
+    mana_cost        TEXT,
+    rarity           TEXT,
+    scanned_at       TEXT NOT NULL,
+    error_message    TEXT,
+    owner_id         INTEGER,                   -- = local_run.started_by (PostgreSQL users.id)
+    identify_s       REAL,                      -- first photo -> decision, retries included (benchmark.py)
+    total_s          REAL,                      -- start of the feed -> end of the drop
+    first_try        INTEGER,                   -- 1 = read at the first try, no failsafe; NULL = not measured
+    fallbacks        TEXT,                      -- why not first-try: "retry orientation_reread ..."
+    UNIQUE (run_uuid, card_number)
+);
+CREATE INDEX IF NOT EXISTS idx_local_cards_name ON local_cards(card_name);
+
+-- Card-time statistics of each finished run (benchmark.py): groups general / first_try,
+-- times identify_s / total_s, in seconds.
+CREATE TABLE IF NOT EXISTS run_benchmark (
+    run_uuid    TEXT NOT NULL REFERENCES local_run(local_uuid),
+    grp         TEXT NOT NULL,                  -- general | first_try
+    metric      TEXT NOT NULL,                  -- identify_s | total_s
+    n           INTEGER NOT NULL,
+    mean        REAL,
+    median      REAL,
+    mode        REAL,                           -- most common time rounded to 0.1 s (tie: the shortest)
+    mode_count  INTEGER,
+    min         REAL,
+    max         REAL,
+    PRIMARY KEY (run_uuid, grp, metric)
+);
+
+CREATE TABLE IF NOT EXISTS app_token (
+    token      TEXT PRIMARY KEY,
+    username   TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+"""
+
+# Columns added after the first version of run.db: added in place to an existing file.
+SCHEMA_VERSION = 3
+ADDED_COLUMNS = {
+    "local_run": {"started_by": "INTEGER", "owner_name": "TEXT", "remote_run_id": "INTEGER",
+                  "last_sync_error": "TEXT", "synced_at": "TEXT", "next_sync_at": "TEXT"},
+    "local_cards": {"owner_id": "INTEGER", "identify_s": "REAL", "total_s": "REAL", "first_try": "INTEGER",
+                    "fallbacks": "TEXT"},
+}
+# Indexes on those columns: created after the columns exist.
+LATE_INDEXES = """
+CREATE INDEX IF NOT EXISTS idx_local_run_sync ON local_run(sync_state, next_sync_at)
+    WHERE sync_state <> 'synced' AND started_by IS NOT NULL;
+"""
+
+ACTIVE_STATUSES = ("running", "paused")
+FINISHED = "status NOT IN ('running', 'paused')"
+SYNC_CARD_COLUMNS = ("card_number", "scan_status", "bin", "card_identifier", "card_name", "set_code",
+                     "collector_number", "color_identity", "type_line", "mana_cost", "rarity", "match_method",
+                     "confidence", "attempts", "scanned_at", "error_message")
+CARD_COLUMNS = ("card_identifier", "scan_status", "bin", "match_method", "confidence", "attempts",
+                "card_name", "set_code", "collector_number", "color_identity", "type_line", "mana_cost",
+                "rarity", "error_message", "identify_s", "total_s", "first_try", "fallbacks")
+BENCHMARK_STATS = ("n", "mean", "median", "mode", "mode_count", "min", "max")
+
+
+@dataclass(frozen=True)
+class Owner:
+    """The signed-in app user who started a run (PostgreSQL users.id)."""
+    user_id: int
+    username: str
+
+
+# Color groups of the collection filter (same as the CardForge server): one per identified card.
+COLOR_GROUPS = ("W", "U", "B", "R", "G", "colorless", "multicolor")
+
+
+def color_group(color_identity: str | None) -> str:
+    colors = {ch for ch in (color_identity or "").upper() if ch in "WUBRG"}
+    if not colors:
+        return "colorless"
+    return next(iter(colors)) if len(colors) == 1 else "multicolor"
+
+
+@dataclass
+class ScanRecord:
+    """One card that was physically sorted."""
+    scan_status: str                       # identified | unidentified | face_down
+    bin: int | None
+    card_identifier: str | None = None
+    match_method: str | None = None
+    confidence: int | None = None
+    attempts: int | None = None
+    card_name: str | None = None
+    set_code: str | None = None
+    collector_number: str | None = None
+    color_identity: str | None = None
+    type_line: str | None = None
+    mana_cost: str | None = None
+    rarity: str | None = None
+    error_message: str | None = None
+    identify_s: float | None = None        # card times (benchmark.py); None = not measured
+    total_s: float | None = None
+    first_try: int | None = None
+    fallbacks: str | None = None
+
+
+class RunStore:
+    def __init__(self, path: str | Path) -> None:
+        self.path = Path(path)
+        if str(path) != ":memory:":
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._lock = threading.Lock()
+        self._conn = sqlite3.connect(str(path), check_same_thread=False, isolation_level=None)
+        self._conn.row_factory = sqlite3.Row
+        self._conn.execute("PRAGMA journal_mode = WAL")
+        self._conn.execute("PRAGMA synchronous = FULL")
+        self._conn.execute("PRAGMA foreign_keys = ON")
+        # RNF19: checked before the schema is touched, so a damaged file is reported as it was found.
+        self.integrity_error: str | None = self._quick_check()
+        if self.integrity_error is not None:
+            log.error("run.db failed its integrity check: %s", self.integrity_error)
+        self._conn.executescript(SCHEMA)
+        self._migrate()
+
+    def _quick_check(self) -> str | None:
+        """Is run.db intact after the last shutdown? None = yes, otherwise SQLite's complaint."""
+        try:
+            rows = [r[0] for r in self._conn.execute("PRAGMA quick_check").fetchall()]
+        except sqlite3.DatabaseError as exc:
+            return str(exc)
+        return None if rows == ["ok"] else "; ".join(rows[:5])
+
+    def _migrate(self) -> None:
+        """Bring a run.db made by an older version up to SCHEMA_VERSION (adds columns, keeps the data)."""
+        if self._conn.execute("PRAGMA user_version").fetchone()[0] >= SCHEMA_VERSION:
+            return
+        for table, columns in ADDED_COLUMNS.items():
+            existing = {r["name"] for r in self._conn.execute(f"PRAGMA table_info({table})")}
+            for name, sql_type in columns.items():
+                if name not in existing:
+                    self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {sql_type}")
+        self._conn.executescript(LATE_INDEXES)
+        self._conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+
+    def close(self) -> None:
+        with self._lock:
+            self._conn.close()
+
+    def compact(self) -> None:
+        """Fold the write-ahead log back into run.db and truncate it (frees space after a run)."""
+        with self._lock:
+            self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+
+    # ------------------------------------------------------------ runs
+
+    def recover_interrupted(self, now: str) -> int:
+        """Runs left running/paused by a power cut or crash are closed as failed."""
+        with self._lock:
+            cur = self._conn.execute(
+                "UPDATE local_run SET status = 'failed', stopped_at = ?, error_code = 'INTERRUPTED', "
+                "message = 'The run was interrupted (power loss or software restart).' "
+                "WHERE status IN ('running', 'paused')", (now,))
+            return cur.rowcount
+
+    def create_run(self, run_id: str, started_at: str, owner: Owner | None = None) -> None:
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO local_run (local_uuid, status, started_at, started_by, owner_name) "
+                "VALUES (?, 'running', ?, ?, ?)",
+                (run_id, started_at, owner.user_id if owner else None, owner.username if owner else None))
+
+    def update_run(self, run_id: str, *, status: str, stopped_at: str | None = None,
+                   error_code: str | None = None, message: str | None = None) -> None:
+        with self._lock:
+            self._conn.execute(
+                "UPDATE local_run SET status = ?, stopped_at = ?, error_code = ?, message = ? WHERE local_uuid = ?",
+                (status, stopped_at, error_code, message, run_id))
+
+    def save_scan(self, run_id: str, card_number: int, scanned_at: str, record: ScanRecord) -> str:
+        """Insert the card and update the run counters in one transaction (RNF20)."""
+        card_uuid = str(uuid.uuid4())
+        ok = record.scan_status == "identified"
+        values = [getattr(record, c) for c in CARD_COLUMNS]
+        with self._lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                self._conn.execute(
+                    f"INSERT INTO local_cards (local_uuid, run_uuid, card_number, scanned_at, owner_id, "
+                    f"{', '.join(CARD_COLUMNS)}) "
+                    f"VALUES (?, ?, ?, ?, (SELECT started_by FROM local_run WHERE local_uuid = ?), "
+                    f"{', '.join('?' * len(CARD_COLUMNS))})",
+                    (card_uuid, run_id, card_number, scanned_at, run_id, *values))
+                self._conn.execute(
+                    "UPDATE local_run SET cards_processed = cards_processed + 1, "
+                    "successful_scans = successful_scans + ?, failed_scans = failed_scans + ? WHERE local_uuid = ?",
+                    (int(ok), int(not ok), run_id))
+                self._conn.execute("COMMIT")
+            except Exception:
+                self._conn.execute("ROLLBACK")
+                raise
+        return card_uuid
+
+    def get_run(self, run_id: str) -> dict | None:
+        with self._lock:
+            row = self._conn.execute("SELECT * FROM local_run WHERE local_uuid = ?", (run_id,)).fetchone()
+        return _run_dict(row) if row else None
+
+    def list_runs(self, limit: int = 50, offset: int = 0) -> list[dict]:
+        with self._lock:
+            rows = self._conn.execute("SELECT * FROM local_run ORDER BY started_at DESC LIMIT ? OFFSET ?",
+                                      (limit, offset)).fetchall()
+        return [_run_dict(r) for r in rows]
+
+    def last_run(self) -> dict | None:
+        """The most recent run (any status), or None before the first run."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM local_run ORDER BY started_at DESC, rowid DESC LIMIT 1").fetchone()
+        return _run_dict(row) if row else None
+
+    def last_run_check(self) -> dict | None:
+        """RNF19: did the most recent run end correctly, and is what it saved still whole?
+
+        None before the first run, and while the most recent run is still running or
+        paused (that is the current run, which the app follows live). Otherwise:
+
+        * finished:    it ended by itself (stack empty, batch limit) or by a Stop, not by a
+                       failure or an interruption (power cut, crash, restart)
+        * records_ok:  its saved cards match its counters and are numbered 1..n, no gaps
+        * database_ok: run.db passed SQLite's quick_check when the service started
+        * ok:          all three. When not, `reason` and `message` say why, and the app
+                       suggests a new run.
+        """
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM local_run ORDER BY started_at DESC, rowid DESC LIMIT 1").fetchone()
+            if row is None or row["status"] in ACTIVE_STATUSES:
+                return None
+            saved = self._conn.execute(
+                "SELECT COUNT(*) AS n, COALESCE(SUM(scan_status = 'identified'), 0) AS identified, "
+                "COALESCE(MAX(card_number), 0) AS last FROM local_cards WHERE run_uuid = ?",
+                (row["local_uuid"],)).fetchone()
+        n, identified = saved["n"], saved["identified"]
+        finished = row["status"] in ("completed", "cancelled")
+        records_ok = (n == row["cards_processed"] and identified == row["successful_scans"]
+                      and n - identified == row["failed_scans"] and saved["last"] == n)
+        database_ok = self.integrity_error is None
+        cards = f"{n} card(s)"
+        if not finished:
+            reason = row["error_code"] or "FAILED"
+            cause = ("the machine lost power or restarted during it" if reason == "INTERRUPTED"
+                     else (row["message"] or reason).rstrip("."))
+            message = (f"The last run did not finish correctly: {cause}. The {cards} sorted before that "
+                       "are saved. Empty the trays, put the remaining cards back on the stack and start "
+                       "a new run.")
+        elif not records_ok:
+            reason = "RECORDS_MISMATCH"
+            message = (f"The last run's records are incomplete: it counted {row['cards_processed']} card(s) "
+                       f"but {n} are saved. Empty the trays and sort those cards again in a new run.")
+        elif not database_ok:
+            reason = "DATABASE_DAMAGED"
+            message = ("The machine's run database failed its integrity check, so recent results may be "
+                       "missing. Empty the trays and sort those cards again in a new run.")
+        else:
+            reason = None
+            message = "The last run finished correctly."
+        return {
+            "ok": reason is None, "reason": reason, "message": message,
+            "finished": finished, "records_ok": records_ok, "database_ok": database_ok,
+            "cards_saved": n,
+            "run": {"run_id": row["local_uuid"],
+                    **{k: row[k] for k in ("status", "started_at", "stopped_at", "cards_processed",
+                                           "successful_scans", "failed_scans", "error_code", "message")}},
+        }
+
+    def run_results(self, run_id: str) -> dict | None:
+        """Per-bin counts and the full card list of a run (RF22)."""
+        run = self.get_run(run_id)
+        if run is None:
+            return None
+        with self._lock:
+            cards = [dict(r) for r in self._conn.execute(
+                "SELECT * FROM local_cards WHERE run_uuid = ? ORDER BY card_number", (run_id,))]
+        counts: dict[str, int] = {}
+        for c in cards:
+            key = str(c["bin"]) if c["bin"] is not None else "none"
+            counts[key] = counts.get(key, 0) + 1
+        statuses = {s: sum(c["scan_status"] == s for c in cards) for s in ("identified", "unidentified", "face_down")}
+        return {"run": run, "bin_counts": counts, "scan_counts": statuses,
+                "benchmark": self.get_benchmark(run_id), "cards": [_card_dict(c) for c in cards]}
+
+    # ------------------------------------------------------- benchmark
+
+    def save_benchmark(self, run_id: str, bench: dict) -> None:
+        """benchmark.run_benchmark() of a finished run (replaces a previous one of the same run)."""
+        rows = [(run_id, group, metric, *(bench[group][metric][k] for k in BENCHMARK_STATS))
+                for group in ("general", "first_try") for metric in ("identify_s", "total_s")]
+        with self._lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                self._conn.execute("DELETE FROM run_benchmark WHERE run_uuid = ?", (run_id,))
+                self._conn.executemany(
+                    f"INSERT INTO run_benchmark (run_uuid, grp, metric, {', '.join(BENCHMARK_STATS)}) "
+                    f"VALUES (?, ?, ?, {', '.join('?' * len(BENCHMARK_STATS))})", rows)
+                self._conn.execute("COMMIT")
+            except Exception:
+                self._conn.execute("ROLLBACK")
+                raise
+
+    def get_benchmark(self, run_id: str) -> dict | None:
+        """{"general": {"identify_s": {n, mean, median, mode, mode_count, min, max}, "total_s": ...},
+        "first_try": ...} or None (run without measured cards, or from before the benchmark)."""
+        with self._lock:
+            rows = self._conn.execute("SELECT * FROM run_benchmark WHERE run_uuid = ?", (run_id,)).fetchall()
+        if not rows:
+            return None
+        bench: dict = {}
+        for r in rows:
+            bench.setdefault(r["grp"], {})[r["metric"]] = {k: r[k] for k in BENCHMARK_STATS}
+        return bench
+
+    # ------------------------------------------------------- inventory
+
+    def inventory(self, query: str = "", limit: int = 30, offset: int = 0, run_uuid: str | None = None,
+                  color: str | None = None) -> dict:
+        """Identified cards of finished runs (or of one run), grouped by name, with their color group
+        (W, U, B, R, G, colorless, multicolor) and the copies per color group: the same contract as the
+        CardForge server's GET /cards. Cards of a run in progress are left out (RF23)."""
+        where = "r.status NOT IN ('running', 'paused')"
+        params: list = []
+        if run_uuid:
+            where += " AND r.local_uuid = ?"
+            params.append(run_uuid)
+        if query:
+            where += " AND lower(c.card_name) LIKE ?"
+            params.append(f"%{query.lower()}%")
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT c.card_name, c.card_identifier, c.color_identity, c.type_line, c.mana_cost, c.rarity, "
+                "c.set_code, c.scan_status FROM local_cards c JOIN local_run r ON r.local_uuid = c.run_uuid "
+                f"WHERE {where}", params).fetchall()
+        counts = {g: 0 for g in COLOR_GROUPS}
+        groups: dict[str, dict] = {}
+        not_identified = 0
+        for r in rows:
+            if r["scan_status"] != "identified":
+                if not query:
+                    not_identified += 1
+                continue
+            group = color_group(r["color_identity"])
+            counts[group] += 1
+            if color and group != color:
+                continue
+            item = groups.setdefault(r["card_name"], {
+                "id": r["card_identifier"] or r["card_name"], "name": r["card_name"], "quantity": 0,
+                "color_identity": r["color_identity"] or "", "color": group, "type_line": r["type_line"],
+                "mana_cost": r["mana_cost"], "rarity": r["rarity"], "_sets": set()})
+            item["quantity"] += 1
+            item["id"] = min(item["id"], r["card_identifier"] or item["id"])
+            if r["set_code"]:
+                item["_sets"].add(r["set_code"].upper())
+        ordered = sorted(groups.values(), key=lambda i: (i["name"].lower(), i["name"]))
+        page = []
+        for item in ordered[offset:offset + limit]:
+            item["sets"] = ", ".join(sorted(item.pop("_sets")))
+            page.append(item)
+        return {"items": page, "total": len(ordered), "color_counts": counts, "not_identified": not_identified}
+
+    def export_csv(self) -> str:
+        """Every card of every finished run, as RFC 4180 CSV (RF24 / RNF17)."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT c.*, r.started_at AS run_started_at FROM local_cards c "
+                "JOIN local_run r ON r.local_uuid = c.run_uuid "
+                "WHERE r.status NOT IN ('running', 'paused') ORDER BY r.started_at, c.card_number").fetchall()
+        out = io.StringIO()
+        columns = ["run_uuid", "run_started_at", "card_number", "scan_status", "bin", "card_name", "set_code",
+                   "collector_number", "color_identity", "type_line", "mana_cost", "rarity", "card_identifier",
+                   "match_method", "confidence", "scanned_at"]
+        writer = csv.writer(out, lineterminator="\r\n")
+        writer.writerow(columns)
+        for r in rows:
+            writer.writerow(["" if r[c] is None else r[c] for c in columns])
+        return out.getvalue()
+
+    # ------------------------------------------------------ server sync
+
+    def runs_to_sync(self, now: str, limit: int = 20) -> list[str]:
+        """Finished runs with an owner, not uploaded yet, whose retry time has come (oldest first)."""
+        with self._lock:
+            rows = self._conn.execute(
+                f"SELECT local_uuid FROM local_run WHERE {FINISHED} AND sync_state <> 'synced' "
+                "AND started_by IS NOT NULL AND (next_sync_at IS NULL OR next_sync_at <= ?) "
+                "ORDER BY started_at LIMIT ?", (now, limit)).fetchall()
+        return [r[0] for r in rows]
+
+    def sync_payload(self, run_id: str) -> dict | None:
+        """Body of the server's POST /sync/runs: the run and all its cards."""
+        with self._lock:
+            run = self._conn.execute(f"SELECT * FROM local_run WHERE local_uuid = ? AND {FINISHED}",
+                                     (run_id,)).fetchone()
+            if run is None or run["started_by"] is None:
+                return None
+            cards = self._conn.execute(
+                "SELECT * FROM local_cards WHERE run_uuid = ? ORDER BY card_number", (run_id,)).fetchall()
+        return {
+            "run": {k: run[k] for k in ("local_uuid", "started_by", "status", "started_at", "stopped_at",
+                                        "cards_processed", "successful_scans", "failed_scans", "error_code",
+                                        "message")},
+            "cards": [{"local_uuid": c["local_uuid"],
+                       "owner_id": c["owner_id"] if c["owner_id"] is not None else run["started_by"],
+                       **{k: c[k] for k in SYNC_CARD_COLUMNS}} for c in cards],
+        }
+
+    def mark_synced(self, run_id: str, remote_run_id: int, now: str) -> None:
+        with self._lock:
+            self._conn.execute(
+                "UPDATE local_run SET sync_state = 'synced', remote_run_id = ?, synced_at = ?, "
+                "last_sync_error = NULL, next_sync_at = NULL WHERE local_uuid = ?", (remote_run_id, now, run_id))
+
+    def mark_sync_failed(self, run_id: str, error: str, next_attempt: Callable[[int], str]) -> int:
+        """Count one more failed upload; next_attempt(attempts) gives the time of the next try.
+        Returns how many uploads of this run have failed so far."""
+        with self._lock:
+            row = self._conn.execute("SELECT sync_attempts FROM local_run WHERE local_uuid = ?", (run_id,)).fetchone()
+            if row is None:
+                return 0
+            attempts = row[0] + 1
+            self._conn.execute(
+                "UPDATE local_run SET sync_state = 'failed', sync_attempts = ?, last_sync_error = ?, "
+                "next_sync_at = ? WHERE local_uuid = ?", (attempts, error[:500], next_attempt(attempts), run_id))
+        return attempts
+
+    def clear_sync_backoff(self) -> None:
+        """Make every run waiting for a retry due now (POST /sync/now)."""
+        with self._lock:
+            self._conn.execute("UPDATE local_run SET next_sync_at = NULL WHERE sync_state = 'failed'")
+
+    def sync_status(self) -> dict:
+        """How many finished runs are uploaded, waiting, failing, or kept on the Pi only."""
+        with self._lock:
+            counts = {r[0]: r[1] for r in self._conn.execute(
+                f"SELECT CASE WHEN started_by IS NULL THEN 'local_only' ELSE sync_state END, COUNT(*) "
+                f"FROM local_run WHERE {FINISHED} GROUP BY 1")}
+            last = self._conn.execute(
+                "SELECT local_uuid, last_sync_error, next_sync_at, sync_attempts FROM local_run "
+                "WHERE sync_state = 'failed' AND started_by IS NOT NULL ORDER BY started_at DESC LIMIT 1").fetchone()
+        return {
+            "synced": counts.get("synced", 0), "pending": counts.get("pending", 0),
+            "failed": counts.get("failed", 0), "local_only": counts.get("local_only", 0),
+            "last_error": dict(last) if last else None,
+        }
+
+    # ------------------------------------------------------- app tokens
+
+    def issue_token(self, username: str, now: str) -> str:
+        token = secrets.token_urlsafe(32)
+        with self._lock:
+            self._conn.execute("INSERT INTO app_token VALUES (?, ?, ?)", (token, username, now))
+        return token
+
+    def token_user(self, token: str) -> str | None:
+        with self._lock:
+            row = self._conn.execute("SELECT username FROM app_token WHERE token = ?", (token,)).fetchone()
+        return row[0] if row else None
+
+
+def _run_dict(row: sqlite3.Row) -> dict:
+    d = dict(row)
+    d["run_id"] = d.pop("local_uuid")
+    return d
+
+
+def _card_dict(row: dict) -> dict:
+    d = dict(row)
+    d["card_id"] = d.pop("local_uuid")
+    d.pop("run_uuid", None)
+    return d

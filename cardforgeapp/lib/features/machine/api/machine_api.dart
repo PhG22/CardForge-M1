@@ -1,0 +1,292 @@
+import 'dart:async';
+import 'dart:convert';
+
+import 'package:http/http.dart' as http;
+import 'package:web_socket_channel/web_socket_channel.dart';
+
+import '../../../core/config/app_config.dart';
+import '../../auth/auth_service.dart';
+import '../machine_models.dart';
+import 'machine_api_models.dart';
+
+/// The machine's REST API (sorter_api on the Raspberry Pi), reached over
+/// Wi-Fi once the machine is linked. See raspberry-api/rest-api.md.
+///
+/// Every method throws [MachineApiException] on failure.
+abstract class MachineApi {
+  /// GET /health
+  Future<MachineHealth> health();
+
+  /// GET /run/status
+  Future<MachineSnapshot> runStatus();
+
+  /// POST /run/start with the signed-in user's token, so the machine saves
+  /// the run (and its cards) to that account. Blocks while the base homes (up
+  /// to ~40 s). A refusal carries every [StartProblem] at once.
+  Future<RunInfo> startRun();
+
+  /// POST /run/resume: continue a run paused by a fault, once the user fixed
+  /// it. The machine homes the base again first (up to ~40 s). A refusal
+  /// (e.g. a card still on the platform) carries its [StartProblem]s.
+  Future<RunInfo> resumeRun();
+
+  /// POST /run/stop (or `?immediate=true`, the emergency stop). Also ends a
+  /// paused run.
+  Future<RunInfo?> stopRun({bool immediate = false});
+
+  /// GET /hardware/status
+  Future<HardwareStatus> hardwareStatus();
+
+  /// POST /base/home
+  Future<BaseMoveResult> homeBase();
+
+  /// POST /base/goto/{tray}
+  Future<BaseMoveResult> gotoTray(int tray);
+
+  /// GET /card-db: is a card database update available, is one running.
+  Future<CardDbStatus> cardDbStatus();
+
+  /// POST /card-db/check: ask Scryfall for new cards now. The result comes as
+  /// a [CardDbEvent] a few seconds later.
+  Future<CardDbStatus> checkCardDb();
+
+  /// POST /card-db/update (`?force=true`: even when up to date): download and
+  /// build the new card database in the background; its progress comes as
+  /// [CardDbEvent]s. Refused (409 RUN_ACTIVE) while a run is active.
+  Future<CardDbStatus> updateCardDb({bool force = false});
+
+  /// POST /card-db/update/cancel: stop the update; the machine keeps its
+  /// current card database.
+  Future<CardDbStatus> cancelCardDbUpdate();
+
+  /// WS /ws/events. The first event is a [SnapshotEvent]. The stream ends
+  /// (or errors) when the connection drops; listen again to reconnect.
+  Stream<MachineEvent> events();
+
+  void close();
+}
+
+/// Whether [api] answers GET /health.
+Future<bool> isMachineReachable(MachineApi api) async {
+  try {
+    return (await api.health()).ok;
+  } on MachineApiException {
+    return false;
+  }
+}
+
+class HttpMachineApi implements MachineApi {
+  HttpMachineApi(
+    this.address, {
+    http.Client? client,
+    WebSocketChannel Function(Uri uri)? connectSocket,
+    Future<String?> Function()? tokenProvider,
+  })  : _client = client ?? http.Client(),
+        _connectSocket = connectSocket ?? WebSocketChannel.connect,
+        _tokenProvider = tokenProvider ?? AuthService.instance.accessToken;
+
+  final MachineAddress address;
+  final http.Client _client;
+  final WebSocketChannel Function(Uri uri) _connectSocket;
+
+  /// The user's server token, sent with POST /run/start.
+  final Future<String?> Function() _tokenProvider;
+
+  Uri _uri(String path, [Map<String, String>? query]) =>
+      address.baseUri.replace(path: path, queryParameters: query);
+
+  @override
+  Future<MachineHealth> health() async => MachineHealth.fromJson(
+        await _request('GET', '/health', timeout: AppConfig.healthTimeout),
+      );
+
+  @override
+  Future<MachineSnapshot> runStatus() async =>
+      MachineSnapshot.fromJson(await _request('GET', '/run/status'));
+
+  @override
+  Future<RunInfo> startRun() async {
+    final json = await _request(
+      'POST',
+      '/run/start',
+      timeout: AppConfig.machineStartTimeout,
+      token: await _tokenProvider(),
+    );
+    final run = json['run'];
+    if (run is! Map) {
+      throw const MachineApiException(MachineApiFailure.badResponse);
+    }
+    return RunInfo.fromJson(run.cast<String, Object?>());
+  }
+
+  @override
+  Future<RunInfo> resumeRun() async {
+    final json = await _request(
+      'POST',
+      '/run/resume',
+      timeout: AppConfig.machineStartTimeout,
+    );
+    final run = json['run'];
+    if (run is! Map) {
+      throw const MachineApiException(MachineApiFailure.badResponse);
+    }
+    return RunInfo.fromJson(run.cast<String, Object?>());
+  }
+
+  @override
+  Future<RunInfo?> stopRun({bool immediate = false}) async {
+    final json = await _request(
+      'POST',
+      '/run/stop',
+      query: immediate ? const {'immediate': 'true'} : null,
+      timeout: AppConfig.machineMoveTimeout,
+    );
+    final run = json['run'];
+    return run is Map ? RunInfo.fromJson(run.cast<String, Object?>()) : null;
+  }
+
+  @override
+  Future<HardwareStatus> hardwareStatus() async =>
+      HardwareStatus.fromJson(await _request('GET', '/hardware/status'));
+
+  @override
+  Future<BaseMoveResult> homeBase() async => BaseMoveResult.fromJson(
+        await _request('POST', '/base/home',
+            timeout: AppConfig.machineMoveTimeout),
+      );
+
+  @override
+  Future<BaseMoveResult> gotoTray(int tray) async => BaseMoveResult.fromJson(
+        await _request('POST', '/base/goto/$tray',
+            timeout: AppConfig.machineMoveTimeout),
+      );
+
+  @override
+  Future<CardDbStatus> cardDbStatus() async =>
+      CardDbStatus.fromJson(await _request('GET', '/card-db'));
+
+  @override
+  Future<CardDbStatus> checkCardDb() async =>
+      _cardDb(await _request('POST', '/card-db/check'));
+
+  @override
+  Future<CardDbStatus> updateCardDb({bool force = false}) async => _cardDb(
+        await _request(
+          'POST',
+          '/card-db/update',
+          query: force ? const {'force': 'true'} : null,
+        ),
+      );
+
+  @override
+  Future<CardDbStatus> cancelCardDbUpdate() async =>
+      _cardDb(await _request('POST', '/card-db/update/cancel'));
+
+  CardDbStatus _cardDb(Map<String, Object?> json) {
+    final status = json['card_db'];
+    if (status is! Map) {
+      throw const MachineApiException(MachineApiFailure.badResponse);
+    }
+    return CardDbStatus.fromJson(status.cast<String, Object?>());
+  }
+
+  @override
+  Stream<MachineEvent> events() {
+    // A plain StreamController (not async*) so that cancelling the
+    // subscription closes the socket right away instead of waiting for it.
+    WebSocketChannel? channel;
+    StreamSubscription<Object?>? socketSub;
+    var cancelled = false;
+    late final StreamController<MachineEvent> controller;
+
+    void fail() {
+      if (cancelled || controller.isClosed) return;
+      controller
+          .addError(const MachineApiException(MachineApiFailure.unreachable));
+      unawaited(controller.close());
+    }
+
+    controller = StreamController<MachineEvent>(
+      onListen: () async {
+        final uri = address.baseUri.replace(scheme: 'ws', path: '/ws/events');
+        try {
+          final opened = channel = _connectSocket(uri);
+          await opened.ready.timeout(AppConfig.healthTimeout);
+        } catch (_) {
+          unawaited(channel?.sink.close());
+          fail();
+          return;
+        }
+        if (cancelled) {
+          unawaited(channel?.sink.close());
+          return;
+        }
+        socketSub = channel!.stream.listen(
+          (message) {
+            if (message is! String) return;
+            final Object? decoded;
+            try {
+              decoded = jsonDecode(message);
+            } on FormatException {
+              return;
+            }
+            if (decoded is Map && !controller.isClosed) {
+              controller
+                  .add(MachineEvent.fromJson(decoded.cast<String, Object?>()));
+            }
+          },
+          onError: (Object _) => fail(),
+          onDone: () {
+            if (!controller.isClosed) unawaited(controller.close());
+          },
+          cancelOnError: true,
+        );
+      },
+      onCancel: () {
+        cancelled = true;
+        unawaited(socketSub?.cancel());
+        unawaited(channel?.sink.close());
+      },
+    );
+    return controller.stream;
+  }
+
+  Future<Map<String, Object?>> _request(
+    String method,
+    String path, {
+    Map<String, String>? query,
+    Duration? timeout,
+    String? token,
+  }) async {
+    final request = http.Request(method, _uri(path, query))
+      ..headers['Accept'] = 'application/json';
+    if (token != null) request.headers['Authorization'] = 'Bearer $token';
+    final http.Response res;
+    try {
+      res = await http.Response.fromStream(
+        await _client.send(request).timeout(
+              timeout ?? AppConfig.machineRequestTimeout,
+            ),
+      ).timeout(timeout ?? AppConfig.machineRequestTimeout);
+    } on Exception {
+      // timeout, no route to host, connection refused, ...
+      throw const MachineApiException(MachineApiFailure.unreachable);
+    }
+
+    Object? body;
+    try {
+      body =
+          res.bodyBytes.isEmpty ? null : jsonDecode(utf8.decode(res.bodyBytes));
+    } on FormatException {
+      body = null;
+    }
+    if (res.statusCode >= 200 && res.statusCode < 300) {
+      if (body is Map) return body.cast<String, Object?>();
+      throw const MachineApiException(MachineApiFailure.badResponse);
+    }
+    throw MachineApiException.fromResponse(res.statusCode, body);
+  }
+
+  @override
+  void close() => _client.close();
+}

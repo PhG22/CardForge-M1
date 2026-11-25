@@ -1,7 +1,7 @@
 """
 Ferramentas de linha de comando do subsistema de visão.
 
-    python -m cardforge.cv sync [--force]                     # cria/atualiza o cards.db (precisa de rede)
+    python -m cardforge.cv sync [--force] [--langs pt]        # cria/atualiza o cards.db (precisa de rede)
     python -m cardforge.cv identify foto.jpg [...]            # identifica imagens e imprime JSON
     python -m cardforge.cv batch input_cartas --out relatorios [--truth gabarito.csv]
     python -m cardforge.cv camera [-n 5]                      # Raspberry Pi: captura e identifica
@@ -29,14 +29,19 @@ IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 
 
 def _module(args, camera=None) -> VisionModule:
-    v = VisionModule(VisionConfig.load(args.config), camera=camera)
+    cfg = VisionConfig.load(args.config)
+    if getattr(args, "detect", False):
+        cfg.crop.mode = "detect"          # fotos que não vieram da câmara de leitura da máquina
+    v = VisionModule(cfg, camera=camera)
     v.start(open_camera=camera is None and args.cmd == "camera")
     return v
 
 
 def cmd_sync(args) -> int:
+    logging.getLogger("cardforge.data.sync").setLevel(logging.INFO)   # andamento dos downloads
     v = VisionModule(VisionConfig.load(args.config), camera=_NoCamera())
-    print(v.update_database(force=args.force))
+    langs = None if args.langs is None else [lang for lang in args.langs.split(",") if lang.strip()]
+    print(v.update_database(force=args.force, printed_langs=langs))
     return 0
 
 
@@ -166,16 +171,22 @@ def main(argv=None) -> int:
 
     p = sub.add_parser("sync", help="cria/atualiza o cards.db a partir do Scryfall")
     p.add_argument("--force", action="store_true", help="reconstrói mesmo que já esteja atualizado")
+    p.add_argument("--langs", default=None,
+                   help='idiomas dos nomes impressos, ex.: "pt" ou "pt,es"; "" = só inglês '
+                        '(padrão: printed_name_langs do vision.toml)')
     p.set_defaults(func=cmd_sync)
 
     p = sub.add_parser("identify", help="identifica imagens e imprime o resultado em JSON")
     p.add_argument("images", nargs="+")
+    p.add_argument("--detect", action="store_true", help="detecção de bordas em vez do recorte fixo")
     p.set_defaults(func=cmd_identify)
 
     p = sub.add_parser("batch", help="processa uma pasta e gera relatórios (+ acurácia com --truth)")
     p.add_argument("folder", nargs="?", default="input_cartas")
     p.add_argument("--out", default="relatorios")
     p.add_argument("--truth", help="CSV de gabarito: file,set,number,name")
+    p.add_argument("--detect", action="store_true",
+                   help="acha a carta por detecção de bordas em vez do recorte fixo (fotos de outras fontes)")
     p.set_defaults(func=cmd_batch)
 
     p = sub.add_parser("camera", help="(Raspberry Pi) captura com a câmara e identifica")
